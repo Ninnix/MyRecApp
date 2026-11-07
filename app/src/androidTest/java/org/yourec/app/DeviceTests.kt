@@ -56,6 +56,10 @@ class DeviceTests : Instrumentation() {
             studio()
             return
         }
+        if (suite == "orientation") {
+            orientation()
+            return
+        }
         var activity: MainActivity? = null
         var previous: Project? = null
         try {
@@ -841,6 +845,276 @@ class DeviceTests : Instrumentation() {
                     activity.editor.clearSelection()
                     activity.editor.onChange()
                 }
+        }
+    }
+
+    private fun orientation() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            test(
+                "recording surface normalizes 0, 90, 180 and 270 degree camera changes in one file"
+            ) {
+                val target = File(targetContext.cacheDir, "camera-orientation.mp4")
+                val recorder =
+                    if (android.os.Build.VERSION.SDK_INT >= 31)
+                        android.media.MediaRecorder(targetContext)
+                    else android.media.MediaRecorder()
+                var bridge: CameraRecordingSurface? = null
+                var started = false
+                val renderError = java.util.concurrent.atomic.AtomicReference<Throwable>()
+                val centers = mutableListOf<Double>()
+                try {
+                    recorder.setVideoSource(android.media.MediaRecorder.VideoSource.SURFACE)
+                    recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+                    recorder.setOutputFile(target.absolutePath)
+                    recorder.setVideoEncoder(android.media.MediaRecorder.VideoEncoder.H264)
+                    recorder.setVideoSize(320, 180)
+                    recorder.setVideoFrameRate(30)
+                    recorder.setVideoEncodingBitRate(2_000_000)
+                    recorder.prepare()
+                    bridge =
+                        CameraRecordingSurface(recorder.surface, 320, 180) { renderError.set(it) }
+                    recorder.start()
+                    started = true
+                    var first = 0L
+                    val paint = Paint()
+                    for ((rotation, sourceWidth, sourceHeight) in
+                        listOf(
+                            Triple(0, 320, 180),
+                            Triple(180, 320, 180),
+                            Triple(90, 180, 320),
+                            Triple(270, 180, 320),
+                            Triple(0, 400, 300),
+                            Triple(0, 320, 180),
+                        )) {
+                        val quarter = rotation % 180 != 0
+                        val surface = bridge.input(sourceWidth, sourceHeight, rotation, false)
+                        if (first == 0L) first = android.os.SystemClock.elapsedRealtimeNanos()
+                        centers.add(
+                            (android.os.SystemClock.elapsedRealtimeNanos() - first) / 1e9 + .25
+                        )
+                        repeat(12) {
+                            val canvas = surface.lockCanvas(null)
+                            canvas.drawColor(Color.BLACK)
+                            canvas.save()
+                            canvas.translate(canvas.width / 2f, canvas.height / 2f)
+                            canvas.rotate(-rotation.toFloat())
+                            val w = (if (quarter) canvas.height else canvas.width) / 2f
+                            val h = (if (quarter) canvas.width else canvas.height) / 2f
+                            for ((rect, color) in
+                                listOf(
+                                    RectF(-w, -h, 0f, 0f) to Color.RED,
+                                    RectF(0f, -h, w, 0f) to Color.GREEN,
+                                    RectF(-w, 0f, 0f, h) to Color.BLUE,
+                                    RectF(0f, 0f, w, h) to Color.YELLOW,
+                                )) {
+                                paint.color = color
+                                canvas.drawRect(rect, paint)
+                            }
+                            canvas.restore()
+                            surface.unlockCanvasAndPost(canvas)
+                            Thread.sleep(50)
+                        }
+                    }
+                    bridge.close()
+                    bridge = null
+                    recorder.stop()
+                    started = false
+                    renderError.get()?.let { throw it }
+                    VideoDecoder(target.absolutePath).use { decoder ->
+                        for (time in centers) {
+                            val frame =
+                                decoder.frame(time, 320, 180) ?: error("Missing orientation frame")
+                            try {
+                                for ((point, expected) in
+                                    listOf(
+                                        (20 to 20) to Color.RED,
+                                        (300 to 20) to Color.GREEN,
+                                        (20 to 160) to Color.BLUE,
+                                        (300 to 160) to Color.YELLOW,
+                                    )) {
+                                    val actual = frame.getPixel(point.first, point.second)
+                                    check(
+                                        abs(Color.red(actual) - Color.red(expected)) < 35 &&
+                                            abs(Color.green(actual) - Color.green(expected)) < 35 &&
+                                            abs(Color.blue(actual) - Color.blue(expected)) < 35
+                                    ) {
+                                        "Orientation at $time, $point: ${actual.toUInt().toString(16)} expected ${expected.toUInt().toString(16)}"
+                                    }
+                                }
+                            } finally {
+                                frame.recycle()
+                            }
+                        }
+                    }
+                    val extractor = android.media.MediaExtractor()
+                    try {
+                        extractor.setDataSource(target.absolutePath)
+                        extractor.selectTrack(0)
+                        val times = mutableListOf<Long>()
+                        while (extractor.sampleTime >= 0) {
+                            times.add(extractor.sampleTime)
+                            extractor.advance()
+                        }
+                        check(times.size >= 30 && times.distinct().size == times.size) {
+                            "Camera presentation times $times"
+                        }
+                        check(times.max() - times.min() > 2_000_000)
+                    } finally {
+                        extractor.release()
+                    }
+                } finally {
+                    bridge?.close()
+                    if (started) runCatching { recorder.stop() }
+                    recorder.release()
+                    target.delete()
+                }
+            }
+            onMain { a.showCapture() }
+            Thread.sleep(1200)
+            val capture =
+                (0 until a.root.childCount)
+                    .map { a.root.getChildAt(it) }
+                    .filterIsInstance<Capture>()
+                    .single()
+            val manager = a.getSystemService(android.hardware.camera2.CameraManager::class.java)
+            val rear =
+                manager.cameraIdList.first {
+                    manager
+                        .getCameraCharacteristics(it)
+                        .get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == 1
+                }
+            val front =
+                manager.cameraIdList.first {
+                    manager
+                        .getCameraCharacteristics(it)
+                        .get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == 0
+                }
+            for ((name, orientation) in
+                listOf(
+                    "portrait" to ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                    "landscape" to ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                )) {
+                for ((label, first, next) in
+                    listOf(Triple("rear", rear, front), Triple("front", front, rear))) {
+                    test(
+                        "$name $label start switches cameras both ways without changing recording orientation"
+                    ) {
+                        onMain {
+                            a.requestedOrientation = orientation
+                            capture.switchCamera(first)
+                        }
+                        Thread.sleep(1000)
+                        val before = a.editor.project.clips.size
+                        val sensor =
+                            manager
+                                .getCameraCharacteristics(first)
+                                .get(
+                                    android.hardware.camera2.CameraCharacteristics
+                                        .SENSOR_ORIENTATION
+                                )!!
+                        val expected =
+                            CameraOrientation.recording(
+                                sensor,
+                                a.windowManager.defaultDisplay.rotation * 90,
+                                first == front,
+                            )
+                        onMain { capture.start() }
+                        Thread.sleep(1000)
+                        check(capture.recording && !capture.paused)
+                        onMain { capture.switchCamera(next) }
+                        Thread.sleep(1200)
+                        check(capture.recording && !capture.paused)
+                        onMain { capture.switchCamera(first) }
+                        Thread.sleep(1000)
+                        check(capture.recording && !capture.paused)
+                        onMain { capture.stop() }
+                        Thread.sleep(300)
+                        check(a.editor.project.clips.size == before + 1)
+                        val clip = a.editor.project.clips.last()
+                        val reader = MediaMetadataRetriever()
+                        try {
+                            reader.setDataSource(clip.path)
+                            val actual =
+                                reader
+                                    .extractMetadata(
+                                        MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
+                                    )
+                                    ?.toInt() ?: 0
+                            check(actual == expected) { "Rotation $actual, expected $expected" }
+                            for (time in listOf(500_000L, 1_600_000L, 2_700_000L)) {
+                                val frame =
+                                    reader.getFrameAtTime(
+                                        time,
+                                        MediaMetadataRetriever.OPTION_CLOSEST,
+                                    ) ?: error("Missing camera frame")
+                                check((frame.height > frame.width) == (name == "portrait"))
+                                frame.recycle()
+                            }
+                        } finally {
+                            reader.release()
+                        }
+                        val extractor = android.media.MediaExtractor()
+                        try {
+                            extractor.setDataSource(clip.path)
+                            val ranges = mutableMapOf<String, Pair<Long, Long>>()
+                            for (index in 0 until extractor.trackCount) {
+                                val mime =
+                                    extractor
+                                        .getTrackFormat(index)
+                                        .getString(android.media.MediaFormat.KEY_MIME)!!
+                                extractor.selectTrack(index)
+                                var low = Long.MAX_VALUE
+                                var high = 0L
+                                while (extractor.sampleTime >= 0) {
+                                    low = min(low, extractor.sampleTime)
+                                    high = max(high, extractor.sampleTime)
+                                    extractor.advance()
+                                }
+                                ranges[mime.substringBefore('/')] = low to high
+                                extractor.unselectTrack(index)
+                                extractor.seekTo(
+                                    0,
+                                    android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC,
+                                )
+                            }
+                            val video = ranges.getValue("video")
+                            val audio = ranges.getValue("audio")
+                            check(
+                                abs(video.first - audio.first) < 250_000 &&
+                                    abs(video.second - audio.second) < 250_000
+                            ) {
+                                "Camera audio/video drift: $ranges"
+                            }
+                        } finally {
+                            extractor.release()
+                        }
+                    }
+                }
+            }
+            onMain {
+                capture.suspendCamera()
+                a.showEditor()
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { onMain { it.finish() } }
         }
     }
 

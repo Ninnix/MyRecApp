@@ -15,6 +15,19 @@ fun main() {
         passed++
         println("PASS $name")
     }
+    test("recording rotation follows each sensor and the locked display orientation") {
+        for (display in listOf(0, 90, 180, 270)) {
+            val rear = CameraOrientation.recording(90, display, false)
+            val front = CameraOrientation.recording(270, display, true)
+            check(CameraOrientation.correction(rear, rear) == 0)
+            check(CameraOrientation.correction(rear, front) == if (display % 180 == 0) 180 else 0)
+            check(CameraOrientation.correction(front, rear) == if (display % 180 == 0) 180 else 0)
+        }
+        check(CameraOrientation.recording(0, 90, false) == 270)
+        check(CameraOrientation.recording(180, 90, true) == 270)
+        check(CameraOrientation.correction(270, 0) == 90)
+        check(CameraOrientation.correction(0, 270) == 270)
+    }
     test("microphone locations have distinct labels and durable priority keys") {
         val bottom = MicrophoneInput(24, 15, "Example phone", "bottom")
         val rear = MicrophoneInput(25, 15, "Example phone", "back")

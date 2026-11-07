@@ -27,6 +27,12 @@ Labels distinguish USB, Bluetooth, wired and phone inputs. Phone locations are
 shown when reported; otherwise distinct route labels avoid guessing which hole
 or microphone array a route represents.
 
+Switching cameras keeps the same recording. Camera frames are rotated into the
+encoder's initial orientation before encoding, so different front/rear sensor
+orientations do not turn part of the file upside down. Source resolution can
+change while the encoded resolution stays fixed. Frame timestamps use the
+recording clock to preserve audio/video timing.
+
 Microphone priority lets you move an input to the top of the preferred list.
 Separate routes with the same product name retain separate preference keys.
 Before recording, the highest available preferred input is selected.

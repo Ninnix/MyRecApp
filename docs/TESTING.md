@@ -23,6 +23,7 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py --parity
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --exports
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --speech
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --studio
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --orientation
 ```
 
 The runner installs the app and instrumentation APKs without clearing app data,
@@ -42,6 +43,10 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   weights. See [MODELS.md](MODELS.md).
 * `--studio`: neural restoration, filter order, ranges, mute, caching,
   cancellation, live changes and audio export; requires Studio weights.
+* `--orientation`: asymmetric corner markers through 0/90/180/270-degree changes
+  and different source sizes in one encoded file, plus real front/rear switching
+  in portrait and landscape with either camera first. Checks include audio/video
+  timestamp alignment; playback dimensions alone do not prove upright content.
 
 The latest local verification summary is kept in
 [artifacts/validation.json](../artifacts/validation.json). APKs, raw captures,

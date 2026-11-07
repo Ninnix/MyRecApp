@@ -7,6 +7,8 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.hardware.camera2.*
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
 import android.media.*
 import android.os.*
 import android.util.Range
@@ -36,6 +38,8 @@ class Capture(
     private var session: CameraCaptureSession? = null
     private var request: CaptureRequest.Builder? = null
     private var recorder: MediaRecorder? = null
+    private var recordingSurface: CameraRecordingSurface? = null
+    private var recordingOrientation = 0
     private var recordingFile: File? = null
     private var pendingStart = false
     private var previewSurface: Surface? = null
@@ -44,6 +48,7 @@ class Capture(
     private var pendingSwitch: String? = null
     private var closed = false
     private var videoSize = Size(1920, 1080)
+    private var captureSize = videoSize
     private var front = false
     var recording = false
         private set
@@ -237,6 +242,12 @@ class Capture(
                     sizes.firstOrNull { it == desired }
                         ?: sizes.filter { it.width <= 1920 }.maxByOrNull { it.width * it.height }
                         ?: sizes.first()
+            captureSize =
+                sizes.firstOrNull { it == videoSize }
+                    ?: sizes
+                        .filter { it.width <= videoSize.width }
+                        .maxByOrNull { it.width * it.height }
+                    ?: sizes.first()
             manager.openCamera(
                 id,
                 object : CameraDevice.StateCallback() {
@@ -287,18 +298,30 @@ class Capture(
         try {
             session?.close()
             previewSurface?.release()
-            st.setDefaultBufferSize(videoSize.width, videoSize.height)
+            st.setDefaultBufferSize(captureSize.width, captureSize.height)
             previewSurface = Surface(st)
             val surfaces = mutableListOf(previewSurface!!)
-            recorder?.let { surfaces.add(it.surface) }
+            recordingSurface?.let {
+                val chars = manager.getCameraCharacteristics(cameraId)
+                surfaces.add(
+                    it.input(
+                        captureSize.width,
+                        captureSize.height,
+                        CameraOrientation.correction(recordingOrientation, cameraOrientation()),
+                        chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ==
+                            CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
+                        monotonic = Build.VERSION.SDK_INT >= 33,
+                        unmirror = front && Build.VERSION.SDK_INT < 33,
+                    )
+                )
+            }
             request =
                 camera.createCaptureRequest(
                     if (recorder != null) CameraDevice.TEMPLATE_RECORD
                     else CameraDevice.TEMPLATE_PREVIEW
                 )
             surfaces.forEach { request!!.addTarget(it) }
-            camera.createCaptureSession(
-                surfaces,
+            val callback =
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(s: CameraCaptureSession) {
                         if (device !== camera) {
@@ -318,6 +341,7 @@ class Capture(
                             } catch (e: Exception) {
                                 ui.post {
                                     recording = false
+                                    closeRecordingSurface()
                                     recorder?.release()
                                     recorder = null
                                     recordingFile?.delete()
@@ -339,9 +363,26 @@ class Capture(
                             )
                         }
                     }
-                },
-                cameraHandler,
-            )
+                }
+            if (Build.VERSION.SDK_INT >= 33) {
+                val outputs =
+                    surfaces.mapIndexed { index, surface ->
+                        OutputConfiguration(surface).apply {
+                            if (index > 0) {
+                                setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
+                                setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_MONOTONIC)
+                            }
+                        }
+                    }
+                camera.createCaptureSession(
+                    SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        outputs,
+                        { command -> cameraHandler.post(command) },
+                        callback,
+                    )
+                )
+            } else camera.createCaptureSession(surfaces, callback, cameraHandler)
         } catch (e: Exception) {
             ui.post { activity.message(e.message ?: "Cannot start camera preview") }
         }
@@ -430,15 +471,15 @@ class Capture(
             }
         val sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
         val rotated = (sensor - rotation * 90 + 360) % 180 != 0
-        val bufferW = if (rotated) videoSize.height.toFloat() else videoSize.width.toFloat()
-        val bufferH = if (rotated) videoSize.width.toFloat() else videoSize.height.toFloat()
+        val bufferW = if (rotated) captureSize.height.toFloat() else captureSize.width.toFloat()
+        val bufferH = if (rotated) captureSize.width.toFloat() else captureSize.height.toFloat()
         val matrix = Matrix()
         val view = RectF(0f, 0f, w, h)
         val buffer = RectF(0f, 0f, bufferH, bufferW)
         buffer.offset(view.centerX() - buffer.centerX(), view.centerY() - buffer.centerY())
         if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
             matrix.setRectToRect(view, buffer, Matrix.ScaleToFit.FILL)
-            val scale = max(h / videoSize.height, w / videoSize.width)
+            val scale = max(h / captureSize.height, w / captureSize.width)
             matrix.postScale(scale, scale, w / 2, h / 2)
             matrix.postRotate(90f * (rotation - 2), w / 2, h / 2)
         } else {
@@ -675,14 +716,8 @@ class Capture(
             r.setAudioSamplingRate(48000)
             r.setAudioChannels(if (bluetooth(microphone)) 1 else 2)
             r.setAudioEncodingBitRate(192000)
-            val sensor =
-                manager
-                    .getCameraCharacteristics(cameraId)
-                    .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-            val rotation = activity.windowManager.defaultDisplay.rotation * 90
-            r.setOrientationHint(
-                if (front) (sensor + rotation) % 360 else (sensor - rotation + 360) % 360
-            )
+            recordingOrientation = cameraOrientation()
+            r.setOrientationHint(recordingOrientation)
             check(r.setPreferredDevice(microphone)) { "The selected microphone is unavailable" }
             r.setOnErrorListener { _, _, _ ->
                 ui.post {
@@ -693,6 +728,15 @@ class Capture(
                 }
             }
             r.prepare()
+            recordingSurface =
+                CameraRecordingSurface(r.surface, videoSize.width, videoSize.height) { error ->
+                    ui.post {
+                        if (recording) {
+                            stop()
+                            activity.message(error.message ?: "Camera frame processing failed")
+                        }
+                    }
+                }
             recorder = r
             recordingFile = file
             recording = true
@@ -706,6 +750,7 @@ class Capture(
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         } catch (e: Exception) {
+            closeRecordingSurface()
             r.release()
             file.delete()
             recorder = null
@@ -718,6 +763,26 @@ class Capture(
 
     fun elapsedSeconds(): Double =
         (duration + if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
+
+    private fun cameraOrientation(): Int {
+        val sensor =
+            manager.getCameraCharacteristics(cameraId).get(CameraCharacteristics.SENSOR_ORIENTATION)
+                ?: 90
+        return CameraOrientation.recording(
+            sensor,
+            activity.windowManager.defaultDisplay.rotation * 90,
+            front,
+        )
+    }
+
+    private fun closeRecordingSurface() {
+        val surface = recordingSurface
+        recordingSurface = null
+        // Drain the recorder even if a stalled graphics driver delays renderer cleanup.
+        try {
+            surface?.close()
+        } catch (_: Exception) {}
+    }
 
     fun pause() {
         if (!recording) return
@@ -755,10 +820,12 @@ class Capture(
         paused = false
         var success = true
         try {
+            closeRecordingSurface()
             r?.stop()
         } catch (_: Exception) {
             success = false
         } finally {
+            closeRecordingSurface()
             r?.release()
         }
         val file = recordingFile
