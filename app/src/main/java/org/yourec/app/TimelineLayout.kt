@@ -1,12 +1,16 @@
 package org.yourec.app
 
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
 data class TimelineLane(val track: Int, val audio: Boolean, val top: Float, val bottom: Float)
 
 object TimelineLayout {
+    fun thumbnailStart(clipLeft: Float, viewportLeft: Float, width: Float): Float =
+        clipLeft + floor(max(0f, viewportLeft - clipLeft) / width) * width
+
     fun interval(project: Project, clip: Clip): ClosedFloatingPointRange<Double> {
         fun matches(id: String?): Boolean {
             if (id == clip.id) return true

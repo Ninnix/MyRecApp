@@ -60,6 +60,10 @@ class DeviceTests : Instrumentation() {
             orientation()
             return
         }
+        if (suite == "timeline") {
+            timeline()
+            return
+        }
         var activity: MainActivity? = null
         var previous: Project? = null
         try {
@@ -845,6 +849,168 @@ class DeviceTests : Instrumentation() {
                     activity.editor.clearSelection()
                     activity.editor.onChange()
                 }
+        }
+    }
+
+    private fun timeline() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            for ((label, width, height) in
+                listOf(Triple("portrait", 294, 640), Triple("landscape", 640, 294))) {
+                test("$label split thumbnails scroll together without overwriting adjacent clips") {
+                    onMain {
+                        for ((separateSources, cursor) in
+                            listOf(false to 7.0, false to 11.0, true to 7.0, true to 11.0)) {
+                            val path = File(targetContext.cacheDir, "timeline-pattern.mp4").path
+                            val editor =
+                                Editor(
+                                    Project(
+                                        clips = mutableListOf(Clip(path = path, sourceOut = 20.0))
+                                    )
+                                )
+                            editor.cursor = 6.0
+                            editor.split()
+                            editor.cursor = 13.0
+                            editor.split()
+                            if (separateSources)
+                                for (i in editor.project.clips.indices) {
+                                    val clip = editor.project.clips[i]
+                                    editor.project.clips[i] = clip.copy(path = "$path-$i")
+                                }
+                            editor.clearSelection()
+                            editor.cursor = cursor
+                            editor.scale = 10.0
+                            editor.snap = false
+                            val original = editor.project.duplicate()
+                            val index =
+                                MediaIndex(
+                                    AudioCache(File(targetContext.cacheDir, "timeline-audio"))
+                                ) {}
+                            val images = mutableListOf<Bitmap>()
+                            for ((i, clip) in
+                                editor.project.clips.distinctBy { it.path }.withIndex()) {
+                                val image = Bitmap.createBitmap(80, 45, Bitmap.Config.ARGB_8888)
+                                for (y in 0 until 45) for (x in 0 until 80) image.setPixel(
+                                    x,
+                                    y,
+                                    Color.rgb(
+                                        (x * 19 + i * 31) % 256,
+                                        (x * 7 + i * 71) % 256,
+                                        (x * 13 + i * 113) % 256,
+                                    ),
+                                )
+                                images.add(image)
+                                index.thumbnails[clip.path] = listOf(image)
+                                index.durations[clip.path] = 20.0
+                                index.waves[clip.path] = FloatArray(200) { .2f + (it % 7) / 10f }
+                            }
+                            val view =
+                                EditorView(
+                                    a,
+                                    editor,
+                                    index,
+                                    {},
+                                    { editor.cursor = it.coerceIn(0.0, 20.0) },
+                                )
+                            view.layout(0, 0, width, height)
+                            fun draw(): Bitmap =
+                                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
+                                    view.draw(Canvas(it))
+                                }
+                            val before = draw()
+                            val left = if (label == "portrait") 0 else 46
+                            val right = if (label == "portrait") 294 else 594
+                            val y = if (label == "portrait") 430 else 174
+                            val x = (left + right) / 2f + 40
+                            val now = android.os.SystemClock.uptimeMillis()
+                            var eventTime = now
+                            fun touch(action: Int, delta: Int) {
+                                eventTime += 16
+                                val event =
+                                    android.view.MotionEvent.obtain(
+                                        now,
+                                        eventTime,
+                                        action,
+                                        x - delta,
+                                        y.toFloat(),
+                                        0,
+                                    )
+                                view.dispatchTouchEvent(event)
+                                event.recycle()
+                            }
+                            try {
+                                touch(android.view.MotionEvent.ACTION_DOWN, 0)
+                                for (delta in listOf(8, 16, 24, 32, 24, 8, 0, -16)) {
+                                    touch(android.view.MotionEvent.ACTION_MOVE, delta)
+                                    val after = draw()
+                                    try {
+                                        var different = 0
+                                        var checked = 0
+                                        for (px in
+                                            max(left + 12, left - delta + 12) until
+                                                min(right - 12, right - delta - 12)) {
+                                            val center = (left + right) / 2
+                                            if (
+                                                abs(px - center) < 3 || abs(px + delta - center) < 3
+                                            )
+                                                continue
+                                            val expected = before.getPixel(px + delta, y)
+                                            val actual = after.getPixel(px, y)
+                                            if (
+                                                abs(Color.red(expected) - Color.red(actual)) > 25 ||
+                                                    abs(
+                                                        Color.green(expected) - Color.green(actual)
+                                                    ) > 25 ||
+                                                    abs(Color.blue(expected) - Color.blue(actual)) >
+                                                        25
+                                            )
+                                                different++
+                                            checked++
+                                        }
+                                        check(different <= 4) {
+                                            "$label $separateSources at $cursor: $different/$checked thumbnail pixels failed to translate by $delta"
+                                        }
+                                        check(editor.project == original) {
+                                            "Scrolling changed clip data"
+                                        }
+                                    } finally {
+                                        after.recycle()
+                                    }
+                                }
+                                touch(android.view.MotionEvent.ACTION_UP, -16)
+                                check(editor.project == original)
+                                check(
+                                    abs(editor.cursor - (cursor - 16.0 / (right - left) * 10)) <
+                                        .001
+                                )
+                            } finally {
+                                before.recycle()
+                                index.close()
+                                images.forEach { it.recycle() }
+                            }
+                        }
+                    }
+                }
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { onMain { it.finish() } }
         }
     }
 

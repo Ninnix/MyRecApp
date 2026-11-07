@@ -625,8 +625,8 @@ class EditorView(
                 if (!lane.audio) {
                     val list = index.thumbnails[clip.path]
                     if (!list.isNullOrEmpty()) {
-                        var x = max(timeline.left, left)
                         val tw = max(1f, (bottom - top) * list.first().width / list.first().height)
+                        var x = TimelineLayout.thumbnailStart(left, timeline.left, tw)
                         while (x < min(right, timeline.right)) {
                             val at =
                                 (start + (x - timeline.left) / timeline.width() * span -

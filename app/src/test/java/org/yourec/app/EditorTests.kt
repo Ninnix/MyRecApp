@@ -201,6 +201,19 @@ fun main() {
         near(TimelineLayout.start(14.0, 10.0, false), 9.0)
         near(TimelineLayout.start(14.0, 14.0, true), 0.0)
     }
+    test("partly clipped thumbnail tiles retain their clip origin when panning") {
+        near(TimelineLayout.thumbnailStart(20f, 0f, 50f).toDouble(), 20.0)
+        near(TimelineLayout.thumbnailStart(-120f, 0f, 50f).toDouble(), -20.0)
+        near(TimelineLayout.thumbnailStart(-152f, 0f, 50f).toDouble(), -2.0)
+        near(TimelineLayout.thumbnailStart(-120f, 46f, 50f).toDouble(), 30.0)
+        for (pan in -300..300 step 7) {
+            val left = 97f - pan
+            val first = TimelineLayout.thumbnailStart(left, 46f, 83.25f)
+            val tile = (first - left) / 83.25f
+            check(abs(tile - kotlin.math.round(tile)) < .0001f)
+            check(first <= maxOf(left, 46f) && first + 83.25f > 46f)
+        }
+    }
     test("video lanes precede audio lanes and skip empty tracks") {
         val e = fixture()
         e.project.clips.add(Clip(path = "other.mp4", sourceOut = 5.0, track = 2))

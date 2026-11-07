@@ -24,6 +24,7 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py --exports
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --speech
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --studio
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --orientation
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --timeline
 ```
 
 The runner installs the app and instrumentation APKs without clearing app data,
@@ -47,6 +48,10 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   and different source sizes in one encoded file, plus real front/rear switching
   in portrait and landscape with either camera first. Checks include audio/video
   timestamp alignment; playback dimensions alone do not prove upright content.
+* `--timeline`: rendered thumbnail pixels move together across split boundaries
+  when dragging in either direction, in portrait and landscape. Covers splits
+  from one source and adjacent clips from separate sources, and verifies that
+  scrolling leaves clip data unchanged.
 
 The latest local verification summary is kept in
 [artifacts/validation.json](../artifacts/validation.json). APKs, raw captures,
