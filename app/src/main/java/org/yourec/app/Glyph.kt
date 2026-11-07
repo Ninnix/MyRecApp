@@ -24,6 +24,23 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "Animate" -> {
+                p.strokeWidth = 1.7f
+                path(0f, -8f, 8f, 0f, 0f, 8f, -8f, 0f, 0f, -8f)
+            }
+            "Snap" -> {
+                path(0f, -7f, 0f, 7f)
+                path(-10f, 0f, -3f, 0f)
+                path(-6f, -4f, -2f, 0f, -6f, 4f)
+                path(10f, 0f, 3f, 0f)
+                path(6f, -4f, 2f, 0f, 6f, 4f)
+            }
+            "Listening" -> {
+                path(-8f, -3f, -4f, -3f, 1f, -7f, 1f, 7f, -4f, 3f, -8f, 3f, -8f, -3f)
+                c.drawArc(-6f, -4f, 6f, 4f, -55f, 110f, false, p)
+                c.drawArc(-9f, -7f, 9f, 7f, -55f, 110f, false, p)
+            }
+            "Unselected" -> c.drawCircle(0f, 0f, 6f, p)
             "Import" -> {
                 path(-6f, -2f, -6f, 7f, 6f, 7f, 6f, -2f)
                 path(0f, -8f, 0f, 3f)

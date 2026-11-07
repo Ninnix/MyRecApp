@@ -347,6 +347,60 @@ class Panels(private val a: MainActivity) {
         return sw
     }
 
+    private fun settingCard(
+        title: String,
+        kind: String,
+        value: Boolean,
+        label: String = title,
+        changed: (Boolean) -> Unit,
+    ): LinearLayout {
+        var checked = value
+        val card =
+            column().apply {
+                pad(this, 8f)
+                contentDescription = title
+                isFocusable = true
+                background =
+                    shape(Color.rgb(31, 31, 31), 11f).apply {
+                        setStroke(max(1, px(.65f)), Color.rgb(112, 112, 114))
+                    }
+            }
+        val top = row()
+        top.addView(Glyph(a, kind, Color.WHITE), LinearLayout.LayoutParams(px(18f), -1))
+        top.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
+        val mark = FrameLayout(a)
+        top.addView(mark, LinearLayout.LayoutParams(px(11f), px(11f)))
+        val state = text("", 7f)
+        top.addView(state, LinearLayout.LayoutParams(-2, -1).apply { leftMargin = px(4f) })
+        add(card, top, 18f)
+        space(card, 5f)
+        add(card, text(label, 9f).apply { gravity = Gravity.TOP }, 28f)
+        fun update() {
+            state.text = if (checked) "On" else "Off"
+            mark.removeAllViews()
+            mark.addView(Glyph(a, if (checked) "Selected" else "Unselected", Color.WHITE))
+        }
+        update()
+        card.accessibilityDelegate =
+            object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(
+                    host: View,
+                    info: android.view.accessibility.AccessibilityNodeInfo,
+                ) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = "android.widget.Switch"
+                    info.isCheckable = true
+                    info.isChecked = checked
+                }
+            }
+        card.setOnClickListener {
+            checked = !checked
+            update()
+            changed(checked)
+        }
+        return card
+    }
+
     fun close(refresh: Boolean = true) {
         panel?.let { a.root.removeView(it) }
         panel = null
@@ -1163,18 +1217,23 @@ class Panels(private val a: MainActivity) {
         button(content, "Auto captions", Effects.color("Text")) { captions() }
         label(content, "Settings")
         val settings = row()
-        val snap = column()
-        pad(snap, 8f)
-        snap.background = shape(Color.rgb(30, 30, 32))
-        toggle(snap, "Snap to cuts", editor.snap) { editor.snap = it }
-        hint(snap, "Align with editing events")
-        val loud = column()
-        pad(loud, 8f)
-        loud.background = shape(Color.rgb(30, 30, 32))
-        toggle(loud, "Match listening levels", editor.matchLoudness) { editor.matchLoudness = it }
-        hint(loud, "Match preview volume")
-        settings.addView(snap, LinearLayout.LayoutParams(0, -2, 1f))
-        settings.addView(loud, LinearLayout.LayoutParams(0, -2, 1f))
+        settings.weightSum = if (landscape) 4f else 2f
+        if (landscape) settings.setPadding(0, 0, px(16f), 0)
+        settings.addView(
+            settingCard("Snap to cuts", "Snap", editor.snap) { editor.snap = it },
+            LinearLayout.LayoutParams(0, px(72f), 1f).apply { rightMargin = px(8f) },
+        )
+        settings.addView(
+            settingCard(
+                "Match listening levels",
+                "Listening",
+                editor.matchLoudness,
+                "Match listening\nlevels",
+            ) {
+                editor.matchLoudness = it
+            },
+            LinearLayout.LayoutParams(0, px(72f), 1f),
+        )
         add(content, settings)
     }
 
@@ -2096,18 +2155,26 @@ class Panels(private val a: MainActivity) {
         val orange = Color.rgb(240, 137, 35)
         val actions = row()
         actions.translationY = if (landscape) -px(4f).toFloat() else 0f
+        actions.translationX = if (landscape) px(2f).toFloat() else 0f
         val animate =
-            text("◇ Animate", 8f, orange).apply {
-                gravity = Gravity.CENTER
-                background = shape(Color.rgb(38, 29, 20), 15f)
+            row().apply {
+                contentDescription = "Animate"
+                background = shape(Color.rgb(32, 32, 32), 16f)
+                setPadding(px(8f), 0, px(8f), 0)
             }
+        val gold = Color.rgb(200, 135, 66)
+        animate.addView(Glyph(a, "Animate", gold), LinearLayout.LayoutParams(px(12f), px(14f)))
+        animate.addView(
+            text("Animate", 7f, gold),
+            LinearLayout.LayoutParams(-2, -1).apply { leftMargin = px(6f) },
+        )
         animate.setOnClickListener {
             a.choose("Animate", listOf("Off", "Fade in", "Fade out", "Fade in and out")) {
                 fx.values["animate"] = it.toString()
                 renderDraft()
             }
         }
-        actions.addView(animate, LinearLayout.LayoutParams(px(78f), px(32f)))
+        actions.addView(animate, LinearLayout.LayoutParams(px(71f), px(32f)))
         val power =
             object : View(a) {
                     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -2136,7 +2203,7 @@ class Panels(private val a: MainActivity) {
         }
         actions.addView(
             power,
-            LinearLayout.LayoutParams(px(34f), px(34f)).apply { leftMargin = px(6f) },
+            LinearLayout.LayoutParams(px(32f), px(32f)).apply { leftMargin = px(6f) },
         )
         add(parent, actions, 41f)
         slider(parent, "Intensity", fx.number("strength", 1f), 0f, 1f, color = orange) {

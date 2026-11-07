@@ -36,7 +36,8 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   export, camera switching, pause/resume, actual AF lock state, microphone names
   and portrait recording.
 * `--parity`: portrait/landscape panels, drafts, cancellation, rotation,
-  placement, volume removal, slider input and timeline workflows. The name
+  placement, volume removal, slider input and timeline workflows. Includes
+  Settings card label bounds and toggles, plus Animate button layout. The name
   denotes the UI suite; passing it is not a pixel-equality comparison.
 * `--exports`: transition frames, person-isolation ranges, 720p/1080p/4K output
   and a longer multitrack export.

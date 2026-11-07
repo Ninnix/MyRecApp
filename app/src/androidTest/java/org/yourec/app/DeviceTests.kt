@@ -1683,6 +1683,7 @@ class DeviceTests : Instrumentation() {
                     listOf<Pair<String, () -> Unit>>(
                         "projects" to { a.panels.projects() },
                         "tools" to { a.panels.tools() },
+                        "settings" to { a.panels.tools() },
                         "text" to
                             {
                                 a.panels.effect(
@@ -1816,6 +1817,57 @@ class DeviceTests : Instrumentation() {
                     val before = a.editor.project.duplicate()
                     onMain { open() }
                     Thread.sleep(300)
+                    if (name == "settings") {
+                        onMain {
+                            val scroll =
+                                findView(a.root) { it is android.widget.ScrollView }!!
+                                    as android.widget.ScrollView
+                            scroll.fullScroll(android.view.View.FOCUS_DOWN)
+                            for (title in listOf("Snap to cuts", "Match listening levels")) {
+                                val card = findView(a.root) { it.contentDescription == title }!!
+                                val text =
+                                    findView(card) {
+                                        it is android.widget.TextView &&
+                                            it.text.toString().replace('\n', ' ') == title
+                                    }!!
+                                        as android.widget.TextView
+                                check(
+                                    text.layout.lineCount <= 2 && text.layout.height <= text.height
+                                ) {
+                                    "$title is clipped"
+                                }
+                                for (line in 0 until text.layout.lineCount) check(
+                                    text.layout.getLineRight(line) <= text.width + 1
+                                )
+                                val original =
+                                    if (title == "Snap to cuts") a.editor.snap
+                                    else a.editor.matchLoudness
+                                card.performClick()
+                                check(
+                                    (if (title == "Snap to cuts") a.editor.snap
+                                    else a.editor.matchLoudness) != original
+                                )
+                                card.performClick()
+                                check(
+                                    (if (title == "Snap to cuts") a.editor.snap
+                                    else a.editor.matchLoudness) == original
+                                )
+                            }
+                        }
+                        Thread.sleep(150)
+                    }
+                    if (name == "quantization")
+                        onMain {
+                            val animate = findView(a.root) { it.contentDescription == "Animate" }!!
+                            check(findView(animate) { it is Glyph } != null)
+                            val label =
+                                findView(animate) { it is android.widget.TextView }!!
+                                    as android.widget.TextView
+                            check(
+                                label.layout.lineCount == 1 &&
+                                    label.layout.getLineRight(0) <= label.width + 1
+                            )
+                        }
                     screenshot("$label-$name", a, name == "quantization-palette")
                     onMain {
                         if (name == "quantization-palette") a.onBackPressed()
