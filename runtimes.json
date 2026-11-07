@@ -1,0 +1,24 @@
+{
+  "rnnoise": {
+    "url": "https://github.com/xiph/rnnoise",
+    "revision": "cdf196b1e9de2f8ff1003328ebf9a4316477429d",
+    "tag": "v0.1",
+    "directory": "rnnoise-0.1",
+    "archive": "https://codeload.github.com/xiph/rnnoise/tar.gz/refs/tags/v0.1",
+    "sha256": "488f6d6eb5f021f18e14fd194150b264bd1798b24f3ac8d54a778ab95aebff61"
+  },
+  "qwen-asr": {
+    "url": "https://github.com/antirez/qwen-asr",
+    "revision": "924694251d9e0f18e5d86bbd06aa3ab5f870002d",
+    "directory": "qwen-asr-main",
+    "archive": "https://codeload.github.com/antirez/qwen-asr/tar.gz/924694251d9e0f18e5d86bbd06aa3ab5f870002d",
+    "sha256": "c197e4381a14019f254b910260fdbae08ea28fdfb7ec3003dbf22560f37f839f"
+  },
+  "onnxruntime": {
+    "url": "https://github.com/microsoft/onnxruntime",
+    "version": "1.31.1",
+    "directory": "onnxruntime-current",
+    "archive": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.31.1/onnxruntime-android-1.31.1.aar",
+    "sha256_arm64": "46e0c16cd515c62a1dd6c5994448b5413705478354bc20a756a5a82634c3ca03"
+  }
+}

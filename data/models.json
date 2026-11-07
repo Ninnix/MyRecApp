@@ -1,0 +1,44 @@
+{
+  "person": {
+    "pin": "2027dd2f5a8a5746b5d4964900a0465afc6d3a53",
+    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/2027dd2f5a8a5746b5d4964900a0465afc6d3a53/models/human_segmentation_pphumanseg/human_segmentation_pphumanseg_2023mar.onnx",
+    "bytes": 6163938,
+    "sha256": "552d8a984054e59b5d773d24b9b12022b22046ceb2bbc4c9aaeaceb36a9ddf24",
+    "license": "Apache-2.0"
+  },
+  "studio": {
+    "version": "lava-v1-c-1",
+    "files": [
+      {
+        "name": "enhancer_backbone.onnx",
+        "url": "https://github.com/Topping1/LavaSR-ONNX/releases/download/Alpha-v0.1/enhancer_backbone.onnx",
+        "bytes": 190195,
+        "sha256": "841e96d261dffdf1dc974f3d29e2cfcf1b16fd0b358749c1ace0bbfa1d4c8ddd"
+      },
+      {
+        "name": "enhancer_backbone.onnx.data",
+        "url": "https://github.com/Topping1/LavaSR-ONNX/releases/download/Alpha-v0.1/enhancer_backbone.onnx.data",
+        "bytes": 51773440,
+        "sha256": "a125a4ede7cfdd1073d906a3cadf2171a30be6a40f296ad28772e0ba258de8c5"
+      },
+      {
+        "name": "enhancer_spec_head.onnx",
+        "url": "https://github.com/Topping1/LavaSR-ONNX/releases/download/Alpha-v0.1/enhancer_spec_head.onnx",
+        "bytes": 7484,
+        "sha256": "f66fd164c55fd1b07e5cea5e687c71522b192f452691128fd7ae4e6b26dbc683"
+      },
+      {
+        "name": "enhancer_spec_head.onnx.data",
+        "url": "https://github.com/Topping1/LavaSR-ONNX/releases/download/Alpha-v0.1/enhancer_spec_head.onnx.data",
+        "bytes": 4263936,
+        "sha256": "b855e309b027af9aa75285b97b345571b6bd695a30fde434d06c979d83885fd6"
+      }
+    ]
+  },
+  "captions": {
+    "revision": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+    "url": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/",
+    "bytes": 1876091704,
+    "sha256": "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea"
+  }
+}

@@ -1,0 +1,21 @@
+# Privacy
+
+YouRec processes recordings, images, audio and captions locally. It has no
+advertising or analytics SDK and does not upload media for inference.
+
+Projects and preferences use Android app storage. Downloaded model files use
+the app's external-files directory. Processing files use app cache storage.
+Exports are saved through Android's media library in `Movies/YouRec`.
+
+Camera and microphone permissions are used for capture. Bluetooth access supports
+accessory routing. Media import uses the system picker; sharing sends the
+selected export to the app you choose.
+
+Optional model downloads contact Hugging Face, GitHub and their delivery
+providers. These services receive ordinary network request information such as
+an IP address. Recordings and transcripts are not included in model requests.
+Development preparation tools also contact runtime source hosts and Maven.
+
+Uninstalling the app removes its private data and model storage. Shared media
+exports remain in the Android media library. Original imported media is not
+deleted when an edit is removed.
