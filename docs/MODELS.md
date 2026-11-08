@@ -16,14 +16,23 @@ footage validation. The model does not identify a person or send frames away.
 
 ## Studio clarity
 
-Studio clarity uses LavaSR V1 speech restoration and bandwidth extension. Its
+Studio clarity uses LavaSR v2 speech restoration and bandwidth extension. Its
 four files total about 56 MB. The C11 waveform pipeline includes the mel
 frontend, neural backbone and spectral head, inverse transform and crossover.
 
+All 80 learned parameter tensors (13,985,282 parameters) in the pinned ONNX
+graphs match the public [LavaSR v2 checkpoint](https://huggingface.co/YatharthS/LavaSR/tree/b98dc8be472da45ab7b6346ad7997e1dfeb5911d/enhancer_v2)
+exactly, allowing the linear-weight transposes used by ONNX. The older `v1`
+cache names identify our first integration; they do not identify upstream
+LavaSR v1. Cache names remain unchanged to preserve installed downloads.
+
 Playback prepares overlapping blocks and caches audio. Clip speed, transition
-fades, effect ranges, strength and filter order remain part of processing. The
-model is independent of the original iOS app's microphone model; it is not a
-verified response match for a particular studio microphone.
+fades, effect ranges, strength and filter order remain part of processing.
+
+The newer iOS reference also lists VoiceFixer and DeepFilterNet3. Neither is
+integrated here: RNNoise provides noise reduction, and LavaSR provides the
+current Studio clarity effect. Matching public LavaSR weights does not prove
+the same iOS preprocessing, strength curves or output.
 
 Adding Studio clarity offers the download. For development installation:
 

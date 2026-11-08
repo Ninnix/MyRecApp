@@ -216,5 +216,14 @@
     "original_clip_records_and_sources_unchanged": true,
     "additional_user_project_clips_preserved": 3,
     "note": "Supersedes earlier comparisons between two recordings, which did not establish absolute upright orientation."
+  },
+  "model_provenance_audit": {
+    "date": "2026-11-08T14:53:31.406430+00:00",
+    "model": "LavaSR v2",
+    "upstream_revision": "b98dc8be472da45ab7b6346ad7997e1dfeb5911d",
+    "upstream_checkpoint_sha256": "d100db961b2c125d77a52a12215c689e44cd9926a72f117513395b7e25e6de12",
+    "exact_learned_tensors": 80,
+    "exact_learned_parameters": 13985282,
+    "scope": "Installed ONNX learned parameter values match the public upstream v2 checkpoint. This is not a comparison with packaged iOS model weights or iOS waveform processing."
   }
 }

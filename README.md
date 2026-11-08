@@ -47,7 +47,7 @@ Studio clarity offer their model downloads when needed. See the
 | --- | --- | --- |
 | RNNoise | Voice isolation | Included |
 | PPHumanSeg | Keep people in color | Included, 5.9 MB |
-| LavaSR V1 | Studio clarity | 56 MB |
+| LavaSR v2 | Studio clarity | 56 MB |
 | Qwen3 ASR · 0.6B | Offline captions | 1.9 GB |
 
 Inference runs on the CPU through C APIs. Downloads are separate from your

@@ -33,7 +33,15 @@
         "bytes": 4263936,
         "sha256": "b855e309b027af9aa75285b97b345571b6bd695a30fde434d06c979d83885fd6"
       }
-    ]
+    ],
+    "upstream": {
+      "model": "LavaSR v2",
+      "revision": "b98dc8be472da45ab7b6346ad7997e1dfeb5911d",
+      "checkpoint": "https://huggingface.co/YatharthS/LavaSR/resolve/b98dc8be472da45ab7b6346ad7997e1dfeb5911d/enhancer_v2/pytorch_model.bin",
+      "sha256": "d100db961b2c125d77a52a12215c689e44cd9926a72f117513395b7e25e6de12",
+      "verified_learned_tensors": 80,
+      "verified_learned_parameters": 13985282
+    }
   },
   "captions": {
     "revision": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
