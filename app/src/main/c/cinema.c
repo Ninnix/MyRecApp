@@ -7,6 +7,13 @@
 
 static float clamp(float v, float lo, float hi) { return fminf(hi, fmaxf(lo, v)); }
 
+static float reflect(float value, int length) {
+    if (length <= 1) return 0;
+    float edge = length - 1;
+    value = fmodf(fabsf(value), 2 * edge);
+    return value <= edge ? value : 2 * edge - value;
+}
+
 static void sample(const uint8_t *src, int stride, int width, int height, float x, float y,
                    float out[3]) {
     x = clamp(x, 0, width - 1);
@@ -36,21 +43,64 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_kaleidoscope(
     if (!source) { AndroidBitmap_unlockPixels(env, bitmap); return; }
     memcpy(source, pixels, bytes);
     const float pi = 3.14159265358979323846f;
-    float sector = 2 * pi / clamp((float)segments, 2, 24);
-    float angle = rotation * pi / 180;
-    float cx = info.width * clamp(center_x, 0, 1);
-    float cy = info.height * clamp(center_y, 0, 1);
+    /* A period contains two mirrored sections. Keep the source wedge above
+     * the center, where a centered subject is, rather than at the right edge. */
+    float sector = 4 * pi / clamp((float)segments, 2, 24);
+    float angle = rotation * pi / 180 - pi / 2 - sector / 4;
+    float cx = (info.width - 1) * clamp(center_x, 0, 1);
+    float cy = (info.height - 1) * clamp(center_y, 0, 1);
+    float ox = (info.width - 1) * .5f, oy = (info.height - 1) * .5f;
+    float turn = rotation * pi / 180, cs = cosf(turn), sn = sinf(turn);
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
-        float dx = x - cx, dy = y - cy;
-        float radius = hypotf(dx, dy) / fmaxf(.1f, zoom);
-        float theta = fmodf(atan2f(dy, dx) - angle + 4 * pi, sector);
-        theta = fminf(theta, sector - theta) + angle;
+        float dx = x - ox, dy = y - oy;
+        float scale = fmaxf(.1f, zoom), sx, sy;
+        if (segments == 4) {
+            /* Four-way mirroring keeps complete subjects in a 2x2 layout. */
+            float tile_scale = scale * (5.f / 3);
+            sx = cx + (ox - 2 * fabsf(dx * cs + dy * sn)) / tile_scale;
+            sy = cy + (oy * .5f - 2 * fabsf(dy * cs - dx * sn)) / tile_scale;
+        } else {
+            float radius = hypotf(dx, dy) / scale;
+            float theta = fmodf(atan2f(dy, dx) - angle + 8 * pi, sector);
+            theta = fminf(theta, sector - theta) + angle;
+            sx = cx + radius * cosf(theta);
+            sy = cy + radius * sinf(theta);
+        }
         float rgb[3];
         sample(source, info.stride, info.width, info.height,
-               cx + radius * cosf(theta), cy + radius * sinf(theta), rgb);
+               reflect(sx, info.width), reflect(sy, info.height), rgb);
         uint8_t *out = pixels + y * info.stride + x * 4;
         for (int c = 0; c < 3; c++)
             out[c] = (uint8_t)clamp(out[c] + strength * (rgb[c] - out[c]), 0, 255);
+    }
+    free(source);
+    AndroidBitmap_unlockPixels(env, bitmap);
+}
+
+JNIEXPORT void JNICALL Java_org_yourec_app_Native_rgbOffset(
+    JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat distance, jfloat angle) {
+    (void)self;
+    AndroidBitmapInfo info;
+    uint8_t *pixels;
+    if (strength <= 0 || distance <= 0 || AndroidBitmap_getInfo(env, bitmap, &info) ||
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
+        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels)) return;
+    size_t bytes = (size_t)info.stride * info.height;
+    uint8_t *source = malloc(bytes);
+    if (!source) { AndroidBitmap_unlockPixels(env, bitmap); return; }
+    memcpy(source, pixels, bytes);
+    float radius = fminf(info.width, info.height) * clamp(distance, 0, .25f);
+    float dx = radius * cosf(angle * .01745329252f);
+    float dy = radius * sinf(angle * .01745329252f);
+    for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
+        float magenta[3], green[3];
+        sample(source, info.stride, info.width, info.height, x - dx, y - dy, magenta);
+        sample(source, info.stride, info.width, info.height, x + dx, y + dy, green);
+        uint8_t *out = pixels + y * info.stride + x * 4;
+        for (int c = 0; c < 3; c++) {
+            float value = c == 1 ? green[c] : magenta[c];
+            out[c] = (uint8_t)clamp(out[c] + strength * (value - out[c]), 0, 255);
+        }
     }
     free(source);
     AndroidBitmap_unlockPixels(env, bitmap);

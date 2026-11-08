@@ -48,6 +48,10 @@ class EditorView(
     private var moved = false
     private var downTime = 0L
     private var downCursor = 0.0
+    private var chipScroll = 0f
+    private var chipLimit = 0f
+    private var downChipScroll = 0f
+    private var chipBounds = RectF()
     private var downGain = 0f
     private var gainChanged = false
     private var audioGesture = false
@@ -410,14 +414,14 @@ class EditorView(
         icon(canvas, "add", addX, addY, 5f)
         hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addVideo")
         drawTimeline(canvas)
-        val fxY = timeline.bottom + 12f
+        val fxY = timeline.bottom + 22f
         val hasChips = drawSelection(canvas, fxY)
-        if (editor.selected.isEmpty() && editor.range == null) {
+        if (editor.selected.isEmpty() && editor.range == null && !hasChips) {
             text(
                 canvas,
                 "Scroll to scrub · pinch to zoom",
                 timeline.left + 5,
-                if (hasChips) fxY + 23f else if (landscape) 261f else 518f,
+                if (landscape) 261f else 518f,
                 8f,
                 grey,
             )
@@ -811,6 +815,7 @@ class EditorView(
 
     private fun drawSelection(c: Canvas, y: Float): Boolean {
         var x = timeline.left + 4
+        chipBounds.setEmpty()
         if (moving) {
             val offset = (editor.targets().minOfOrNull { it.start } ?: movingOrigin) - movingOrigin
             text(
@@ -868,6 +873,28 @@ class EditorView(
                         clip.effects.filter { it.active(editor.cursor - clip.start) }
                     }
                     .distinctBy { it.kind }
+            val left = if (landscape) timeline.left + 4 else 8f
+            val right = if (landscape) timeline.right else bw - 8f
+            chipScroll = chipScroll.coerceIn(0f, chipLimit)
+            x = left - chipScroll
+            c.save()
+            c.clipRect(left, y - 17, right, y + 17)
+            fun chip(title: String, color: Int, id: String, symbol: String? = null) {
+                p.textSize = 11f
+                val width = p.measureText(title) + if (symbol == null) 24 else 39
+                val bounds = RectF(x, y - 17, x + width, y + 17)
+                rect(
+                    c,
+                    bounds,
+                    Color.argb(35, Color.red(color), Color.green(color), Color.blue(color)),
+                    17f,
+                )
+                if (symbol != null) icon(c, symbol, x + 13, y, 7f, color)
+                text(c, title, x + if (symbol == null) 12 else 27, y + 4, 11f, color)
+                val touch = RectF(bounds)
+                if (touch.intersect(left, y - 17, right, y + 17)) hit(touch, id)
+                x += width + 5
+            }
             for (fx in active) {
                 val title =
                     when (fx.kind) {
@@ -876,39 +903,14 @@ class EditorView(
                         "Color LUTs" -> fx.values["lut"] ?: "Natural"
                         else -> fx.kind
                     }
-                p.textSize = 8f
-                val w = p.measureText(title).coerceAtMost(90f) + 17
-                val r = RectF(x, y - 9, x + w, y + 9)
-                rect(
-                    c,
-                    r,
-                    Color.argb(
-                        35,
-                        Color.red(Effects.color(fx.kind)),
-                        Color.green(Effects.color(fx.kind)),
-                        Color.blue(Effects.color(fx.kind)),
-                    ),
-                    9f,
-                )
-                text(c, title.take(24), x + 8, y + 3, 8f, Effects.color(fx.kind))
-                hit(r, "effect:${fx.id}")
-                x += w + 4
+                chip(title.take(24), Effects.color(fx.kind), "effect:${fx.id}")
             }
             val gain =
                 editor.project.clips.firstOrNull {
                     it.audio && it.contains(editor.cursor) && it.gainDb != 0f
                 }
-            if (gain != null) {
-                val title = "%+.1f dB".format(java.util.Locale.US, gain.gainDb)
-                p.textSize = 8f
-                val width = p.measureText(title) + 25
-                val bounds = RectF(x, y - 9, x + width, y + 9)
-                rect(c, bounds, Color.rgb(14, 35, 33), 9f)
-                icon(c, "volume", x + 9, y, 5f, cyan)
-                text(c, title, x + 18, y + 3, 8f, cyan)
-                hit(bounds, "volume")
-                x += width + 4
-            }
+            if (gain != null)
+                chip("%+.1f dB".format(java.util.Locale.US, gain.gainDb), cyan, "volume", "volume")
             val tr =
                 editor.project.transitions.firstOrNull {
                     abs(it.at - editor.cursor) < max(0.2, it.duration)
@@ -917,27 +919,21 @@ class EditorView(
                 editor.project.clips.any {
                     abs(it.start - editor.cursor) < .08 || abs(it.end - editor.cursor) < .08
                 }
-            if (tr != null || boundary && editor.project.clips.isNotEmpty()) {
-                val title = tr?.kind ?: "Transition"
-                p.textSize = 8f
-                val w = p.measureText(title) + 18
-                val r = RectF(x, y - 9, x + w, y + 9)
-                rect(c, r, Color.rgb(39, 25, 14), 9f)
-                text(c, title, x + 8, y + 3, 8f, Color.rgb(222, 137, 46))
-                hit(r, "transition")
-            }
-            if (previousPosition != null) {
-                text(
-                    c,
-                    "Back to ${timeLabel(previousPosition!!)}",
-                    bw - 10,
-                    y + 4,
-                    8f,
-                    red,
-                    Paint.Align.RIGHT,
+            if (tr != null || boundary && editor.project.clips.isNotEmpty())
+                chip(
+                    tr?.kind ?: "Transition",
+                    Color.rgb(222, 137, 46),
+                    "transition",
+                    if (tr == null) "add" else null,
                 )
-                hit(RectF(bw - 100, y - 11, bw, y + 13), "backPoint")
+            previousPosition?.let { chip("Back to ${timeLabel(it)}", red, "backPoint") }
+            c.restore()
+            chipLimit = max(0f, x + chipScroll - 5 - right)
+            if (chipScroll > chipLimit) {
+                chipScroll = chipLimit
+                invalidate()
             }
+            if (x + chipScroll > left) chipBounds.set(left, y - 17, right, y + 17)
             return active.isNotEmpty() ||
                 gain != null ||
                 tr != null ||
@@ -958,6 +954,7 @@ class EditorView(
                 downTime = event.eventTime
                 moved = false
                 downCursor = editor.cursor
+                downChipScroll = chipScroll
                 gainChanged = false
                 gestureClip = clipAt(x, y)
                 audioGesture = lanes.any { it.audio && y - timeline.top in it.top..it.bottom }
@@ -976,7 +973,10 @@ class EditorView(
                 val dx = x - downX
                 val dy = y - downY
                 if (abs(dx) + abs(dy) > 3) moved = true
-                if (timeline.contains(downX, downY) && moved) {
+                if (chipBounds.contains(downX, downY) && moved) {
+                    chipScroll = (downChipScroll - dx).coerceIn(0f, chipLimit)
+                    invalidate()
+                } else if (timeline.contains(downX, downY) && moved) {
                     if (rangeHandle != 0) {
                         val range = editor.range ?: return true
                         val t =

@@ -587,8 +587,8 @@ class Panels(private val a: MainActivity) {
 
     fun relayout() {
         if (panel == null) return
-        if (title == "Projects") {
-            projects()
+        if (title == "Projects" || title == "Recently deleted") {
+            projects(title == "Recently deleted")
             return
         }
         val oldBody = body ?: return
@@ -933,23 +933,32 @@ class Panels(private val a: MainActivity) {
         return first..last
     }
 
-    fun projects() {
+    private fun privacy() {
+        val message = a.assets.open("privacy.txt").bufferedReader().use { it.readText() }
+        android.app.AlertDialog.Builder(a, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle("Privacy policy")
+            .setMessage(message)
+            .setPositiveButton("Done", null)
+            .show()
+    }
+
+    fun projects(deleted: Boolean = false) {
         close(false)
-        title = "Projects"
+        title = if (deleted) "Recently deleted" else "Projects"
         val width = a.root.width.takeIf { it > 0 } ?: a.resources.displayMetrics.widthPixels
         val height = a.root.height.takeIf { it > 0 } ?: a.resources.displayMetrics.heightPixels
         landscape = width > height
         factor = min(width / if (landscape) 640f else 294f, height / if (landscape) 294f else 640f)
         val root =
             FrameLayout(a).apply {
-                setBackgroundColor(Color.rgb(9, 10, 12))
+                setBackgroundColor(Color.rgb(17, 17, 19))
                 isClickable = true
             }
         panel = root
         a.root.addView(root, FrameLayout.LayoutParams(-1, -1))
         val body = column()
         root.addView(body, FrameLayout.LayoutParams(-1, -1))
-        if (!landscape) space(body, 40f)
+        if (!landscape) space(body, 1f)
         val scroll = ScrollView(a).apply { isVerticalScrollBarEnabled = false }
         val content = column()
         content.setPadding(
@@ -979,16 +988,32 @@ class Panels(private val a: MainActivity) {
         )
         heading.addView(text("PROJECTS", 6f, MUTED), LinearLayout.LayoutParams(-2, px(46f)))
         add(content, heading, 46f)
-        add(content, text("Pick up where you left off.", 12f, Color.WHITE, true), 34f)
-        fun pill(label: String, background: Int, color: Int, click: () -> Unit): View =
+        add(
+            content,
+            text(
+                    if (deleted) "Recently deleted" else "Pick up where you left off.",
+                    12f,
+                    Color.WHITE,
+                    true,
+                )
+                .apply { typeface = Typeface.create("sans-serif-black", Typeface.NORMAL) },
+            34f,
+        )
+        fun pill(label: String, background: Int, color: Int, click: () -> Unit): LinearLayout =
             row().apply {
                 gravity = Gravity.CENTER
-                this.background = shape(background, 16f)
+                this.background =
+                    shape(
+                        background,
+                        if (label == "Continue recording" || label.contains("Edit")) 21f else 16f,
+                    )
                 setOnClickListener { click() }
                 contentDescription = label
                 val kind =
                     when {
                         label.contains("Import") -> "Import"
+                        label == "Privacy policy" -> "Privacy"
+                        label.startsWith("Recently deleted") -> "Delete"
                         label.contains("Edit") -> "Edit"
                         else -> null
                     }
@@ -998,7 +1023,7 @@ class Panels(private val a: MainActivity) {
                         LinearLayout.LayoutParams(px(14f), px(16f)).apply { rightMargin = px(4f) },
                     )
                 addView(
-                    text(if (kind == null) label else kind, 10f, color),
+                    text(label.removePrefix("⇩ ").removePrefix("☷ "), 10f, color),
                     LinearLayout.LayoutParams(-2, -1),
                 )
             }
@@ -1019,31 +1044,54 @@ class Panels(private val a: MainActivity) {
             },
             LinearLayout.LayoutParams(px(75f), px(28f)),
         )
-        add(content, actions, 38f)
-        space(content, 5f)
+        if (!deleted) {
+            add(content, actions, 32f)
+            space(content, 13f)
+            add(
+                content,
+                pill("Privacy policy", Color.TRANSPARENT, RED) { privacy() }
+                    .apply { gravity = Gravity.LEFT or Gravity.CENTER_VERTICAL },
+                30f,
+            )
+            space(content, 15f)
+        } else {
+            add(content, pill("‹ Projects", Color.TRANSPARENT, RED) { projects() }, 32f)
+            space(content, 10f)
+        }
         val thumbnails = mutableListOf<() -> Unit>()
-        for (project in a.store.list()) {
+        for (project in if (deleted) a.store.recentlyDeleted() else a.store.list()) {
             val card =
                 column().apply {
-                    background = shape(Color.rgb(22, 22, 30), 15f)
+                    background = shape(Color.rgb(27, 27, 31), 15f)
                     setPadding(px(14f), px(14f), px(14f), px(14f))
                     setOnClickListener {
-                        a.openProject(project)
-                        projects()
+                        if (!deleted) {
+                            a.openProject(project)
+                            projects()
+                        }
                     }
                 }
             val details = row()
             val thumbnail =
                 ImageView(a).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
-                    background = shape(Color.rgb(33, 33, 38), 6f)
+                    background = shape(Color.BLACK, 6f)
+                    setImageDrawable(null)
                     clipToOutline = true
                 }
-            details.addView(thumbnail, LinearLayout.LayoutParams(px(46f), px(42f)))
+            val image = FrameLayout(a)
+            image.addView(thumbnail, FrameLayout.LayoutParams(-1, -1))
+            if (project.clips.none { it.video })
+                image.addView(
+                    Glyph(a, "Film", MUTED),
+                    FrameLayout.LayoutParams(px(20f), px(24f), Gravity.CENTER),
+                )
+            details.addView(image, LinearLayout.LayoutParams(px(46f), px(42f)))
             val name =
-                text("${project.name} ⤢", 10f).apply {
+                text(project.name, 10f, Color.WHITE, true).apply {
+                    typeface = Typeface.create("sans-serif-black", Typeface.NORMAL)
                     setPadding(px(6f), 0, 0, 0)
-                    maxLines = 1
+                    maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }
             fun rename() {
@@ -1068,18 +1116,44 @@ class Panels(private val a: MainActivity) {
                     }
                     .show()
             }
-            name.setOnClickListener { rename() }
+            if (!deleted) name.setOnClickListener { rename() }
             details.addView(name, LinearLayout.LayoutParams(0, px(42f), 1f))
-            details.addView(
-                Glyph(
-                    a,
-                    if (editor.project.id == project.id) "Selected" else "Record",
-                    if (editor.project.id == project.id) Color.rgb(44, 205, 85) else MUTED,
-                ),
-                LinearLayout.LayoutParams(px(20f), px(42f)),
-            )
-            val menu = text("···", 15f, RED).apply { gravity = Gravity.CENTER }
+            if (!deleted)
+                details.addView(
+                    Glyph(a, "Rename", MUTED).apply { setOnClickListener { rename() } },
+                    LinearLayout.LayoutParams(px(15f), px(30f)).apply { rightMargin = px(6f) },
+                )
+            if (!deleted)
+                details.addView(
+                    Glyph(
+                        a,
+                        if (editor.project.id == project.id) "Selected" else "Record",
+                        if (editor.project.id == project.id) Color.rgb(44, 205, 85)
+                        else Color.TRANSPARENT,
+                    ),
+                    LinearLayout.LayoutParams(px(20f), px(42f)),
+                )
+            val menu =
+                Glyph(a, "More", RED).apply { contentDescription = "Options for ${project.name}" }
             menu.setOnClickListener {
+                if (deleted) {
+                    a.choose(project.name, listOf("Restore", "Delete permanently")) { action ->
+                        if (action == 0) {
+                            a.store.restore(project)
+                            projects(true)
+                        } else
+                            a.choose(
+                                "Delete permanently?",
+                                listOf("Delete permanently", "Cancel"),
+                            ) {
+                                if (it == 0) {
+                                    a.store.erase(project)
+                                    projects(true)
+                                }
+                            }
+                    }
+                    return@setOnClickListener
+                }
                 a.choose(project.name, listOf("Rename", "Duplicate", "Delete")) { action ->
                     when (action) {
                         0 -> rename()
@@ -1102,12 +1176,12 @@ class Panels(private val a: MainActivity) {
                     }
                 }
             }
-            details.addView(menu, LinearLayout.LayoutParams(px(30f), px(42f)))
+            details.addView(menu, LinearLayout.LayoutParams(px(28f), px(24f)))
             add(card, details, 42f)
             add(
                 card,
                 text(
-                    "${project.clips.map { it.path }.distinct().size} source takes · ${timeLabel(project.duration, false)} edited",
+                    "${project.clips.map { it.path }.distinct().size.let { "$it ${if (it == 1) "take" else "takes"}" }} · ${timeLabel(project.duration, false)} edited",
                     8f,
                     MUTED,
                 ),
@@ -1121,16 +1195,25 @@ class Panels(private val a: MainActivity) {
                     a.openProject(project)
                     a.showCapture()
                 },
-                LinearLayout.LayoutParams(px(125f), px(28f)),
+                LinearLayout.LayoutParams(px(125f), px(42f)),
             )
             buttons.addView(
                 pill("☷ Edit", Color.rgb(22, 87, 179), Color.WHITE) {
                     close(false)
                     a.openProject(project)
                 },
-                LinearLayout.LayoutParams(px(60f), px(28f)).apply { leftMargin = px(6f) },
+                LinearLayout.LayoutParams(px(62f), px(42f)).apply { leftMargin = px(6f) },
             )
-            add(card, buttons, 30f)
+            if (deleted) {
+                add(
+                    card,
+                    pill("Restore", Color.rgb(22, 87, 179), Color.WHITE) {
+                        a.store.restore(project)
+                        projects(true)
+                    },
+                    38f,
+                )
+            } else add(card, buttons, 42f)
             content.addView(
                 card,
                 LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(12f) },
@@ -1160,6 +1243,21 @@ class Panels(private val a: MainActivity) {
                         }
                     }
                 }
+        }
+        if (!deleted) {
+            space(content, 3f)
+            add(
+                content,
+                pill(
+                        "Recently deleted (${a.store.recentlyDeleted().size})",
+                        Color.TRANSPARENT,
+                        RED,
+                    ) {
+                        projects(true)
+                    }
+                    .apply { gravity = Gravity.LEFT or Gravity.CENTER_VERTICAL },
+                38f,
+            )
         }
         Thread {
                 for (load in thumbnails) {
@@ -2164,6 +2262,8 @@ class Panels(private val a: MainActivity) {
                         "Balance exposure, contrast, white balance and color before your look."
                     "Silent Tint" -> "Tint the picture with a single film color."
                     "Three-Strip" -> "Rich colors, deeper reds and dense blacks."
+                    "RGB Offset" ->
+                        "Separate green and magenta edges without changing the colors of flat areas."
                     "Quantization" -> "Reduce colors with a scene or fixed palette."
                     "Day for Night" -> "Turn daylight into a cool, dark night look."
                     "Color Isolation" ->
@@ -2328,7 +2428,7 @@ class Panels(private val a: MainActivity) {
                 slider(
                     parent,
                     "Segments",
-                    fx.number("segments", 6f),
+                    fx.number("segments", 2f),
                     2f,
                     24f,
                     format = { it.toInt().toString() },
@@ -2341,7 +2441,7 @@ class Panels(private val a: MainActivity) {
                     fx.values["rotation"] = it.toString()
                     renderDraft()
                 }
-                slider(parent, "Zoom", fx.number("zoom", 1f), .5f, 4f, color = orange) {
+                slider(parent, "Zoom", fx.number("zoom", .75f), .5f, 4f, color = orange) {
                     fx.values["zoom"] = it.toString()
                     renderDraft()
                 }
@@ -2349,7 +2449,7 @@ class Panels(private val a: MainActivity) {
                     listOf("Center X" to "centerX", "Center Y" to "centerY")) slider(
                     parent,
                     name,
-                    fx.number(key, .5f),
+                    fx.number(key, if (key == "centerY") .75f else .5f),
                     0f,
                     1f,
                     color = orange,
@@ -2397,6 +2497,24 @@ class Panels(private val a: MainActivity) {
                         videoParameters(parent, fx, chain)
                         renderDraft()
                     }
+                }
+            }
+            "RGB Offset" -> {
+                slider(
+                    parent,
+                    "Offset",
+                    fx.number("distance", .025f),
+                    0f,
+                    .15f,
+                    format = { "%.1f%%".format(java.util.Locale.US, it * 100) },
+                    color = orange,
+                ) {
+                    fx.values["distance"] = it.toString()
+                    renderDraft()
+                }
+                slider(parent, "Angle", fx.number("angle", 90f), -180f, 180f, color = orange) {
+                    fx.values["angle"] = it.toString()
+                    renderDraft()
                 }
             }
             "Color Isolation" -> {

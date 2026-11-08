@@ -75,6 +75,10 @@ class DeviceTests : Instrumentation() {
             }
             return
         }
+        if (suite == "references") {
+            references()
+            return
+        }
         if (suite == "new-ui") {
             newUi()
             return
@@ -2389,6 +2393,32 @@ class DeviceTests : Instrumentation() {
                     putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
                 },
             )
+        }
+    }
+
+    private fun references() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            ReferenceTests.run(this, a, ::onMain, ::test)
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { a -> onMain { a.finish() } }
         }
     }
 

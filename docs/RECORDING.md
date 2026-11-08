@@ -74,7 +74,8 @@ These checks do not establish identical rendering to the iOS app.
 Camera effects open in a collapsible live sheet. Add effects, toggle them or
 clear the chain while viewing the camera. Changes during recording retain their
 time ranges in the saved clip, so the effects remain editable. Kaleidoscope
-mirrors angular sections; Widescreen 1953 adds cinema framing and highlight
+offers two-way mirroring, a four-way grid and denser angular sections. RGB Offset
+adds green/magenta separation; Widescreen 1953 adds cinema framing and highlight
 flares. Their rendering is an implementation inferred from the supplied
 controls, rather than verified iOS shader code.
 

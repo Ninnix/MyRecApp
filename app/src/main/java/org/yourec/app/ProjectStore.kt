@@ -20,7 +20,27 @@ class ProjectStore(private val root: File) {
         if (makeCurrent) File(root, "current").writeText(p.id)
     }
 
-    fun delete(project: Project) = File(root, project.id + ".json").delete()
+    private val deleted = File(root, "deleted")
+
+    fun delete(project: Project) {
+        deleted.mkdirs()
+        check(File(root, project.id + ".json").renameTo(File(deleted, project.id + ".json"))) {
+            "Cannot move project to Recently deleted"
+        }
+    }
+
+    fun restore(project: Project) {
+        val target = File(root, project.id + ".json")
+        check(!target.exists() && File(deleted, project.id + ".json").renameTo(target)) {
+            "Cannot restore project"
+        }
+    }
+
+    fun erase(project: Project) {
+        check(File(deleted, project.id + ".json").delete()) { "Cannot delete project" }
+    }
+
+    fun recentlyDeleted(): List<Project> = list(deleted)
 
     fun current(): Project =
         try {
@@ -30,8 +50,10 @@ class ProjectStore(private val root: File) {
             Project()
         }
 
-    fun list(): List<Project> =
-        root
+    fun list(): List<Project> = list(root)
+
+    private fun list(directory: File): List<Project> =
+        directory
             .listFiles()
             ?.filter { it.extension == "json" }
             ?.sortedByDescending { it.lastModified() }

@@ -28,6 +28,7 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py --timeline
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --gaps
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --composition
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --camera-gaps
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --references
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --new-ui
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --hdr-color
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --hdr-scene
@@ -40,6 +41,8 @@ Test project metadata is isolated under cache. After instrumentation the runner
 returns to normal project storage. Recording tests create short
 fixture recordings. Keep the phone unlocked and YouRec in the foreground.
 
+* `--references`: project deletion/restore persistence and shared media safety,
+  mirror geometry, RGB channel offsets, and project-page controls in both orientations.
 * Default: native image/audio processing, decoding, stabilization, composition,
   export, camera switching, pause/resume, actual AF lock state, microphone names
   and portrait recording.

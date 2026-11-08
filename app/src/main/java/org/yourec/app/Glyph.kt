@@ -24,6 +24,70 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "More" -> {
+                p.style = Paint.Style.FILL
+                for (x in -5..5 step 5) c.drawCircle(x.toFloat(), 0f, .8f, p)
+            }
+            "Rename" -> {
+                c.scale(.65f, .65f)
+                path(-5f, 6f, -4f, 2f, 4f, -6f, 7f, -3f, -1f, 5f, -5f, 6f)
+                path(2f, -4f, 5f, -1f)
+            }
+            "Delete" -> {
+                path(-7f, -5f, 7f, -5f)
+                path(-3f, -5f, -3f, -8f, 3f, -8f, 3f, -5f)
+                path(-5f, -5f, -4f, 8f, 4f, 8f, 5f, -5f)
+                path(-1.5f, -2f, -1f, 5f)
+                path(1.5f, -2f, 1f, 5f)
+            }
+            "Privacy" -> {
+                path(
+                    -5f,
+                    0f,
+                    -5f,
+                    -5f,
+                    -2f,
+                    -5f,
+                    -2f,
+                    -8f,
+                    1f,
+                    -8f,
+                    1f,
+                    -5f,
+                    4f,
+                    -5f,
+                    4f,
+                    1f,
+                    6f,
+                    -1f,
+                    8f,
+                    1f,
+                    4f,
+                    7f,
+                    1f,
+                    9f,
+                    -3f,
+                    8f,
+                    -7f,
+                    4f,
+                    -7f,
+                    0f,
+                    -5f,
+                    0f,
+                )
+                path(-2f, -5f, -2f, 0f)
+                path(1f, -5f, 1f, 0f)
+            }
+            "Film" -> {
+                c.drawRoundRect(-7f, -6f, 7f, 7f, 1f, 1f, p)
+                path(-4f, -6f, -4f, 7f)
+                path(4f, -6f, 4f, 7f)
+                for (y in -3..5 step 4) {
+                    path(-7f, y.toFloat(), -4f, y.toFloat())
+                    path(4f, y.toFloat(), 7f, y.toFloat())
+                }
+                path(-4f, -9f, 4f, -9f)
+            }
             "Dual camera",
             "Picture in picture" -> {
                 c.drawRoundRect(-8f, -7f, 4f, 3f, 1.5f, 1.5f, p)

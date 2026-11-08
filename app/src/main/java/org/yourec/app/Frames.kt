@@ -15,6 +15,7 @@ object Effects {
                     "Color Correction",
                     "Silent Tint",
                     "Three-Strip",
+                    "RGB Offset",
                     "Quantization",
                     "Bleach Bypass",
                     "Day for Night",
@@ -41,11 +42,18 @@ object Effects {
                 Native.kaleidoscope(
                     bitmap,
                     strength,
-                    effect.number("segments", 6f).toInt(),
+                    effect.number("segments", 2f).toInt(),
                     effect.number("rotation"),
-                    effect.number("zoom", 1f),
+                    effect.number("zoom", .75f),
                     effect.number("centerX", .5f),
-                    effect.number("centerY", .5f),
+                    effect.number("centerY", .75f),
+                )
+            "RGB Offset" ->
+                Native.rgbOffset(
+                    bitmap,
+                    strength,
+                    effect.number("distance", .025f),
+                    effect.number("angle", 90f),
                 )
             "Widescreen 1953" ->
                 Native.widescreen(

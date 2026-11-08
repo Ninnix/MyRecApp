@@ -17,6 +17,8 @@ object Native {
         centerY: Float,
     )
 
+    external fun rgbOffset(bitmap: Bitmap, strength: Float, distance: Float, angle: Float)
+
     external fun widescreen(
         bitmap: Bitmap,
         strength: Float,

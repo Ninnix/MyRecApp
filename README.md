@@ -37,6 +37,8 @@ choose **Start new project**. Portrait and landscape have separate layouts.
 YouRec requires **Android 9 or later and an ARM64 device**. Build the APK below,
 install it, and allow camera and microphone access when recording. Open Projects
 to create a project, import video, continue recording or return to editing.
+The page also opens the privacy policy and Recently deleted, where projects can
+be restored or permanently removed.
 
 Ordinary recording and editing work without downloading a model. Captions and
 neural audio effects offer their model downloads when needed. See the
