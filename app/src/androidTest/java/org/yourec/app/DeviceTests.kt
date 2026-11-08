@@ -13,13 +13,11 @@ import kotlin.math.*
 class DeviceTests : Instrumentation() {
     private val report = StringBuilder()
     private var suite = ""
-    private var precision = "fp16"
     private val testSessionId = uid()
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: ""
-        precision = arguments?.getString("precision") ?: "fp16"
         start()
     }
 
@@ -42,28 +40,6 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "audio-precision") {
-            try {
-                test(
-                    "VoiceFixer $precision loads and remains finite on speech, quiet speech, noise and silence"
-                ) {
-                    val result = AudioPrecisionTest.run(this, precision)
-                    check(result.getBoolean("passed")) { result.toString() }
-                }
-                finish(
-                    Activity.RESULT_OK,
-                    Bundle().apply { putString("stream", report.toString()) },
-                )
-            } catch (e: Throwable) {
-                finish(
-                    Activity.RESULT_CANCELED,
-                    Bundle().apply {
-                        putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
-                    },
-                )
-            }
-            return
-        }
         if (suite == "hdr-scene") {
             hdrScene()
             return

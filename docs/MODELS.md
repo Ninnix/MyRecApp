@@ -49,11 +49,6 @@ when requested. VoiceFixer is substantially slower than noise reduction;
 preparation is cached before playback/export. Existing projects retain their
 RNNoise isolation and Studio clarity filters.
 
-An isolated [VoiceFixer FP16 trial](VOICEFIXER_FP16.md) reduced stored files to
-208.42 MB while retaining FP32 computation and close numerical agreement on
-the tested inputs. Direct FP16 graph conversion produced large audio errors.
-Production downloads remain the verified FP32 files.
-
 For development installation:
 
 ```sh
