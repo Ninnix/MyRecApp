@@ -28,6 +28,7 @@ object Studio {
     lateinit var directory: File
     lateinit var cacheDirectory: File
     private var handle = 0L
+    private var engine = 2
     @Volatile var downloadCancelled = false
     val ready
         get() =
@@ -103,7 +104,7 @@ object Studio {
         project.clips.any { clip ->
             clip.audio &&
                 clip.effects.any {
-                    it.kind == "Studio clarity" && it.enabled && it.number("strength", 1f) > 0
+                    it.kind in AudioModels.neural && it.enabled && it.number("strength", 1f) > 0
                 }
         }
 
@@ -141,7 +142,7 @@ object Studio {
     ): Prepared? {
         val index =
             clip.effects.indexOfLast {
-                it.kind == "Studio clarity" &&
+                it.kind in AudioModels.neural &&
                     it.enabled &&
                     it.number("strength", 1f) > 0 &&
                     it.from < clip.duration &&
@@ -161,7 +162,7 @@ object Studio {
         val media = File(clip.path)
         val key =
             hash(
-                "$VERSION:${media.length()}:${media.lastModified()}:${signature(prefix)}:${parameters(effect)}"
+                "$VERSION:${AudioModels.version(effect.kind)}:${media.length()}:${media.lastModified()}:${signature(prefix)}:${parameters(effect)}"
             )
         val target = File(cacheDirectory, "$key.f32")
         val count = (clip.duration * 48000).roundToLong()
@@ -170,14 +171,30 @@ object Studio {
             return Prepared(target, index)
         }
         if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
-        check(ready) { "Open Enhance audio to download Studio clarity first" }
+        check(AudioModels.ready(effect.kind)) {
+            "Open Enhance audio to download ${effect.kind} first"
+        }
         check(Native.studioAvailable()) { "Studio audio is unavailable in this build" }
-        if (handle == 0L) handle = Native.studioLoad(directory.absolutePath, 2)
-        check(handle != 0L) { "Cannot prepare studio audio" }
         val partial = File(cacheDirectory, "$key.partial")
         try {
             AudioMixer(prefix, cache).use { mixer ->
                 mixer.prepare(cancelled)
+                val kind = AudioModels.kind(effect.kind)
+                if (handle != 0L && engine != kind) {
+                    if (engine == 2) Native.studioFree(handle) else Native.neuralFree(handle)
+                    handle = 0L
+                }
+                engine = kind
+                if (handle == 0L)
+                    handle =
+                        if (kind == 2) Native.studioLoad(directory.absolutePath, 2)
+                        else
+                            Native.neuralLoad(
+                                AudioModels.directory(effect.kind).absolutePath,
+                                kind,
+                                2,
+                            )
+                check(handle != 0L) { "Cannot prepare ${effect.kind}" }
                 FileOutputStream(partial).buffered().use { output ->
                     var position = 0L
                     while (position < count) {
@@ -203,7 +220,8 @@ object Studio {
                         }
                         val enhanced =
                             if (mono.all { abs(it) <= .00001f }) mono
-                            else Native.studioProcess(handle, mono)
+                            else if (engine == 2) Native.studioProcess(handle, mono)
+                            else Native.neuralProcess(handle, mono)
                         if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
                         val buffer =
                             ByteBuffer.allocate((end - position).toInt() * 8)

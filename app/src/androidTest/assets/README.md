@@ -2,6 +2,8 @@
 
 These files are instrumentation inputs, not production media assets.
 
+* `hdr-colors.mp4`, `hdr-colors.yuv`, `hdr-colors.json`: synthetic BT.2020 HLG patches generated
+  by `tools/hdr-fixture.py`, with known nonlinear RGB values for colour checks.
 * `fixture.mp4`: generated color bars and audio for decoding, editing and export.
 * `person.png`, `person.mp4`: a crop of supplied horizontal reference frame 0752
   and its short encoded derivative, used to check segmentation and range timing.

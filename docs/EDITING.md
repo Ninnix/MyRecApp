@@ -23,10 +23,11 @@ the selected section's gain as one undoable edit.
 Tools opens ordered video/audio effects, transitions, crop, placement,
 stabilization, text, images, LUTs, speed and pause removal. Applied effects appear
 as editable chips near the cursor. Drag or pinch text and placement in preview.
-Tap a numeric readout for exact parameter entry.
+Tap a numeric readout for exact parameter entry. Crop includes 4:5, Frame/Inspect
+and independent quarter turns. Original restores the source video shape.
 
 Audio containers show filter order and strength. Select a container for its
-parameters or to move it in the chain. Studio clarity may prepare audio before
+parameters or to move it in the chain. Neural restoration and speech detail prepare audio before
 playback; the status indicator reports that work.
 
 Edits preserve the source files. Split sections own independent effect data.

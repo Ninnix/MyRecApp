@@ -24,6 +24,58 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "Dual camera",
+            "Picture in picture" -> {
+                c.drawRoundRect(-8f, -7f, 4f, 3f, 1.5f, 1.5f, p)
+                if (kind == "Dual camera") c.drawRoundRect(-2f, -2f, 8f, 8f, 1.5f, 1.5f, p)
+                else c.drawRoundRect(0f, 1f, 8f, 7f, 1.5f, 1.5f, p)
+            }
+            "Split vertical",
+            "Split horizontal",
+            "Split diagonal" -> {
+                c.drawRoundRect(-8f, -6f, 8f, 6f, 1.5f, 1.5f, p)
+                when (kind) {
+                    "Split vertical" -> path(0f, -6f, 0f, 6f)
+                    "Split horizontal" -> path(-8f, 0f, 8f, 0f)
+                    else -> {
+                        path(-7f, -5f, 7f, 5f)
+                        path(7f, -5f, -7f, 5f)
+                    }
+                }
+            }
+            "Reset" -> {
+                c.drawArc(-6.5f, -6.5f, 6.5f, 6.5f, -150f, 300f, false, p)
+                path(-6f, -8.5f, -6f, -3.5f, -1f, -3.5f)
+            }
+            "Microphone" -> {
+                c.drawRoundRect(-2f, -8f, 2f, 2f, 2f, 2f, p)
+                c.drawArc(-5f, -3f, 5f, 6f, 0f, 180f, false, p)
+                path(0f, 6f, 0f, 9f)
+                path(-3f, 9f, 3f, 9f)
+            }
+            "Timer" -> {
+                c.drawArc(-6f, -6f, 6f, 6f, -80f, 310f, false, p)
+                path(-3f, -7f, 1f, -6f, -1f, -2f)
+                path(0f, -3f, 0f, 0f, 3f, 2f)
+            }
+            "Help" -> {
+                c.drawCircle(0f, 0f, 6f, p)
+                c.drawArc(-2f, -4f, 2f, 0f, 180f, 270f, false, p)
+                path(0f, -1f, 0f, 1f)
+                c.drawPoint(0f, 4f, p)
+            }
+            "Chevron up" -> path(-4f, 2f, 0f, -2f, 4f, 2f)
+            "Chevron down" -> path(-4f, -2f, 0f, 2f, 4f, -2f)
+            "Chevrons" -> {
+                path(-3f, -2f, 0f, -5f, 3f, -2f)
+                path(-3f, 2f, 0f, 5f, 3f, 2f)
+            }
+            "Check" -> path(-6f, 0f, -2f, 5f, 7f, -7f)
+            "Rotate" -> {
+                c.drawRect(-4f, -1f, 6f, 8f, p)
+                c.drawArc(-8f, -8f, 6f, 6f, 190f, 190f, false, p)
+                path(3f, -8f, 7f, -5f, 3f, -2f)
+            }
             "Animate" -> {
                 p.strokeWidth = 1.7f
                 path(0f, -8f, 8f, 0f, 0f, 8f, -8f, 0f, 0f, -8f)

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 project(yourec C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-add_library(yourec SHARED dsp.c image.c asr.c stabilize.c quantize.c color.c lava.c studio.c person.c)
+add_library(yourec SHARED dsp.c image.c asr.c stabilize.c quantize.c color.c cinema.c fft.c inference.c neural.c lava.c studio.c person.c)
 target_compile_options(yourec PRIVATE -Wall -Wextra -Werror -O3)
 target_link_libraries(yourec android jnigraphics log m dl)
 

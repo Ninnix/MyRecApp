@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.os.Handler
 import android.os.Looper
+import java.io.File
 import java.util.concurrent.Executors
 
 class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit) {
@@ -26,23 +27,40 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
                         ?.toDoubleOrNull() ?: 0.0) / 1000
                 ui.post { durations[clip.path] = duration }
                 if (clip.video) {
+                    val hdr =
+                        reader
+                            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)
+                            ?.toIntOrNull() in listOf(6, 7)
+                    val decoder =
+                        if (hdr || File(clip.path + ".primaries").isFile)
+                            try {
+                                VideoDecoder(clip.path)
+                            } catch (_: Exception) {
+                                null
+                            }
+                        else null
                     val images = mutableListOf<Bitmap>()
-                    for (i in 0 until 12) {
-                        val image =
-                            reader.getScaledFrameAtTime(
-                                (duration * i / 12 * 1_000_000).toLong(),
-                                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                                144,
-                                81,
-                            )
-                        if (image != null) images.add(image)
-                        if (i == 0 || i == 11) {
-                            val ready = images.toList()
-                            ui.post {
-                                thumbnails[clip.path] = ready
-                                changed()
+                    try {
+                        for (i in 0 until 12) {
+                            val image =
+                                decoder?.frame(duration * i / 12, 144, 81)
+                                    ?: reader.getScaledFrameAtTime(
+                                        (duration * i / 12 * 1_000_000).toLong(),
+                                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                        144,
+                                        81,
+                                    )
+                            if (image != null) images.add(image)
+                            if (i == 0 || i == 11) {
+                                val ready = images.toList()
+                                ui.post {
+                                    thumbnails[clip.path] = ready
+                                    changed()
+                                }
                             }
                         }
+                    } finally {
+                        decoder?.close()
                     }
                 }
             } catch (_: Exception) {

@@ -7,6 +7,25 @@ object Native {
         System.loadLibrary("yourec")
     }
 
+    external fun kaleidoscope(
+        bitmap: Bitmap,
+        strength: Float,
+        segments: Int,
+        rotation: Float,
+        zoom: Float,
+        centerX: Float,
+        centerY: Float,
+    )
+
+    external fun widescreen(
+        bitmap: Bitmap,
+        strength: Float,
+        ratio: Float,
+        bars: Int,
+        flares: Float,
+        color: Int,
+    )
+
     external fun asrAvailable(): Boolean
 
     external fun asrLoad(path: String, threads: Int): Long
@@ -36,6 +55,12 @@ object Native {
     external fun rnnoiseAvailable(): Boolean
 
     external fun studioAvailable(): Boolean
+
+    external fun neuralLoad(path: String, kind: Int, threads: Int): Long
+
+    external fun neuralProcess(handle: Long, mono: FloatArray): FloatArray
+
+    external fun neuralFree(handle: Long)
 
     external fun studioLoad(path: String, threads: Int): Long
 
@@ -89,6 +114,9 @@ object Native {
         standard: Int,
         full: Boolean,
         output: Bitmap,
+        depth: Int = 8,
+        transfer: Int = 3,
+        primaries: Int = 0,
     )
 
     external fun image(

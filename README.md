@@ -21,6 +21,7 @@ These captures use synthetic test media.
 ## What you can do
 
 * Pause and resume recording, switch cameras, control zoom speed, and lock focus.
+* Compose simultaneous front/rear video and record 10-bit HLG on supported hardware.
 * Select a microphone and keep an ordered list of preferred inputs.
 * Split, copy, paste, move and trim clips, with ranges, undo and redo.
 * Add text, images, transitions, color effects, framing and stabilization.
@@ -38,16 +39,18 @@ install it, and allow camera and microphone access when recording. Open Projects
 to create a project, import video, continue recording or return to editing.
 
 Ordinary recording and editing work without downloading a model. Captions and
-Studio clarity offer their model downloads when needed. See the
+neural audio effects offer their model downloads when needed. See the
 [recording guide](docs/RECORDING.md) and [editing guide](docs/EDITING.md).
 
 ## Models
 
 | Model | Use | Approximate download |
 | --- | --- | --- |
-| RNNoise | Voice isolation | Included |
+| RNNoise | Legacy voice isolation | Included |
 | PPHumanSeg | Keep people in color | Included, 5.9 MB |
-| LavaSR v2 | Studio clarity | 56 MB |
+| DeepFilterNet3 | Noise reduction | 8.6 MB |
+| VoiceFixer | Studio restoration | 415 MB |
+| LavaSR v2 | Speech detail | 56 MB |
 | Qwen3 ASR · 0.6B | Offline captions | 1.9 GB |
 
 Inference runs on the CPU through C APIs. Downloads are separate from your

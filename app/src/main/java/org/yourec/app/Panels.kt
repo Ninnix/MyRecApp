@@ -57,6 +57,8 @@ class Panels(private val a: MainActivity) {
     private var body: LinearLayout? = null
     private var applyPanel: (() -> Unit)? = null
     private var toolsPanel = false
+    private var captureSheet = false
+    private var captureExpanded = false
     private var reflowControls: (() -> Unit)? = null
     val isOpen
         get() = panel != null
@@ -402,6 +404,8 @@ class Panels(private val a: MainActivity) {
     }
 
     fun close(refresh: Boolean = true) {
+        captureDraft?.let { chain -> captureDone?.invoke(chain.map { it.copyEffect() }) }
+        captureSheet = false
         panel?.let { a.root.removeView(it) }
         panel = null
         preview = null
@@ -435,8 +439,10 @@ class Panels(private val a: MainActivity) {
         name: String,
         apply: (() -> Unit)? = null,
         tools: Boolean = false,
+        capture: Boolean = false,
     ): LinearLayout {
         close(false)
+        captureSheet = capture
         title = name
         draftOrigin = editor.cursor
         cropFrame = true
@@ -445,6 +451,10 @@ class Panels(private val a: MainActivity) {
         toolsPanel = tools
         return createPanel(name, apply, tools)
     }
+
+    private fun captureHeight(h: Int) =
+        minOf(h - px(50f), px(if (captureExpanded) 518f else if (landscape) 206f else 288f)) -
+            if (landscape) 0 else px(32f)
 
     private fun createPanel(name: String, apply: (() -> Unit)?, tools: Boolean): LinearLayout {
         landscape =
@@ -460,21 +470,30 @@ class Panels(private val a: MainActivity) {
                 elevation = px(12f).toFloat()
             }
         panel = root
-        val height = if (tools && !landscape) h - px(46f) else h
-        if (tools && !landscape) {
-            root.background = shape(BG, 25f)
+        val height =
+            if (captureSheet) captureHeight(h) else if (tools && !landscape) h - px(46f) else h
+        if ((tools && !landscape) || captureSheet) {
+            root.background =
+                shape(BG, if (captureSheet) 16f else 25f).apply {
+                    if (captureSheet) setStroke(max(1, px(.6f)), Color.rgb(48, 48, 48))
+                }
             root.clipToOutline = true
         }
-        a.root.addView(root, FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM))
+        a.root.addView(
+            root,
+            FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM).apply {
+                if (captureSheet && !landscape) bottomMargin = px(32f)
+            },
+        )
         val content = column()
         body = content
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
-        if (!landscape && !tools) {
+        if (!landscape && !tools && !captureSheet) {
             val safe = View(a).apply { setBackgroundColor(Color.BLACK) }
             add(content, safe, if (name == "Volume") 49f else 44f)
         }
         val header = FrameLayout(a)
-        val plain = name in listOf("Text", "Crop", "Video effects")
+        val plain = !captureSheet && name in listOf("Text", "Crop", "Video effects")
         val titles = column()
         val titleView = text(name, 10f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
         if (plain) {
@@ -492,23 +511,58 @@ class Panels(private val a: MainActivity) {
             )
             header.addView(titles, FrameLayout.LayoutParams(-1, px(29f), Gravity.CENTER))
         } else header.addView(titleView, FrameLayout.LayoutParams(-1, -1))
-        val cancel = text(if (tools) "" else "Cancel", 10f, RED).apply { gravity = Gravity.CENTER }
+        val cancel =
+            if (captureSheet)
+                FrameLayout(a)
+                    .apply {
+                        addView(
+                            Glyph(
+                                a,
+                                if (captureExpanded) "Chevron down" else "Chevron up",
+                                Color.WHITE,
+                            ),
+                            FrameLayout.LayoutParams(px(22f), px(22f), Gravity.CENTER),
+                        )
+                    }
+                    .apply {
+                        contentDescription =
+                            if (captureExpanded) "Collapse effects" else "Expand effects"
+                    }
+            else text(if (tools) "" else "Cancel", 10f, RED).apply { gravity = Gravity.CENTER }
         if (!plain && !tools) cancel.background = shape(Color.rgb(37, 37, 39), 15f)
         header.addView(
             cancel,
             FrameLayout.LayoutParams(
-                    px(if (plain) 68f else 60f),
+                    px(if (captureSheet) 34f else if (plain) 68f else 60f),
                     px(30f),
                     Gravity.LEFT or Gravity.CENTER_VERTICAL,
                 )
                 .apply { leftMargin = px(if (landscape) if (plain) 42f else 28f else 10f) },
         )
-        cancel.setOnClickListener { close() }
+        cancel.setOnClickListener {
+            if (captureSheet) {
+                captureExpanded = !captureExpanded
+                cancel.contentDescription =
+                    if (captureExpanded) "Collapse effects" else "Expand effects"
+                (cancel as FrameLayout).removeAllViews()
+                cancel.addView(
+                    Glyph(a, if (captureExpanded) "Chevron down" else "Chevron up", Color.WHITE),
+                    FrameLayout.LayoutParams(px(22f), px(22f), Gravity.CENTER),
+                )
+                root.layoutParams =
+                    root.layoutParams.apply { this.height = captureHeight(a.root.height) }
+            } else close()
+        }
         val done =
-            text(if (tools) "Done" else "Apply", 10f, RED).apply {
-                gravity = Gravity.CENTER
-                if (!plain) background = shape(Color.rgb(37, 37, 39), 15f)
-            }
+            text(
+                    if (tools || captureSheet) "Done" else "Apply",
+                    10f,
+                    if (captureSheet) Color.WHITE else RED,
+                )
+                .apply {
+                    gravity = Gravity.CENTER
+                    if (!plain) background = shape(Color.rgb(37, 37, 39), 15f)
+                }
         val dlp =
             FrameLayout.LayoutParams(px(55f), px(28f), Gravity.RIGHT or Gravity.CENTER_VERTICAL)
         dlp.rightMargin = px(if (landscape) if (tools) 28f else if (plain) 48f else 28f else 10f)
@@ -526,7 +580,7 @@ class Panels(private val a: MainActivity) {
             if (landscape)
                 if (tools || name == "Transition") 64f
                 else if (name == "Enhance audio") 60f else 32f
-            else 40f,
+            else if (name == "Video effects" && !captureSheet) 32f else 40f,
         )
         return content
     }
@@ -621,6 +675,7 @@ class Panels(private val a: MainActivity) {
                 px(
                     when (title) {
                         "Volume" -> 190f
+                        "Video effects" -> 196f
                         "Crop" -> 256f
                         "Placement" -> 284f
                         else -> 230f
@@ -722,6 +777,13 @@ class Panels(private val a: MainActivity) {
             }
             add(left, r, 38f)
             space(left, if (title == "Text") 12f else if (title == "Transition") 14f else 8f)
+        } else if (!horizontal && title == "Video effects") {
+            play.text = "▶"
+            r.setPadding(px(10f), 0, px(10f), 0)
+            r.addView(play, LinearLayout.LayoutParams(px(28f), px(32f)))
+            r.addView(seek, LinearLayout.LayoutParams(0, px(32f), 1f))
+            r.addView(time, LinearLayout.LayoutParams(px(76f), px(32f)))
+            add(left, r, 32f)
         } else {
             if (title == "Placement") {
                 val summary = text(rangeLabel(), 9f)
@@ -731,7 +793,7 @@ class Panels(private val a: MainActivity) {
             if (title == "Crop") {
                 val tabs = row()
                 val tabViews = mutableListOf<TextView>()
-                for (name in listOf("Frame", "Preview")) {
+                for (name in listOf("Frame", "Inspect")) {
                     val tab = text(name, 9f, RED).apply { gravity = Gravity.CENTER }
                     if ((name == "Frame") == cropFrame)
                         tab.background = shape(Color.rgb(35, 35, 37), 15f)
@@ -773,8 +835,10 @@ class Panels(private val a: MainActivity) {
         previewTick = {
             play.text =
                 if (a.playback.playing) {
-                    if (horizontal && title != "Enhance audio") "Ⅱ" else "Ⅱ Pause preview"
-                } else if (horizontal && title != "Enhance audio") "▶" else "▶ Play preview"
+                    if (title == "Video effects" || horizontal && title != "Enhance audio") "Ⅱ"
+                    else "Ⅱ Pause preview"
+                } else if (title == "Video effects" || horizontal && title != "Enhance audio") "▶"
+                else "▶ Play preview"
             play.contentDescription = if (a.playback.playing) "Pause preview" else "Play preview"
             val current = previewRegion()
             val duration = max(0.001, current.endInclusive - current.start)
@@ -1258,7 +1322,11 @@ class Panels(private val a: MainActivity) {
         ui.postDelayed(
             {
                 renderPending = false
-                if (panel == null || captureDraft != null) return@postDelayed
+                if (panel == null) return@postDelayed
+                captureDraft?.let { chain ->
+                    captureDone?.invoke(chain.map { it.copyEffect() })
+                    return@postDelayed
+                }
                 val temporary =
                     Editor(editor.project.duplicate()).apply {
                         cursor =
@@ -1519,21 +1587,25 @@ class Panels(private val a: MainActivity) {
                 val shapeValue = text("Original  ⌃", 9f, RED)
                 shapeRow.addView(shapeValue, LinearLayout.LayoutParams(-2, px(40f)))
                 shapeRow.setOnClickListener {
-                    val names = listOf("Original", "16:9", "9:16", "1:1", "4:3", "3:4")
+                    val names = listOf("Original", "16:9", "9:16", "1:1", "4:5")
                     a.choose("Video shape", names) { i ->
+                        val native =
+                            editor.project.clips
+                                .firstOrNull { it.video }
+                                ?.let { ProjectStore.shape(it.path) }
+                                ?: (editor.project.width to editor.project.height)
                         val ratios =
                             listOf(
-                                editor.project.width.toDouble() / editor.project.height,
+                                native.first.toDouble() / native.second,
                                 16.0 / 9,
                                 9.0 / 16,
                                 1.0,
-                                4.0 / 3,
-                                3.0 / 4,
+                                4.0 / 5,
                             )
                         val ratio = ratios[i]
                         val edge = max(editor.project.width, editor.project.height)
                         draftShape =
-                            if (i == 0) null
+                            if (i == 0) native
                             else
                                 (if (ratio >= 1) edge else (edge * ratio).roundToInt()) / 2 * 2 to
                                     (if (ratio >= 1) (edge / ratio).roundToInt() else edge) / 2 * 2
@@ -1549,12 +1621,11 @@ class Panels(private val a: MainActivity) {
                 val angle = text("%.0f°".format(fx.number("rotation")), 8f, RED)
                 angleRow.addView(angle, LinearLayout.LayoutParams(px(35f), px(24f)))
                 angleRow.addView(
-                    text("↶", 15f, RED).apply {
-                        contentDescription = "Reset rotation"
+                    Glyph(a, "Rotate", RED).apply {
+                        contentDescription = "Rotate 90 degrees"
                         setOnClickListener {
-                            fx.values["rotation"] = "0"
-                            rotation?.progress = 500
-                            angle.text = "0°"
+                            fx.values["quarter"] =
+                                ((fx.number("quarter").toInt() + 1) % 4).toString()
                             renderDraft()
                         }
                     },
@@ -1576,7 +1647,13 @@ class Panels(private val a: MainActivity) {
                         renderDraft()
                     }
                 hint(controls, "Edges stay filled. Tap the angle to reset.")
-                angle.setOnClickListener { angleRow.getChildAt(2).performClick() }
+                angle.contentDescription = "Reset rotation"
+                angle.setOnClickListener {
+                    fx.values["rotation"] = "0"
+                    rotation?.progress = 500
+                    angle.text = "0°"
+                    renderDraft()
+                }
                 var zoom: SeekBar? = null
                 zoom =
                     slider(
@@ -1932,7 +2009,7 @@ class Panels(private val a: MainActivity) {
     private fun appliedVideo(parent: LinearLayout, chain: MutableList<Effect>) {
         parent.removeAllViews()
         reflowControls = { appliedVideo(parent, chain) }
-        parent.setPadding(px(10f), px(if (landscape) 0f else 10f), px(10f), px(10f))
+        parent.setPadding(px(10f), px(if (landscape || captureSheet) 0f else 10f), px(10f), px(10f))
         draft = null
         val heading = row()
         heading.addView(
@@ -1940,14 +2017,14 @@ class Panels(private val a: MainActivity) {
             LinearLayout.LayoutParams(0, px(25f), 1f),
         )
         heading.addView(
-            text("+ Add", 9f, RED).apply {
+            text("+ Add", 9f, if (captureSheet) Color.WHITE else RED).apply {
                 gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
                 setOnClickListener { categories(parent, chain) }
             },
             LinearLayout.LayoutParams(px(50f), px(25f)),
         )
         videoNavigation(parent, heading)
-        hint(parent, "At the playhead · tap an effect to adjust it.")
+        if (captureDraft == null) hint(parent, "At the playhead · tap an effect to adjust it.")
         for (fx in chain.toList()) {
             val card =
                 EffectCard(a, factor) {
@@ -2152,7 +2229,8 @@ class Panels(private val a: MainActivity) {
         val heading = text(fx.kind, 11f, Color.WHITE, true)
         heading.translationY = if (landscape) -px(4f).toFloat() else 0f
         add(parent, heading, 21f)
-        val orange = Color.rgb(240, 137, 35)
+        val cinema = fx.kind in listOf("Kaleidoscope", "Widescreen 1953")
+        val orange = if (cinema) Color.rgb(43, 199, 231) else Color.rgb(240, 137, 35)
         val actions = row()
         actions.translationY = if (landscape) -px(4f).toFloat() else 0f
         actions.translationX = if (landscape) px(2f).toFloat() else 0f
@@ -2162,7 +2240,7 @@ class Panels(private val a: MainActivity) {
                 background = shape(Color.rgb(32, 32, 32), 16f)
                 setPadding(px(8f), 0, px(8f), 0)
             }
-        val gold = Color.rgb(200, 135, 66)
+        val gold = if (cinema) orange else Color.rgb(200, 135, 66)
         animate.addView(Glyph(a, "Animate", gold), LinearLayout.LayoutParams(px(12f), px(14f)))
         animate.addView(
             text("Animate", 7f, gold),
@@ -2205,12 +2283,122 @@ class Panels(private val a: MainActivity) {
             power,
             LinearLayout.LayoutParams(px(32f), px(32f)).apply { leftMargin = px(6f) },
         )
+        if (cinema && !landscape) {
+            parent.removeView(heading)
+            actions.addView(heading, 0, LinearLayout.LayoutParams(-2, px(32f)))
+            val help =
+                Glyph(a, "Help", MUTED).apply {
+                    contentDescription = "About ${fx.kind}"
+                    setOnClickListener {
+                        android.app.AlertDialog.Builder(a)
+                            .setTitle(fx.kind)
+                            .setMessage(
+                                if (fx.kind == "Widescreen 1953")
+                                    "Cinema framing with horizontal flares from bright highlights."
+                                else "Mirrors repeated angular sections around the chosen center."
+                            )
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+            actions.addView(help, 1, LinearLayout.LayoutParams(px(25f), px(32f)))
+            actions.addView(View(a), 2, LinearLayout.LayoutParams(0, 1, 1f))
+        }
         add(parent, actions, 41f)
         slider(parent, "Intensity", fx.number("strength", 1f), 0f, 1f, color = orange) {
             fx.values["strength"] = it.toString()
             renderDraft()
         }
+        fun pick(value: String, action: () -> Unit) {
+            val line =
+                row().apply {
+                    background = shape(Color.rgb(29, 29, 31), 7f)
+                    setPadding(px(9f), 0, px(9f), 0)
+                    setOnClickListener { action() }
+                }
+            line.addView(text(value, 10f, orange), LinearLayout.LayoutParams(0, -1, 1f))
+            line.addView(Glyph(a, "Chevrons", orange), LinearLayout.LayoutParams(px(14f), px(20f)))
+            parent.addView(
+                line,
+                LinearLayout.LayoutParams(-1, px(32f)).apply { bottomMargin = px(8f) },
+            )
+        }
         when (fx.kind) {
+            "Kaleidoscope" -> {
+                slider(
+                    parent,
+                    "Segments",
+                    fx.number("segments", 6f),
+                    2f,
+                    24f,
+                    format = { it.toInt().toString() },
+                    color = orange,
+                ) {
+                    fx.values["segments"] = it.toInt().toString()
+                    renderDraft()
+                }
+                slider(parent, "Rotation", fx.number("rotation"), -180f, 180f, color = orange) {
+                    fx.values["rotation"] = it.toString()
+                    renderDraft()
+                }
+                slider(parent, "Zoom", fx.number("zoom", 1f), .5f, 4f, color = orange) {
+                    fx.values["zoom"] = it.toString()
+                    renderDraft()
+                }
+                for ((name, key) in
+                    listOf("Center X" to "centerX", "Center Y" to "centerY")) slider(
+                    parent,
+                    name,
+                    fx.number(key, .5f),
+                    0f,
+                    1f,
+                    color = orange,
+                ) {
+                    fx.values[key] = it.toString()
+                    renderDraft()
+                }
+            }
+            "Widescreen 1953" -> {
+                label(parent, "Ratio")
+                pick("%.2f:1".format(java.util.Locale.US, fx.number("ratio", 2.39f))) {
+                    val ratios = listOf(2.39f, 2.35f, 2f, 1.85f)
+                    a.choose("Ratio", listOf("2.39:1", "2.35:1", "2:1", "1.85:1")) {
+                        fx.values["ratio"] = ratios[it].toString()
+                        videoParameters(parent, fx, chain)
+                        renderDraft()
+                    }
+                }
+                label(parent, "Bars")
+                pick(fx.values["bars"] ?: "Black") {
+                    a.choose("Bars", listOf("Black", "White")) {
+                        fx.values["bars"] = if (it == 0) "Black" else "White"
+                        videoParameters(parent, fx, chain)
+                        renderDraft()
+                    }
+                }
+                slider(
+                    parent,
+                    "Flares",
+                    fx.number("flares", .4f),
+                    0f,
+                    1f,
+                    format = { "%.1f".format(java.util.Locale.getDefault(), it) },
+                    color = orange,
+                ) {
+                    fx.values["flares"] = it.toString()
+                    renderDraft()
+                }
+                label(parent, "Flare color")
+                button(parent, (fx.values["flareColor"] ?: "#4ddfff") + "  ⌃", orange) {
+                    val names = listOf("Cyan", "Blue", "Warm", "Red", "White")
+                    val colors = listOf("#4ddfff", "#5389ff", "#ffd69a", "#ff5656", "#ffffff")
+                    a.choose("Flare color", names) {
+                        fx.values["flareColor"] = colors[it]
+                        videoParameters(parent, fx, chain)
+                        renderDraft()
+                    }
+                }
+            }
             "Color Isolation" -> {
                 val mode = fx.values["mode"] ?: "Color"
                 choices(parent, listOf("Color", "Person"), mode, orange) {
@@ -2490,9 +2678,11 @@ class Panels(private val a: MainActivity) {
         fun rack(selected: Effect? = selectedFilter) {
             selectedFilter = selected?.takeIf { it in chain } ?: chain.lastOrNull()
             controls.removeAllViews()
-            if (chain.any { it.kind == "Studio clarity" } && !Studio.ready)
-                button(controls, "Prepare Studio clarity") {
-                    a.prepareStudio { audio(selectedFilter, chain) }
+            for (name in chain.map { it.kind }.filter { it in AudioModels.neural }.distinct()) if (
+                !AudioModels.ready(name)
+            )
+                button(controls, "Prepare $name") {
+                    a.prepareAudioModel(name) { audio(selectedFilter, chain) }
                 }
             val targets = editor.targets().filter { it.audio }
             val scope = editor.range
@@ -2509,10 +2699,14 @@ class Panels(private val a: MainActivity) {
                 text("+  Add filter", 10f, RED).apply {
                     contentDescription = "Add filter"
                     setOnClickListener {
-                        a.choose("Add filter", Effects.audio) { i ->
-                            val fx = Effect(kind = Effects.audio[i])
-                            if (fx.kind == "Studio clarity" && !Studio.ready) {
-                                a.prepareStudio { success ->
+                        val available =
+                            Effects.audio.filter {
+                                it !in listOf("AI voice isolation", "Studio clarity")
+                            }
+                        a.choose("Add filter", available) { i ->
+                            val fx = Effect(kind = available[i])
+                            if (fx.kind in AudioModels.neural && !AudioModels.ready(fx.kind)) {
+                                a.prepareAudioModel(fx.kind) { success ->
                                     audio(
                                         if (success) fx else selectedFilter,
                                         if (success) chain + fx else chain,
@@ -2533,7 +2727,7 @@ class Panels(private val a: MainActivity) {
                 label(controls, "Build your sound")
                 hint(
                     controls,
-                    "Add a filter above. Combine noise reduction, studio clarity and EQ in any order.",
+                    "Add a filter above. Combine noise reduction, restoration, speech detail and EQ in any order.",
                 )
                 return
             }
@@ -3223,6 +3417,7 @@ class Panels(private val a: MainActivity) {
 
     fun captureEffects(current: List<Effect>, done: (List<Effect>) -> Unit) {
         val chain = current.map { it.copyEffect() }.toMutableList()
+        captureExpanded = false
         val body =
             setup(
                 "Video effects",
@@ -3230,6 +3425,7 @@ class Panels(private val a: MainActivity) {
                     done(chain)
                     close()
                 },
+                capture = true,
             )
         captureDraft = chain
         captureDone = done
@@ -3238,7 +3434,18 @@ class Panels(private val a: MainActivity) {
         val controls = column()
         pad(controls, 12f)
         scroll.addView(controls)
-        add(body, scroll)
+        body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        val clear =
+            text("Clear all effects", 11f).apply {
+                setPadding(px(12f), 0, px(12f), 0)
+                contentDescription = "Clear all effects"
+                setOnClickListener {
+                    chain.clear()
+                    appliedVideo(controls, chain)
+                    renderDraft()
+                }
+            }
+        add(body, clear, 42f)
         appliedVideo(controls, chain)
     }
 
@@ -3312,7 +3519,8 @@ class Panels(private val a: MainActivity) {
             if (fx?.kind == "Crop" && cropFrame) {
                 c.save()
                 c.translate(fx.number("x") * bounds.width(), fx.number("y") * bounds.height())
-                val radians = Math.toRadians(fx.number("rotation").toDouble())
+                val radians =
+                    Math.toRadians((fx.number("rotation") + fx.number("quarter") * 90).toDouble())
                 val cover =
                     max(
                             abs(cos(radians)) +
@@ -3322,7 +3530,11 @@ class Panels(private val a: MainActivity) {
                         .toFloat()
                 val zoom = fx.number("zoom", 1f) * cover
                 c.scale(zoom, zoom, bounds.centerX(), bounds.centerY())
-                c.rotate(fx.number("rotation"), bounds.centerX(), bounds.centerY())
+                c.rotate(
+                    fx.number("rotation") + fx.number("quarter") * 90,
+                    bounds.centerX(),
+                    bounds.centerY(),
+                )
                 c.drawBitmap(b, null, bounds, paint)
                 c.restore()
                 paint.color = Color.argb(110, 0, 0, 0)
@@ -3620,8 +3832,11 @@ class Panels(private val a: MainActivity) {
             paint.textAlign = Paint.Align.CENTER
             val name =
                 when (fx.kind) {
-                    "AI voice isolation" -> "Denoise"
-                    "Studio clarity" -> "Studio"
+                    "AI voice isolation",
+                    "Noise reduction" -> "Denoise"
+                    "Studio clarity",
+                    "Studio restoration" -> "Studio"
+                    "Speech detail" -> "Detail"
                     "Low-cut filter" -> "Low cut"
                     "Voice EQ" -> "EQ"
                     "Compressor" -> "Comp"
@@ -3633,7 +3848,15 @@ class Panels(private val a: MainActivity) {
             paint.color = Color.LTGRAY
             val description =
                 if (eq) "%.1f kHz".format(fx.number("frequency", 1800f) / 1000)
-                else if (fx.kind == "AI voice isolation") "RNNoise" else ""
+                else
+                    when (fx.kind) {
+                        "AI voice isolation" -> "RNNoise"
+                        "Noise reduction" -> "DeepFilterNet3"
+                        "Studio restoration" -> "VoiceFixer"
+                        "Speech detail",
+                        "Studio clarity" -> "LavaSR v2"
+                        else -> ""
+                    }
             c.drawText(description, middle, top + unit * 38, paint)
             paint.textSize = unit * 12
             paint.color = Color.WHITE

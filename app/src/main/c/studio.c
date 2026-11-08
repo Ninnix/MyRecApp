@@ -1,4 +1,5 @@
 #include "lava.h"
+#include "neural.h"
 #include <dlfcn.h>
 #include <jni.h>
 #include <stdint.h>
@@ -73,4 +74,42 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_studioFree(JNIEnv *env, jobjec
     (void)env;
     (void)self;
     yr_lava_close((YrLava *)(intptr_t)handle);
+}
+
+JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_neuralLoad(JNIEnv *env, jobject self,
+    jstring path, jint kind, jint threads) {
+    (void)self;
+    const char *directory = (*env)->GetStringUTFChars(env, path, NULL);
+    if (!directory) return 0;
+    char error[512];
+    YrNeural *state = yr_neural_open("libonnxruntime.so", directory, kind, threads, error, sizeof(error));
+    (*env)->ReleaseStringUTFChars(env, path, directory);
+    if (!state) failure(env, error);
+    return (jlong)(intptr_t)state;
+}
+
+JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_neuralProcess(JNIEnv *env,
+    jobject self, jlong handle, jfloatArray input) {
+    (void)self;
+    YrNeural *state = (YrNeural *)(intptr_t)handle;
+    jsize count = (*env)->GetArrayLength(env, input);
+    if (!state || count < 480 || count > 48000 * 30) {
+        failure(env, "Invalid restoration audio block"); return NULL;
+    }
+    float *samples = malloc((size_t)count * sizeof(float) * 2);
+    if (!samples) { failure(env, "Not enough memory for audio restoration"); return NULL; }
+    (*env)->GetFloatArrayRegion(env, input, 0, count, samples);
+    jfloatArray output = NULL;
+    if (yr_neural_process(state, samples, samples + count, count)) {
+        output = (*env)->NewFloatArray(env, count);
+        if (output) (*env)->SetFloatArrayRegion(env, output, 0, count, samples + count);
+    } else failure(env, yr_neural_error(state));
+    free(samples);
+    return output;
+}
+
+JNIEXPORT void JNICALL Java_org_yourec_app_Native_neuralFree(JNIEnv *env, jobject self,
+    jlong handle) {
+    (void)env; (void)self;
+    yr_neural_close((YrNeural *)(intptr_t)handle);
 }

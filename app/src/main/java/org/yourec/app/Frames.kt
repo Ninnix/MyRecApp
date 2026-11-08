@@ -25,7 +25,8 @@ object Effects {
                     "Vignette",
                     "Film grain",
                 ),
-            "Camera & frame" to listOf("Zoom", "Mirror", "Rotation"),
+            "Camera & frame" to
+                listOf("Zoom", "Mirror", "Rotation", "Kaleidoscope", "Widescreen 1953"),
             "Time" to listOf("Strobe", "Freeze", "Echo"),
             "Background" to listOf("Blur", "Letterbox"),
         )
@@ -36,6 +37,26 @@ object Effects {
     fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null) {
         if (strength <= 0f) return
         when (effect.kind) {
+            "Kaleidoscope" ->
+                Native.kaleidoscope(
+                    bitmap,
+                    strength,
+                    effect.number("segments", 6f).toInt(),
+                    effect.number("rotation"),
+                    effect.number("zoom", 1f),
+                    effect.number("centerX", .5f),
+                    effect.number("centerY", .5f),
+                )
+            "Widescreen 1953" ->
+                Native.widescreen(
+                    bitmap,
+                    strength,
+                    effect.number("ratio", 2.39f),
+                    if (effect.values["bars"] == "White") 1 else 0,
+                    effect.number("flares", .4f),
+                    runCatching { Color.parseColor(effect.values["flareColor"] ?: "#4ddfff") }
+                        .getOrDefault(Color.CYAN),
+                )
             "Color Correction" ->
                 Native.colorCorrect(
                     bitmap,
@@ -73,6 +94,9 @@ object Effects {
         )
     val audio =
         listOf(
+            "Noise reduction",
+            "Studio restoration",
+            "Speech detail",
             "AI voice isolation",
             "Studio clarity",
             "Low-cut filter",
@@ -444,7 +468,7 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             canvas.scale(contentZoom, contentZoom, frame.centerX(), frame.centerY())
         }
         val angle =
-            crop?.number("rotation", 0f)
+            crop?.let { it.number("rotation") + it.number("quarter") * 90 }
                 ?: fx.lastOrNull { it.kind == "Rotation" }?.number("rotation", 0f)
                 ?: 0f
         val radians = Math.toRadians(angle.toDouble())

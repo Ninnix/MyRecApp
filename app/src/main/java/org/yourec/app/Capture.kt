@@ -38,12 +38,25 @@ class Capture(
     private var session: CameraCaptureSession? = null
     private var request: CaptureRequest.Builder? = null
     private var recorder: MediaRecorder? = null
+    private var hdrRecorder: HdrRecorder? = null
+    private var hdr = false
+    private val hdrColor = HdrColor(activity)
+    private var colorGeneration = 0
+    private var matchingColor = false
     private var recordingSurface: CameraRecordingSurface? = null
+    private var composition: CameraComposition? = null
+    private var dualCamera: DualCamera? = null
+    private var dualLayout = 4
+    private var lastDualLayout = 0
+    private var dualMenu = false
+    private var dualSwapped = false
+    private var dualReady = false
     private var recordingOrientation = 0
     private var recordingFile: File? = null
     private var pendingStart = false
     private var previewSurface: Surface? = null
     private var cameraId = ""
+    private var lenses = emptyList<CameraLens>()
     private var opening = false
     private var pendingSwitch: String? = null
     private var closed = false
@@ -65,6 +78,9 @@ class Capture(
     private var micId = prefs.getInt("mic", -1)
     private var communicationRoute = -1
     private var previousAudioMode = AudioManager.MODE_NORMAL
+    internal var latestResult: TotalCaptureResult? = null
+        private set
+
     private var focusLocked = false
     @Volatile private var focusMode = CaptureRequest.CONTROL_AF_MODE_OFF
     @Volatile
@@ -79,8 +95,11 @@ class Capture(
     private var zoomAnimator: ValueAnimator? = null
     private var zoomMenu = false
     private var liveEffects = mutableListOf<Effect>()
+    private val effectHistory = mutableListOf<Effect>()
+    private var effectSince = 0.0
     private var liveFrame: Bitmap? = null
     private var rendering = false
+    private var effectGeneration = 0
     private val imageWorker = Executors.newSingleThreadExecutor()
     private var lastZoomTap = 0L
     private var lastZoom = 0f
@@ -114,8 +133,9 @@ class Capture(
                         !paused &&
                         configs.any {
                             it.clientAudioSessionId ==
-                                recorder?.activeRecordingConfiguration?.clientAudioSessionId &&
-                                it.isClientSilenced
+                                (recorder?.activeRecordingConfiguration
+                                        ?: hdrRecorder?.configuration)
+                                    ?.clientAudioSessionId && it.isClientSilenced
                         }
                 ) {
                     pause()
@@ -130,11 +150,12 @@ class Capture(
                 if (recording && !paused)
                     amplitude =
                         try {
-                            (recorder?.maxAmplitude ?: 0) / 32767f
+                            (recorder?.maxAmplitude ?: hdrRecorder?.amplitude ?: 0) / 32767f
                         } catch (_: Exception) {
                             0f
                         }
-                if (liveEffects.isNotEmpty() && texture.isAvailable && !rendering) updateLiveFrame()
+                if (liveEffects.any { it.enabled } && texture.isAvailable && !rendering)
+                    updateLiveFrame()
                 overlay.invalidate()
                 ui.postDelayed(this, 66)
             }
@@ -189,12 +210,17 @@ class Capture(
     }
 
     private fun openDefault() {
-        if (closed || device != null || opening) return
+        if (closed || device != null || opening || dualCamera != null) return
+        if (dualLayout != 4) {
+            openDual()
+            return
+        }
         if (
             activity.checkSelfPermission(Manifest.permission.CAMERA) !=
                 PackageManager.PERMISSION_GRANTED
         )
             return
+        if (lenses.isEmpty()) lenses = CameraLenses.available(manager)
         val ids = manager.cameraIdList
         if (cameraId.isEmpty())
             cameraId =
@@ -205,30 +231,34 @@ class Capture(
         open(cameraId)
     }
 
+    private fun lensState(chars: CameraCharacteristics) {
+        focusMode =
+            CameraFocus.mode(
+                chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                    ?: intArrayOf(CaptureRequest.CONTROL_AF_MODE_OFF)
+            )
+        if (!CameraFocus.canLock(focusMode)) focusLocked = false
+        front =
+            chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        zoomRange =
+            if (Build.VERSION.SDK_INT >= 30)
+                chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: Range(1f, 8f)
+            else Range(1f, chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f)
+        zoom = zoom.coerceIn(zoomRange.lower, zoomRange.upper)
+    }
+
     private fun open(id: String) {
         if (closed || opening) return
+        if (recording && hdr && !HdrRecorder.supported(manager, id)) {
+            ui.post { activity.message("This camera cannot record HDR") }
+            return
+        }
         opening = true
         cameraId = id
         try {
             val chars = manager.getCameraCharacteristics(id)
-            focusMode =
-                CameraFocus.mode(
-                    chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
-                        ?: intArrayOf(CaptureRequest.CONTROL_AF_MODE_OFF)
-                )
-            if (!CameraFocus.canLock(focusMode)) focusLocked = false
-            front =
-                chars.get(CameraCharacteristics.LENS_FACING) ==
-                    CameraCharacteristics.LENS_FACING_FRONT
-            zoomRange =
-                if (Build.VERSION.SDK_INT >= 30)
-                    chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: Range(1f, 8f)
-                else
-                    Range(
-                        1f,
-                        chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f,
-                    )
-            zoom = zoom.coerceIn(zoomRange.lower, zoomRange.upper)
+            lensState(chars)
+            if (hdr && !HdrRecorder.supported(manager, id)) hdr = false
             val sizes =
                 chars
                     .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -298,9 +328,26 @@ class Capture(
         try {
             session?.close()
             previewSurface?.release()
-            st.setDefaultBufferSize(captureSize.width, captureSize.height)
-            previewSurface = Surface(st)
-            val surfaces = mutableListOf(previewSurface!!)
+            val surfaces =
+                if (hdr) {
+                    if (composition == null) composition = newComposition()
+                    composition!!.clearInputs()
+                    mutableListOf(
+                        composition!!.input(
+                            captureSize.width,
+                            captureSize.height,
+                            manager
+                                .getCameraCharacteristics(cameraId)
+                                .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
+                            front,
+                            hdrColor.profile(cameraId),
+                        )
+                    )
+                } else {
+                    st.setDefaultBufferSize(captureSize.width, captureSize.height)
+                    previewSurface = Surface(st)
+                    mutableListOf(previewSurface!!)
+                }
             recordingSurface?.let {
                 val chars = manager.getCameraCharacteristics(cameraId)
                 surfaces.add(
@@ -319,7 +366,7 @@ class Capture(
             }
             request =
                 camera.createCaptureRequest(
-                    if (recorder != null) CameraDevice.TEMPLATE_RECORD
+                    if (recorder != null || hdr) CameraDevice.TEMPLATE_RECORD
                     else CameraDevice.TEMPLATE_PREVIEW
                 )
             surfaces.forEach { request!!.addTarget(it) }
@@ -339,6 +386,7 @@ class Capture(
                             pendingStart = false
                             try {
                                 recorder?.start()
+                                hdrRecorder?.start()
                                 since = SystemClock.elapsedRealtime()
                             } catch (e: Exception) {
                                 ui.post {
@@ -360,6 +408,11 @@ class Capture(
 
                     override fun onConfigureFailed(s: CameraCaptureSession) {
                         ui.post {
+                            if (hdr && !recording) {
+                                closeCamera()
+                                hdr = false
+                                openDefault()
+                            }
                             activity.message(
                                 "This camera does not support the selected recording format"
                             )
@@ -370,7 +423,11 @@ class Capture(
                 val outputs =
                     surfaces.mapIndexed { index, surface ->
                         OutputConfiguration(surface).apply {
-                            if (index > 0) {
+                            if (hdr)
+                                setDynamicRangeProfile(
+                                    android.hardware.camera2.params.DynamicRangeProfiles.HLG10
+                                )
+                            if (index > 0 || hdr) {
                                 setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
                                 setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_MONOTONIC)
                             }
@@ -378,19 +435,37 @@ class Capture(
                     }
                 camera.createCaptureSession(
                     SessionConfiguration(
-                        SessionConfiguration.SESSION_REGULAR,
-                        outputs,
-                        { command -> cameraHandler.post(command) },
-                        callback,
-                    )
+                            SessionConfiguration.SESSION_REGULAR,
+                            outputs,
+                            { command -> cameraHandler.post(command) },
+                            callback,
+                        )
+                        .apply {
+                            if (hdr)
+                                HdrRecorder.colorSpace(
+                                    this,
+                                    manager.getCameraCharacteristics(cameraId),
+                                )
+                        }
                 )
             } else camera.createCaptureSession(surfaces, callback, cameraHandler)
         } catch (e: Exception) {
-            ui.post { activity.message(e.message ?: "Cannot start camera preview") }
+            ui.post {
+                if (hdr && !recording) {
+                    closeCamera()
+                    hdr = false
+                    openDefault()
+                }
+                activity.message(e.message ?: "Cannot start camera preview")
+            }
         }
     }
 
     private fun updateRequest() {
+        dualCamera?.let {
+            it.update(zoom, focusLocked, torch, if (front) 1 else 0)
+            return
+        }
         if (Looper.myLooper() != cameraHandler.looper) {
             cameraHandler.post { updateRequest() }
             return
@@ -450,6 +525,7 @@ class Capture(
                         request: CaptureRequest,
                         result: TotalCaptureResult,
                     ) {
+                        latestResult = result
                         focusState = result.get(CaptureResult.CONTROL_AF_STATE)
                     }
                 },
@@ -461,6 +537,17 @@ class Capture(
     }
 
     private fun transform() {
+        composition?.let {
+            texture.setTransform(Matrix())
+            it.configure(
+                dualLayout,
+                dualSwapped,
+                activity.windowManager.defaultDisplay.rotation * 90,
+                texture.width,
+                texture.height,
+            )
+            return
+        }
         val w = texture.width.toFloat()
         val h = texture.height.toFloat()
         if (w == 0f || h == 0f) return
@@ -538,6 +625,10 @@ class Capture(
         }
 
     private fun micKey(device: AudioDeviceInfo) = MicrophoneInput(device).key
+
+    internal fun concurrentInputSizes() = dualCamera?.inputSizes.orEmpty()
+
+    internal fun inputDataSpaces() = composition?.inputDataSpaces().orEmpty()
 
     internal fun controlBounds(id: String) = overlay.bounds(id)
 
@@ -680,7 +771,11 @@ class Capture(
 
     fun start() {
         if (recording) return
-        if (device == null) {
+        if (matchingColor) {
+            activity.message("Preparing HDR")
+            return
+        }
+        if (device == null && !dualReady) {
             activity.message("Waiting for camera")
             return
         }
@@ -698,6 +793,10 @@ class Capture(
             return
         }
         stopMeter()
+        if (hdr) {
+            startHdr(microphone)
+            return
+        }
         session?.close()
         session = null
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
@@ -730,23 +829,38 @@ class Capture(
                 }
             }
             r.prepare()
-            recordingSurface =
-                CameraRecordingSurface(r.surface, videoSize.width, videoSize.height) { error ->
-                    ui.post {
-                        if (recording) {
-                            stop()
-                            activity.message(error.message ?: "Camera frame processing failed")
+            if (composition != null) {
+                composition!!.record(
+                    r.surface,
+                    videoSize.width,
+                    videoSize.height,
+                    recordingOrientation,
+                )
+            } else
+                recordingSurface =
+                    CameraRecordingSurface(r.surface, videoSize.width, videoSize.height) { error ->
+                        ui.post {
+                            if (recording) {
+                                stop()
+                                activity.message(error.message ?: "Camera frame processing failed")
+                            }
                         }
                     }
-                }
             recorder = r
             recordingFile = file
             recording = true
+            effectHistory.clear()
+            effectSince = 0.0
             paused = false
             duration = 0
             since = SystemClock.elapsedRealtime()
-            pendingStart = true
-            createSession()
+            if (composition != null) {
+                r.start()
+                since = SystemClock.elapsedRealtime()
+            } else {
+                pendingStart = true
+                createSession()
+            }
             activity.requestedOrientation =
                 if (width > height)
                     android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -761,6 +875,184 @@ class Capture(
             activity.message(e.message ?: "Cannot start recording")
         }
         overlay.invalidate()
+    }
+
+    private fun startHdr(microphone: AudioDeviceInfo) {
+        val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
+        try {
+            val renderer = composition ?: error("Waiting for HDR camera")
+            recordingOrientation = cameraOrientation()
+            val r =
+                HdrRecorder(
+                    activity,
+                    file,
+                    videoSize.width,
+                    videoSize.height,
+                    prefs.getInt("fps", 30),
+                    recordingOrientation,
+                    microphone,
+                    if (bluetooth(microphone)) MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                    else MediaRecorder.AudioSource.CAMCORDER,
+                    if (bluetooth(microphone)) 1 else 2,
+                ) { error ->
+                    ui.post {
+                        if (recording) stop()
+                        activity.message(error.message ?: "HDR recording failed")
+                    }
+                }
+            hdrRecorder = r
+            renderer.record(
+                r.surface,
+                videoSize.width,
+                videoSize.height,
+                recordingOrientation,
+                prefs.getInt("fps", 30),
+            )
+            r.start()
+            recordingFile = file
+            recording = true
+            paused = false
+            duration = 0
+            effectHistory.clear()
+            effectSince = 0.0
+            since = SystemClock.elapsedRealtime()
+            activity.requestedOrientation =
+                if (width > height)
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } catch (e: Exception) {
+            composition?.record(null)
+            hdrRecorder?.close()
+            hdrRecorder = null
+            file.delete()
+            recording = false
+            startMeter()
+            activity.message(e.message ?: "Cannot start HDR recording")
+        }
+        overlay.invalidate()
+    }
+
+    internal fun setHdr(enabled: Boolean) {
+        if (recording) {
+            activity.message("Stop recording to change HDR")
+            return
+        }
+        if (
+            enabled &&
+                (!HdrRecorder.supported(manager, cameraId) ||
+                    (dualLayout != 4 &&
+                        DualCamera.pair(manager)?.all { HdrRecorder.supported(manager, it) } !=
+                            true))
+        ) {
+            activity.message("HDR recording is unavailable for this camera combination")
+            return
+        }
+        val ids = if (dualCamera != null) DualCamera.pair(manager).orEmpty() else listOf(cameraId)
+        val references =
+            if (enabled && !hdr) {
+                val w = 256
+                val h = (w * texture.height / texture.width.coerceAtLeast(1)).coerceAtLeast(64)
+                ids.indices.map { index ->
+                    try {
+                        if (composition != null) composition?.snapshot(index, w, h)
+                        else texture.getBitmap(w, h)
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            } else emptyList()
+        closeCamera()
+        hdr = enabled
+        try {
+            openDefault()
+        } catch (e: Exception) {
+            hdr = false
+            closeCamera()
+            openDefault()
+            activity.message(e.message ?: "HDR is unavailable on this graphics driver")
+        }
+        if (hdr && references.any { it != null }) {
+            matchingColor = true
+            matchHdrColor(ids, references, colorGeneration)
+        } else references.forEach { it?.recycle() }
+        overlay.invalidate()
+    }
+
+    private fun matchHdrColor(
+        ids: List<String>,
+        references: List<Bitmap?>,
+        generation: Int,
+        attempt: Int = 0,
+    ) {
+        ui.postDelayed(
+            {
+                if (generation != colorGeneration || !hdr || closed) {
+                    references.forEach { it?.recycle() }
+                    return@postDelayed
+                }
+                val renderer = composition
+                val samples =
+                    references.mapIndexed { index, reference ->
+                        try {
+                            reference?.let { renderer?.snapshot(index, it.width, it.height) }
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                if (
+                    renderer == null ||
+                        samples.indices.any { references[it] != null && samples[it] == null }
+                ) {
+                    samples.forEach { it?.recycle() }
+                    if (attempt < 20) matchHdrColor(ids, references, generation, attempt + 1)
+                    else {
+                        references.forEach { it?.recycle() }
+                        matchingColor = false
+                    }
+                    return@postDelayed
+                }
+                imageWorker.execute {
+                    val profiles =
+                        references.indices.map { index ->
+                            val reference = references[index]
+                            val sample = samples[index]
+                            try {
+                                if (reference == null || sample == null) -1
+                                else {
+                                    val result = HdrColor.detect(reference, sample)
+                                    android.util.Log.i(
+                                        "YouRec-HDR",
+                                        "Camera ${ids[index]} colour match: ${result.toList()}",
+                                    )
+                                    result[0].toInt()
+                                }
+                            } catch (e: Exception) {
+                                android.util.Log.w(
+                                    "YouRec-HDR",
+                                    "Cannot compare camera colour profiles",
+                                    e,
+                                )
+                                -1
+                            } finally {
+                                reference?.recycle()
+                                sample?.recycle()
+                            }
+                        }
+                    ui.post {
+                        if (generation == colorGeneration && composition === renderer) {
+                            profiles.forEachIndexed { index, profile ->
+                                if (profile >= 0) {
+                                    hdrColor.remember(ids[index], profile)
+                                    renderer.primaries(index, profile)
+                                }
+                            }
+                            matchingColor = false
+                        }
+                    }
+                }
+            },
+            if (attempt == 0) 1500L else 200L,
+        )
     }
 
     fun elapsedSeconds(): Double =
@@ -778,6 +1070,7 @@ class Capture(
     }
 
     private fun closeRecordingSurface() {
+        composition?.record(null)
         val surface = recordingSurface
         recordingSurface = null
         // A stalled graphics driver must not prevent recorder cleanup.
@@ -798,10 +1091,12 @@ class Capture(
                     return
                 }
                 recorder?.resume()
+                hdrRecorder?.resume()
                 since = SystemClock.elapsedRealtime()
                 paused = false
             } else {
                 recorder?.pause()
+                hdrRecorder?.pause()
                 duration += SystemClock.elapsedRealtime() - since
                 paused = true
             }
@@ -817,24 +1112,29 @@ class Capture(
         session = null
         pendingStart = false
         val r = recorder
+        val hr = hdrRecorder
         recorder = null
+        hdrRecorder = null
+        finishEffectRange(elapsedSeconds())
         recording = false
         paused = false
         var success = true
         try {
             r?.stop()
+            hr?.stop()
         } catch (_: Exception) {
             success = false
         } finally {
             closeRecordingSurface()
             r?.release()
+            hr?.close()
         }
         val file = recordingFile
         recordingFile = null
         if (success && file != null)
             try {
                 val clip = ProjectStore.inspect(file)
-                liveEffects.forEach { clip.effects.add(it.copyEffect(true)) }
+                effectHistory.forEach { clip.effects.add(it.copyEffect(true)) }
                 onClip(clip)
             } catch (e: Exception) {
                 activity.message(e.message ?: "Cannot open recorded video")
@@ -845,12 +1145,29 @@ class Capture(
         }
         activity.requestedOrientation =
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        createSession()
+        if (dualLayout == 4 && dualCamera != null) {
+            closeCamera()
+            openDefault()
+        } else createSession()
         startMeter()
         overlay.invalidate()
     }
 
     internal fun switchCamera(id: String) {
+        if (dualCamera != null || dualLayout != 4) {
+            val pair = DualCamera.pair(manager) ?: return
+            if (id !in pair) {
+                activity.message("Choose a main camera while using Split view")
+                return
+            }
+            cameraId = id
+            lensState(manager.getCameraCharacteristics(id))
+            dualSwapped = front
+            transform()
+            updateRequest()
+            overlay.invalidate()
+            return
+        }
         session?.close()
         session = null
         device?.close()
@@ -862,52 +1179,110 @@ class Capture(
         open(id)
     }
 
-    private fun cameras() {
-        val options = mutableListOf<Pair<String, () -> Unit>>()
-        val cameraIds = manager.cameraIdList.toList()
-        val primary =
-            listOf(CameraCharacteristics.LENS_FACING_BACK, CameraCharacteristics.LENS_FACING_FRONT)
-                .mapNotNull { facing ->
-                    cameraIds.firstOrNull {
-                        manager
-                            .getCameraCharacteristics(it)
-                            .get(CameraCharacteristics.LENS_FACING) == facing
-                    }
-                }
-        for (id in primary) {
-            val chars = manager.getCameraCharacteristics(id)
-            val isFront =
-                chars.get(CameraCharacteristics.LENS_FACING) ==
-                    CameraCharacteristics.LENS_FACING_FRONT
-            options.add(
-                (if (isFront) "Front main" else "Rear main") to
-                    {
-                        zoom = 1f
-                        switchCamera(id)
-                    }
-            )
-            val range =
-                if (Build.VERSION.SDK_INT >= 30)
-                    chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
-                else null
-            if (range != null && range.lower < 1f)
-                options.add(
-                    (if (isFront) "Front ultrawide" else "Rear ultrawide") to
-                        {
-                            zoom = range.lower
-                            switchCamera(id)
-                        }
-                )
-            if (!isFront && range != null && range.upper >= 3f)
-                options.add(
-                    (if (isFront) "Front tele" else "Rear tele") to
-                        {
-                            zoom = 3f
-                            switchCamera(id)
-                        }
-                )
+    private fun newComposition(): CameraComposition {
+        texture.surfaceTexture?.setDefaultBufferSize(texture.width, texture.height)
+        return CameraComposition(
+            Surface(texture.surfaceTexture),
+            texture.width,
+            texture.height,
+            hdr,
+        ) {
+            ui.post {
+                if (recording) stop()
+                activity.message(it.message ?: "Camera composition failed")
+            }
         }
-        activity.choose("Camera", options.map { it.first }) { options[it].second() }
+    }
+
+    private fun openDual() {
+        if (closed || dualCamera != null || !texture.isAvailable) return
+        val pair = DualCamera.pair(manager)
+        if (pair == null) {
+            dualLayout = 4
+            activity.message("This phone does not support simultaneous front and rear cameras")
+            openDefault()
+            return
+        }
+        if (cameraId !in pair) cameraId = pair[0]
+        lensState(manager.getCameraCharacteristics(cameraId))
+        val sizes =
+            manager
+                .getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(MediaRecorder::class.java)
+                ?.toList()
+                .orEmpty()
+        val desired =
+            if (prefs.getString("quality", "1080p") == "4K") Size(3840, 2160) else Size(1920, 1080)
+        videoSize =
+            sizes.firstOrNull { it == desired }
+                ?: sizes.filter { it.width <= 1920 }.maxByOrNull { it.width * it.height }
+                ?: Size(1280, 720)
+        composition = newComposition()
+        transform()
+        dualCamera =
+            DualCamera(
+                manager,
+                cameraHandler,
+                composition!!,
+                pair,
+                hdr,
+                { hdrColor.profile(it) },
+                {
+                    ui.post {
+                        dualReady = true
+                        startMeter()
+                        overlay.invalidate()
+                    }
+                },
+                { message ->
+                    ui.post {
+                        if (recording) stop()
+                        closeCamera()
+                        dualLayout = 4
+                        activity.message(message)
+                        openDefault()
+                    }
+                },
+            )
+    }
+
+    internal fun setDualLayout(mode: Int) {
+        if (mode == dualLayout) return
+        if (mode < 4) lastDualLayout = mode
+        if (mode != 4 && DualCamera.pair(manager) == null) {
+            activity.message("This phone does not support simultaneous front and rear cameras")
+            return
+        }
+        if (recording && dualCamera != null) {
+            dualLayout = mode
+            transform()
+        } else if ((mode == 4) != (dualLayout == 4)) {
+            if (mode != 4) dualSwapped = front
+            if (recording) {
+                activity.message("Stop recording to turn Split view on")
+                return
+            }
+            closeCamera()
+            dualLayout = mode
+            openDefault()
+        } else {
+            dualLayout = mode
+            transform()
+        }
+        overlay.invalidate()
+    }
+
+    private fun cameras() {
+        lenses = CameraLenses.available(manager)
+        activity.choose(
+            "Camera",
+            lenses.map { it.name },
+            CameraLenses.selected(lenses, cameraId, zoom),
+        ) { i ->
+            zoom = lenses[i].zoom
+            switchCamera(lenses[i].id)
+        }
     }
 
     private fun microphones() {
@@ -928,7 +1303,11 @@ class Capture(
                 return@choose
             }
             if (recording) {
-                if (!recorder!!.setPreferredDevice(devices[i])) {
+                if (
+                    !(recorder?.setPreferredDevice(devices[i])
+                        ?: hdrRecorder?.microphone(devices[i])
+                        ?: false)
+                ) {
                     previous?.let { routeMicrophone(it) }
                     activity.message("This microphone cannot be selected during recording")
                     return@choose
@@ -1014,6 +1393,7 @@ class Capture(
     private fun updateLiveFrame() {
         val raw = texture.getBitmap(640, if (width > height) 360 else 1138) ?: return
         rendering = true
+        val generation = effectGeneration
         val effects = liveEffects.filter { it.enabled }.map { it.copyEffect() }
         imageWorker.execute {
             val person =
@@ -1044,18 +1424,52 @@ class Capture(
                     )
             }
             ui.post {
-                liveFrame?.recycle()
-                liveFrame = raw
                 rendering = false
-                overlay.invalidate()
+                if (generation != effectGeneration || closed) raw.recycle()
+                else {
+                    liveFrame?.recycle()
+                    liveFrame = raw
+                    overlay.invalidate()
+                }
             }
         }
     }
 
+    internal fun drawCamera(canvas: Canvas) {
+        texture.bitmap?.let {
+            canvas.drawBitmap(
+                it,
+                null,
+                RectF(
+                    texture.left.toFloat(),
+                    texture.top.toFloat(),
+                    texture.right.toFloat(),
+                    texture.bottom.toFloat(),
+                ),
+                Paint(),
+            )
+            it.recycle()
+        }
+    }
+
+    private fun finishEffectRange(end: Double) {
+        if (end <= effectSince) return
+        for (fx in liveEffects.filter { it.enabled }) effectHistory.add(
+            fx.copyEffect(true).apply {
+                from = effectSince
+                to = end
+            }
+        )
+        effectSince = end
+    }
+
     fun effects() {
         activity.captureEffects(liveEffects) {
-            liveEffects = it.toMutableList()
-            if (it.isEmpty()) {
+            val next = it.map { fx -> fx.copyEffect() }.toMutableList()
+            if (recording && next != liveEffects) finishEffectRange(elapsedSeconds())
+            if (next != liveEffects) effectGeneration++
+            liveEffects = next
+            if (it.none { fx -> fx.enabled }) {
                 liveFrame?.recycle()
                 liveFrame = null
             }
@@ -1064,6 +1478,16 @@ class Capture(
     }
 
     private fun closeCamera() {
+        colorGeneration++
+        matchingColor = false
+        effectGeneration++
+        liveFrame?.recycle()
+        liveFrame = null
+        dualReady = false
+        dualCamera?.close()
+        dualCamera = null
+        composition?.close()
+        composition = null
         releaseMicrophoneRoute()
         session?.close()
         session = null
@@ -1127,11 +1551,19 @@ class Capture(
         }
 
         private fun pill(c: Canvas, r: RectF, title: String, id: String, color: Int = Color.WHITE) {
-            paint.color = Color.argb(90, 25, 25, 27)
-            if (h > w || id !in listOf("flip", "camera", "zoom", "focus"))
+            paint.color =
+                if (id == "time" && recording) Color.rgb(210, 44, 60)
+                else Color.argb(90, 25, 25, 27)
+            if (id !in listOf("flip", "camera", "zoom", "focus"))
                 c.drawRoundRect(r, 15f, 15f, paint)
             val kind =
                 when (id) {
+                    "dual" -> "Dual camera"
+                    "pip" -> "Picture in picture"
+                    "splitVertical" -> "Split vertical"
+                    "splitHorizontal" -> "Split horizontal"
+                    "splitDiagonal" -> "Split diagonal"
+                    "dualReset" -> "Reset"
                     "effects" -> "Sparkles"
                     "settings" -> "Edit"
                     "flip" -> "Camera flip"
@@ -1140,7 +1572,38 @@ class Capture(
                     "edit" -> "Scissors"
                     else -> null
                 }
-            if (id == "camera") {
+            if (id == "mic") {
+                val glyph =
+                    glyphs.getOrPut("Microphone" to color) {
+                        Glyph(activity, "Microphone", color).apply { layout(0, 0, 12, 12) }
+                    }
+                c.save()
+                c.translate(r.left + 8, r.top + 2)
+                glyph.draw(c)
+                c.restore()
+                for (i in 0..7) {
+                    paint.color =
+                        if (amplitude > i / 8f) if (i > 5) Color.rgb(255, 75, 60) else Color.WHITE
+                        else Color.argb(150, 100, 100, 100)
+                    val x = r.left + 24 + i * 3.2f
+                    c.drawRoundRect(
+                        x,
+                        r.top + 8 - i * .65f,
+                        x + 1.8f,
+                        r.top + 12 + i * .65f,
+                        1f,
+                        1f,
+                        paint,
+                    )
+                }
+                text(c, title, r.centerX(), r.bottom - 4, 7f, color, Paint.Align.CENTER)
+            } else if (id == "time") {
+                paint.color = Color.WHITE
+                paint.typeface = Typeface.create("monospace", Typeface.BOLD)
+                paint.textSize = 11f
+                paint.textAlign = Paint.Align.CENTER
+                c.drawText(title, r.centerX(), r.centerY() + 4, paint)
+            } else if (id == "camera") {
                 paint.textSize = 9f
                 paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
                 val labelWidth = paint.measureText(title)
@@ -1187,56 +1650,116 @@ class Capture(
             c.scale(s, s)
             hits.clear()
             val portrait = h > w
-            val top = if (portrait) 36f else 14f
+            val top = if (portrait) max(36f, texture.top / s - 10f) else 14f
             pill(
                 c,
-                RectF(if (portrait) 12f else 64f, top, if (portrait) 108f else 178f, top + 22),
+                RectF(
+                    if (portrait) 12f else 64f,
+                    top,
+                    if (portrait) 74f else 178f,
+                    top + if (portrait) 34 else 22,
+                ),
                 micName().take(if (portrait) 15 else 18),
                 "mic",
             )
-            for (i in 0..7) {
-                paint.color =
-                    if (amplitude > i / 8f) if (i > 5) Color.rgb(255, 75, 60) else Color.WHITE
-                    else Color.argb(100, 150, 150, 150)
-                c.drawRect(
-                    (if (portrait) 99f else 154f) + i * 2,
-                    top + 17 - i,
-                    (if (portrait) 100f else 155f) + i * 2,
-                    top + 18,
-                    paint,
-                )
-            }
             val elapsed =
                 (duration +
                     if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
+            val timer = if (recording) elapsed else activity.editor.project.duration
             pill(
                 c,
-                RectF(if (portrait) 116f else 252f, top, if (portrait) 178f else 328f, top + 22),
-                if (recording) timeLabel(elapsed) else timeLabel(activity.editor.project.duration),
+                RectF(
+                    if (portrait) 80f else 252f,
+                    top,
+                    if (portrait) 130f else 328f,
+                    top + if (portrait) 34 else 22,
+                ),
+                "%02d:%02d".format(java.util.Locale.US, (timer / 60).toInt(), (timer % 60).toInt()),
                 "time",
                 if (recording) Color.rgb(255, 55, 74) else Color.WHITE,
             )
             pill(
                 c,
-                RectF(if (portrait) 181f else 396f, top, if (portrait) 213f else 430f, top + 22),
-                "SDR",
+                RectF(
+                    if (portrait) 137f else 366f,
+                    top,
+                    if (portrait) 169f else 400f,
+                    top + if (portrait) 34 else 22,
+                ),
+                if (hdr) "HDR" else "SDR",
                 "hdr",
+                if (hdr) Color.YELLOW else Color.WHITE,
             )
             pill(
                 c,
-                RectF(if (portrait) 216f else 434f, top, if (portrait) 244f else 469f, top + 22),
+                RectF(
+                    if (portrait) 175f else 404f,
+                    top,
+                    if (portrait) 207f else 437f,
+                    top + if (portrait) 34 else 22,
+                ),
+                "",
+                "dual",
+                if (dualMenu || dualLayout != 4) Color.CYAN else Color.WHITE,
+            )
+            pill(
+                c,
+                RectF(
+                    if (portrait) 213f else 441f,
+                    top,
+                    if (portrait) 245f else 474f,
+                    top + if (portrait) 34 else 22,
+                ),
                 "✧",
                 "effects",
                 if (liveEffects.any { it.enabled }) Color.YELLOW else Color.WHITE,
             )
             pill(
                 c,
-                RectF(if (portrait) 248f else 472f, top, if (portrait) 279f else 506f, top + 22),
+                RectF(
+                    if (portrait) 251f else 478f,
+                    top,
+                    if (portrait) 283f else 511f,
+                    top + if (portrait) 34 else 22,
+                ),
                 "☷",
                 "settings",
             )
+            if (dualMenu) {
+                val left = if (portrait) 26f else 175f
+                val y = top + 34
+                paint.color = Color.argb(180, 53, 53, 49)
+                c.drawRoundRect(left, y, left + 242, y + 40, 12f, 12f, paint)
+                listOf(
+                        "pip",
+                        "splitVertical",
+                        "splitHorizontal",
+                        "splitDiagonal",
+                        "dualReset",
+                        "dualDone",
+                    )
+                    .forEachIndexed { i, id ->
+                        val active = i < 4 && i == dualLayout
+                        pill(
+                            c,
+                            RectF(left + 3 + i * 39, y + 3, left + 39 + i * 39, y + 37),
+                            if (id == "dualDone") "Done" else "",
+                            id,
+                            if (active) Color.CYAN else Color.WHITE,
+                        )
+                    }
+                text(
+                    c,
+                    "Tap divider to flip · Two fingers to pan or zoom",
+                    w / 2,
+                    y + 54,
+                    8f,
+                    Color.WHITE,
+                    Paint.Align.CENTER,
+                )
+            }
             val cx = if (portrait) w / 2 else 549f
-            val cy = if (portrait) h - 88 else 139f
+            val cy = if (portrait) texture.bottom / s - 12f else 139f
             paint.color = Color.WHITE
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1.5f
@@ -1249,9 +1772,9 @@ class Capture(
             pill(
                 c,
                 RectF(
-                    if (portrait) cx + 64 else cx - 14,
+                    if (portrait) cx - 100 else cx - 14,
                     if (portrait) cy - 16 else cy - 86,
-                    if (portrait) cx + 100 else cx + 14,
+                    if (portrait) cx - 64 else cx + 14,
                     if (portrait) cy + 16 else cy - 50,
                 ),
                 if (recording) if (paused) "▶" else "Ⅱ" else "",
@@ -1260,26 +1783,33 @@ class Capture(
             pill(
                 c,
                 RectF(
-                    if (portrait) cx - 100 else cx - 18,
+                    if (portrait) cx + 64 else cx - 18,
                     if (portrait) cy - 16 else cy + 55,
-                    if (portrait) cx - 64 else cx + 18,
+                    if (portrait) cx + 100 else cx + 18,
                     if (portrait) cy + 16 else cy + 85,
                 ),
                 "✂",
                 "edit",
             )
-            val bottom = if (portrait) h - 155 else 242f
-            if (!portrait) {
+            val bottom = if (portrait) texture.bottom / s - 94f else 242f
+            if (portrait) {
+                paint.color = Color.argb(105, 60, 59, 55)
+                c.drawRoundRect(30f, bottom, 264f, bottom + 33, 18f, 18f, paint)
+                paint.color = Color.argb(60, 255, 255, 255)
+                paint.strokeWidth = .5f
+                c.drawLine(164f, bottom + 10, 164f, bottom + 23, paint)
+                c.drawLine(217f, bottom + 10, 217f, bottom + 23, paint)
+            } else {
                 paint.color = Color.argb(95, 25, 25, 27)
                 c.drawRoundRect(164f, 236f, 394f, 272f, 18f, 18f, paint)
             }
             pill(
                 c,
                 RectF(
-                    if (portrait) 24f else 171f,
+                    if (portrait) 34f else 171f,
                     bottom,
-                    if (portrait) 55f else 203f,
-                    bottom + 25,
+                    if (portrait) 65f else 203f,
+                    bottom + if (portrait) 33 else 25,
                 ),
                 "▣",
                 "flip",
@@ -1287,22 +1817,25 @@ class Capture(
             pill(
                 c,
                 RectF(
-                    if (portrait) 62f else 208f,
+                    if (portrait) 73f else 208f,
                     bottom,
-                    if (portrait) 154f else 286f,
-                    bottom + 25,
+                    if (portrait) 153f else 286f,
+                    bottom + if (portrait) 33 else 25,
                 ),
-                if (front) "Front main"
-                else if (zoom < 1) "Ultrawide" else if (zoom >= 3) "Tele" else "Main",
+                lenses
+                    .getOrNull(CameraLenses.selected(lenses, cameraId, zoom))
+                    ?.name
+                    ?.removePrefix("Rear ")
+                    ?.replaceFirstChar { it.uppercase() } ?: "Main",
                 "camera",
             )
             pill(
                 c,
                 RectF(
-                    if (portrait) 161f else 301f,
+                    if (portrait) 167f else 301f,
                     bottom,
-                    if (portrait) 203f else 346f,
-                    bottom + 25,
+                    if (portrait) 212f else 346f,
+                    bottom + if (portrait) 33 else 25,
                 ),
                 "%.1f×".format(java.util.Locale.US, zoom),
                 "zoom",
@@ -1311,10 +1844,10 @@ class Capture(
             pill(
                 c,
                 RectF(
-                    if (portrait) 211f else 358f,
+                    if (portrait) 223f else 358f,
                     bottom,
-                    if (portrait) 244f else 391f,
-                    bottom + 25,
+                    if (portrait) 257f else 391f,
+                    bottom + if (portrait) 33 else 25,
                 ),
                 if (!CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) "AF L" else "AF",
                 "focus",
@@ -1325,35 +1858,62 @@ class Capture(
                     c,
                     RectF(
                         if (portrait) w / 2 - 64 else 216f,
-                        bottom - (if (zoomMenu) 68 else 36),
+                        bottom - (if (zoomMenu) 78 else 36),
                         if (portrait) w / 2 + 64 else 344f,
-                        bottom - (if (zoomMenu) 45 else 13),
+                        bottom - (if (zoomMenu) 55 else 13),
                     ),
                     "+ Start new project",
                     "new",
                 )
             if (zoomMenu) {
-                val y = bottom - 30
-                val left = if (portrait) 62f else 164f
-                pill(
+                val y = bottom - 44
+                val left = if (portrait) 30f else 164f
+                val right = if (portrait) 264f else 394f
+                paint.color = Color.argb(120, 60, 59, 55)
+                c.drawRoundRect(left, y, right, y + 36, 18f, 18f, paint)
+                val timerGlyph =
+                    glyphs.getOrPut("Timer" to Color.WHITE) {
+                        Glyph(activity, "Timer", Color.WHITE).apply { layout(0, 0, 11, 11) }
+                    }
+                c.save()
+                c.translate(left + 19, y + 5)
+                timerGlyph.draw(c)
+                c.restore()
+                text(
                     c,
-                    RectF(left, y - 3, left + 35, y + 21),
-                    "${zoomSeconds.toInt()} s",
-                    "zoomTime",
-                    Color.YELLOW,
+                    if (zoomSeconds == 0f) "Instant" else "${zoomSeconds.toInt()} s",
+                    left + 24,
+                    y + 27,
+                    7f,
+                    Color.WHITE,
+                    Paint.Align.CENTER,
                 )
-                var x = left + 39
-                for (z in
-                    listOf(if (zoomRange.lower < 1f) zoomRange.lower else 1f, 1f, 2f, 3f, 5f)
+                val arrows =
+                    glyphs.getOrPut("Chevrons" to Color.WHITE) {
+                        Glyph(activity, "Chevrons", Color.WHITE).apply { layout(0, 0, 8, 12) }
+                    }
+                c.save()
+                c.translate(left + 44, y + 12)
+                arrows.draw(c)
+                c.restore()
+                hits.add(RectF(left, y, left + 54, y + 36) to "zoomTime")
+                val presets =
+                    listOf(if (zoomRange.lower < 1f) zoomRange.lower else 1f, 1f, 2f, 3f, 5f, 6f)
                         .distinct()
-                        .filter { it >= zoomRange.lower && it <= zoomRange.upper }) {
-                    pill(
+                        .filter { it >= zoomRange.lower && it <= zoomRange.upper }
+                val cell = (right - left - 54) / presets.size.coerceAtLeast(1)
+                for ((i, z) in presets.withIndex()) {
+                    val x = left + 54 + i * cell
+                    text(
                         c,
-                        RectF(x, y - 3, x + 30, y + 21),
-                        "${if(z%1==0f)z.toInt().toString()else z.toString()}×",
-                        "z:$z",
+                        "${if(z%1 == 0f) z.toInt().toString() else z.toString()}×",
+                        x + cell / 2,
+                        y + 21,
+                        9f,
+                        if (abs(zoom - z) < .05f) Color.YELLOW else Color.WHITE,
+                        Paint.Align.CENTER,
                     )
-                    x += 34
+                    hits.add(RectF(x, y, x + cell, y + 36) to "z:$z")
                 }
             }
             if (focusLocked)
@@ -1366,18 +1926,84 @@ class Capture(
                 activity,
                 object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     override fun onScale(d: ScaleGestureDetector): Boolean {
-                        setZoom(zoom * d.scaleFactor, true)
+                        moved = true
+                        if (dualCamera != null) {
+                            composition?.gesture(
+                                (d.focusX - texture.left) / texture.width,
+                                (d.focusY - texture.top) / texture.height,
+                                0f,
+                                0f,
+                                d.scaleFactor,
+                            )
+                        } else setZoom(zoom * d.scaleFactor, true)
                         return true
                     }
                 },
             )
 
+        private var touchX = 0f
+        private var touchY = 0f
+        private var moved = false
+        private var composing = false
+        private var draggingInset = false
+
         override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                touchX = e.x
+                touchY = e.y
+                moved = false
+                composing =
+                    dualCamera != null &&
+                        e.x >= texture.left &&
+                        e.x < texture.right &&
+                        e.y >= texture.top &&
+                        e.y < texture.bottom &&
+                        hits.none { it.first.contains(e.x / s, e.y / s) }
+                draggingInset =
+                    composing &&
+                        composition?.insetContains(
+                            (e.x - texture.left) / texture.width,
+                            (e.y - texture.top) / texture.height,
+                        ) == true
+            }
+            if (e.actionMasked == MotionEvent.ACTION_MOVE && composing) {
+                val dx = (e.x - touchX) / texture.width
+                val dy = (e.y - touchY) / texture.height
+                if (abs(dx) + abs(dy) > .003f) {
+                    if (e.pointerCount >= 2)
+                        composition?.gesture(
+                            (e.x - texture.left) / texture.width,
+                            (e.y - texture.top) / texture.height,
+                            dx,
+                            dy,
+                            1f,
+                        )
+                    else if (draggingInset) composition?.movePip(dx, dy)
+                    moved = true
+                    touchX = e.x
+                    touchY = e.y
+                }
+            }
             scale.onTouchEvent(e)
-            if (e.actionMasked != MotionEvent.ACTION_UP || scale.isInProgress) return true
+            if (e.actionMasked != MotionEvent.ACTION_UP || scale.isInProgress || moved) return true
             val x = e.x / s
             val y = e.y / s
-            val id = hits.lastOrNull { it.first.contains(x, y) }?.second ?: return true
+            val id = hits.lastOrNull { it.first.contains(x, y) }?.second
+            if (id == null) {
+                if (composition != null && !moved) {
+                    val px = (e.x - texture.left) / texture.width
+                    val py = (e.y - texture.top) / texture.height
+                    if (
+                        (dualLayout == 1 && abs(px - .5f) < .07f) ||
+                            (dualLayout == 2 && abs(py - .5f) < .07f) ||
+                            (dualLayout == 3 && abs(px + py - 1f) < .07f)
+                    ) {
+                        dualSwapped = !dualSwapped
+                        transform()
+                    }
+                }
+                return true
+            }
             when {
                 id.startsWith("z:") -> {
                     val z = id.substringAfter(':').toFloat()
@@ -1441,7 +2067,21 @@ class Capture(
                             updateRequest()
                         }
                         "settings" -> settings()
-                        "hdr" -> activity.message("Recording in SDR · H.264")
+                        "hdr" -> setHdr(!hdr)
+                        "dual" -> {
+                            dualMenu = !dualMenu
+                            if (dualMenu && dualLayout == 4) setDualLayout(lastDualLayout)
+                        }
+                        "pip" -> setDualLayout(0)
+                        "splitVertical" -> setDualLayout(1)
+                        "splitHorizontal" -> setDualLayout(2)
+                        "splitDiagonal" -> setDualLayout(3)
+                        "dualReset" -> {
+                            composition?.reset()
+                            dualSwapped = front
+                            setDualLayout(4)
+                        }
+                        "dualDone" -> dualMenu = false
                         "effects" -> effects()
                         "new" -> activity.newProject()
                     }

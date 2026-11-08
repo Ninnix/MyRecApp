@@ -186,6 +186,25 @@ class ProjectStore(private val root: File) {
     }
 
     companion object {
+        fun shape(path: String): Pair<Int, Int> {
+            val r = MediaMetadataRetriever()
+            try {
+                r.setDataSource(path)
+                val w =
+                    r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                        ?.toIntOrNull() ?: 1920
+                val h =
+                    r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                        ?.toIntOrNull() ?: 1080
+                val rotation =
+                    r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                        ?.toIntOrNull() ?: 0
+                return if (rotation % 180 == 0) w to h else h to w
+            } finally {
+                r.release()
+            }
+        }
+
         fun inspect(file: File): Clip {
             val r = MediaMetadataRetriever()
             try {

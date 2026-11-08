@@ -336,7 +336,10 @@ class AudioMixer(
                         eq = fx.number("gain", 3f) * strength
                         frequency = fx.number("frequency", 1800f)
                     }
-                    "Studio clarity" -> {
+                    "Studio clarity",
+                    "Speech detail",
+                    "Studio restoration",
+                    "Noise reduction" -> {
                         error("Studio audio has not been prepared")
                     }
                     "Compressor" -> compressor = strength

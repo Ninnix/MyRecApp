@@ -327,12 +327,25 @@ done:;
     return out;
 }
 
+static float hdr_linear(float value, int transfer) {
+    value = fminf(fmaxf(value, 0), 1);
+    if (transfer == 7) return (value <= .5f ? value*value/3 :
+        (expf((value-.55991073f)/.17883277f)+.28466892f)/12)*3;
+    float p = powf(value, 1/78.84375f);
+    return powf(fmaxf(p-.8359375f,0)/(18.8515625f-18.6875f*p),1/.1593017578125f)*49.261084f;
+}
+
+static float display_srgb(float value) {
+    value = fmaxf(value,0);
+    return value <= .0031308f ? 12.92f*value : 1.055f*powf(value,1/2.4f)-.055f;
+}
+
 JNIEXPORT void JNICALL Java_org_yourec_app_Native_yuv(JNIEnv *env, jobject self, jobject ybuf,
                                                       jobject ubuf, jobject vbuf, jint ys,
                                                       jint us, jint vs, jint up, jint vp,
                                                       jint left, jint top, jint width,
                                                       jint height, jint rotation, jint standard,
-                                                      jboolean full, jobject bitmap) {
+                                                      jboolean full, jobject bitmap, jint depth, jint transfer, jint primaries) {
     (void)self;
     uint8_t *yp = (*env)->GetDirectBufferAddress(env, ybuf);
     uint8_t *ub = (*env)->GetDirectBufferAddress(env, ubuf);
@@ -374,12 +387,41 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_yuv(JNIEnv *env, jobject self,
             }
             sx += left;
             sy += top;
-            jlong yi = (jlong)sy * ys + sx, ui = (jlong)(sy / 2) * us + (sx / 2) * up,
+            jlong yi = (jlong)sy * ys + sx*(depth == 10 ? 2 : 1), ui = (jlong)(sy / 2) * us + (sx / 2) * up,
                   vi = (jlong)(sy / 2) * vs + (sx / 2) * vp;
             uint8_t *p = pixels + y * info.stride + x * 4;
-            if (yi >= yn || ui >= un || vi >= vn || yi < 0 || ui < 0 || vi < 0) {
+            if (yi+(depth == 10) >= yn || ui+(depth == 10) >= un || vi+(depth == 10) >= vn || yi < 0 || ui < 0 || vi < 0) {
                 p[0] = p[1] = p[2] = 0;
                 p[3] = 255;
+                continue;
+            }
+            if(depth == 10 || transfer == 6 || transfer == 7 || standard == 6) {
+                float yv = depth == 10 ? (yp[yi] | yp[yi+1]<<8)/64.f : yp[yi];
+                float u = depth == 10 ? (ub[ui] | ub[ui+1]<<8)/64.f : ub[ui];
+                float v = depth == 10 ? (vb[vi] | vb[vi+1]<<8)/64.f : vb[vi];
+                float scale = depth == 10 ? 4 : 1;
+                yv = full ? yv/(256*scale-1) : (yv-16*scale)/(219*scale);
+                u = (u-128*scale)/((full ? 256*scale-1 : 224*scale));
+                v = (v-128*scale)/((full ? 256*scale-1 : 224*scale));
+                float kr = standard == 6 ? .2627f : standard == 1 ? .2126f : .299f;
+                float kb = standard == 6 ? .0593f : standard == 1 ? .0722f : .114f;
+                float r = yv+2*(1-kr)*v, b = yv+2*(1-kb)*u;
+                float g = (yv-kr*r-kb*b)/(1-kr-kb);
+                if(transfer == 6 || transfer == 7) {
+                    r = hdr_linear(r,transfer); g = hdr_linear(g,transfer); b = hdr_linear(b,transfer);
+                    if(primaries == 2) {
+                        float nr = 1.224745f*r-.224904f*g;
+                        float ng = -.042058f*r+1.042081f*g;
+                        b = -.019642f*r-.078655f*g+1.098537f*b; r = nr; g = ng;
+                    } else if(standard == 6 && primaries != 1) {
+                        float nr = 1.6605f*r-.5876f*g-.0728f*b;
+                        float ng = -.1246f*r+1.1329f*g-.0083f*b;
+                        b = -.0182f*r-.1006f*g+1.1187f*b; r = nr; g = ng;
+                    }
+                    float scale = 1+fmaxf(0,.2126f*r+.7152f*g+.0722f*b);
+                    r = display_srgb(r/scale); g = display_srgb(g/scale); b = display_srgb(b/scale);
+                }
+                p[0] = byte(r*255); p[1] = byte(g*255); p[2] = byte(b*255); p[3] = 255;
                 continue;
             }
             int l = full ? yp[yi] * 256 : (yp[yi] > 16 ? yp[yi] - 16 : 0) * 298;

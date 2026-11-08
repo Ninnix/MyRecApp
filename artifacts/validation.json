@@ -1,53 +1,68 @@
 {
-  "date": "2026-11-08T14:17:56.878075+00:00",
+  "date": "2026-11-08T17:33:11.726643+00:00",
   "apk": "artifacts/yourec-debug.apk",
-  "sha256": "358a5307e2bd61dcf77efac31170dbc50980e016eb2a395e1b0dbd9a66aacd78",
-  "bytes": 45421313,
+  "sha256": "7044debd47faed74e6eed29016c1cd9eef8ba09adba218a638113bad7b04e316",
+  "bytes": 45568387,
   "device": "OnePlus 15, Android 16, arm64-v8a",
   "suites": {
+    "editor": {
+      "checks": 38,
+      "log": "artifacts/build-test.txt",
+      "run_time": "2026-11-08T17:30:08.387235+00:00"
+    },
     "device": {
       "checks": 26,
       "log": "artifacts/device-test.txt",
-      "run_time": "2026-11-08T14:17:56.878075+00:00"
+      "run_time": "2026-11-08T17:29:37.844910+00:00"
     },
     "parity": {
       "checks": 58,
       "log": "artifacts/parity-test.txt",
-      "run_time": "2026-11-07T17:47:35.099384+00:00"
-    },
-    "export": {
-      "checks": 6,
-      "log": "artifacts/export-test.txt",
-      "run_time": "2026-11-07T11:40:57.135529+00:00"
+      "run_time": "2026-11-08T16:32:02.952503+00:00"
     },
     "studio": {
       "checks": 9,
       "log": "artifacts/studio-test.txt",
-      "run_time": "2026-11-07T11:41:29.083641+00:00"
-    },
-    "speech": {
-      "checks": 2,
-      "log": "artifacts/speech-test.txt",
-      "run_time": "2026-11-07T11:44:26.255860+00:00"
-    },
-    "editor": {
-      "checks": 38,
-      "log": "artifacts/build-test.txt",
-      "run_time": "2026-11-08T14:17:56.878075+00:00"
-    },
-    "orientation": {
-      "checks": 5,
-      "log": "artifacts/orientation-test.txt",
-      "run_time": "2026-11-08T14:17:56.878075+00:00"
+      "run_time": "2026-11-08T15:57:47.446435+00:00"
     },
     "timeline": {
       "checks": 2,
       "log": "artifacts/timeline-test.txt",
-      "run_time": "2026-11-07T17:36:06.996312+00:00"
+      "run_time": "2026-11-08T17:31:05.847751+00:00"
+    },
+    "gaps": {
+      "checks": 8,
+      "log": "artifacts/gaps-test.txt",
+      "run_time": "2026-11-08T16:29:12.175957+00:00"
+    },
+    "new-ui": {
+      "checks": 6,
+      "log": "artifacts/new-ui-test.txt",
+      "run_time": "2026-11-08T16:45:21.036006+00:00"
+    },
+    "composition": {
+      "checks": 4,
+      "log": "artifacts/composition-test.txt",
+      "run_time": "2026-11-08T17:27:46.804573+00:00"
+    },
+    "camera-gaps": {
+      "checks": 4,
+      "log": "artifacts/camera-gaps-test.txt",
+      "run_time": "2026-11-08T17:28:48.636772+00:00"
+    },
+    "hdr-color": {
+      "checks": 1,
+      "log": "artifacts/hdr-color-test.txt",
+      "run_time": "2026-11-08T17:31:02.572722+00:00"
+    },
+    "hdr-scene": {
+      "checks": 3,
+      "log": "artifacts/hdr-scene-test.txt",
+      "run_time": "2026-11-08T17:24:59.640897+00:00"
     }
   },
-  "total_checks": 146,
-  "scope": "Camera texture rotation fix: 38 model, 26 default device and 5 orientation checks pass on this build. Twelve real recorded frames match independently rotated raw ImageReader references more closely at 0 degrees than at 90/180/270, with stabilization crop alignment. Both front/rear starting cameras and both orientations pass, including camera switches and audio/video timing. UI, timeline, export, studio and speech suites remain previous-checkpoint evidence.",
+  "total_checks": 159,
+  "scope": "159 checks across this implementation: latest build has 38 editor checks and focused HDR colour/thumbnail/encoder and timeline checks. Default capture, concurrent camera, HDR scene and all-orientation composition checks passed before the final thumbnail and microphone-route refinements. UI parity, audio model and effects suites passed earlier in this implementation. Export, speech and absolute-orientation suites listed separately are previous-checkpoint evidence. These checks do not establish exact iOS rendering or DSP parity.",
   "manual_build": {
     "apk": ".build/manual/yourec-debug.apk",
     "sha256": "aa38f4c2f4afd96f449783abf49569cbe998776fff98dff6c963c81ad0f3e7d0",
@@ -225,5 +240,128 @@
     "exact_learned_tensors": 80,
     "exact_learned_parameters": 13985282,
     "scope": "Installed ONNX learned parameter values match the public upstream v2 checkpoint. This is not a comparison with packaged iOS model weights or iOS waveform processing."
+  },
+  "previous_checkpoint_suites": {
+    "export": {
+      "checks": 6,
+      "log": "artifacts/export-test.txt",
+      "run_time": "2026-11-07T11:40:57.135529+00:00"
+    },
+    "speech": {
+      "checks": 2,
+      "log": "artifacts/speech-test.txt",
+      "run_time": "2026-11-07T11:44:26.255860+00:00"
+    },
+    "orientation": {
+      "checks": 5,
+      "log": "artifacts/orientation-test.txt",
+      "run_time": "2026-11-08T14:17:56.878075+00:00"
+    }
+  },
+  "hdr_color": {
+    "maximum_channel_error_0": 1,
+    "encoded_corrected_maximum_error_0": 1,
+    "maximum_channel_error_1": 1,
+    "encoded_corrected_maximum_error_1": 1,
+    "maximum_channel_error_2": 1,
+    "encoded_corrected_maximum_error_2": 2,
+    "editor_maximum_channel_error_0": 1,
+    "editor_maximum_channel_error_1": 1,
+    "editor_maximum_channel_error_2": 1,
+    "timeline_maximum_channel_error": 1,
+    "profile_detection": [
+      [
+        0,
+        276,
+        0.003013557,
+        0.08100493,
+        0.04990868,
+        22547
+      ],
+      [
+        1,
+        295,
+        0.1247412,
+        0.0024611845,
+        0.047692236,
+        22547
+      ],
+      [
+        2,
+        292,
+        0.065177366,
+        0.039594226,
+        0.0024324188,
+        22547
+      ]
+    ],
+    "camera_profile_detection": [
+      1,
+      79,
+      0.099194095,
+      0.0229742,
+      0.050358094,
+      17956
+    ],
+    "registered_scene_check": {
+      "camera_profile": 1,
+      "registered_features": 182,
+      "declared_bt2020_trimmed_chroma_error": 0.050307855,
+      "selected_bt709_trimmed_chroma_error": 0.014855447,
+      "corrected_encoded_vs_sdr": {
+        "registration": [
+          1.0012062788009644,
+          -0.0494169257581234,
+          -13.63920783996582,
+          -4.5043792724609375,
+          91.0
+        ],
+        "encoded_hdr_mean_chroma_error": 0.027695225660934766,
+        "encoded_hdr_trimmed_chroma_error": 0.011141869120388845
+      },
+      "scope": "Standard-primaries interpretation inferred from registered SDR/HLG scenes. The camera tone curves and exposure can still differ; not a color-chart certification."
+    },
+    "declared_bt2020_roundtrip": {
+      "patches": 8,
+      "maximum_hlg_channel_error": 0.0009623195939334472,
+      "profile": "Main 10",
+      "pixel_format": "yuv420p10le",
+      "color_space": "bt2020nc",
+      "transfer": "arib-std-b67"
+    }
+  },
+  "recordings_preserved": {
+    "original_recording_files_sha256_verified": 33,
+    "original_project_metadata_unchanged": 3,
+    "project_metadata_checked": 3,
+    "existing_hdr_clip_sha256_unchanged": true,
+    "current_project_metadata_unchanged": true,
+    "legacy_rgb_primaries": "BT709",
+    "interpretation_only": true,
+    "recovered_recording_files_sha256_verified": 2
+  },
+  "neural_reference_comparisons": {
+    "DeepFilterNet3": {
+      "correlation": 0.9999999999934538,
+      "max_abs_error": 8.475035429000854e-08,
+      "rms_error": 1.0714090059593673e-08,
+      "native_seconds": 0.3196572099986952,
+      "samples": 96000
+    },
+    "VoiceFixer": {
+      "correlation": 0.9999999998562529,
+      "max_abs_error": 9.48202796280384e-08,
+      "rms_error": 3.8857019823979044e-09,
+      "native_seconds": 26.47572799000045,
+      "samples": 96000
+    }
+  },
+  "concurrent_camera_test": {
+    "inputs": "1920x1080 rear + 1920x1080 front",
+    "profiles": [
+      "SDR",
+      "HLG10"
+    ],
+    "scope": "Attached-device concurrent configuration accepted and actual recordings passed; other devices negotiate supported combinations."
   }
 }

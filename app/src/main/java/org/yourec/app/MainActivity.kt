@@ -6,7 +6,6 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
@@ -57,12 +56,7 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.BLACK
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+        updateBars()
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
         val testSession =
             intent.getBooleanExtra("testSession", false) &&
@@ -78,6 +72,7 @@ class MainActivity : Activity() {
         editor = Editor(store.current())
         Studio.directory = File(getExternalFilesDir(null), "models/studio-lava-v1")
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
+        AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
         Person.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))
         Stabilizer.directory = File(cacheDir, "stabilization")
@@ -138,6 +133,7 @@ class MainActivity : Activity() {
                     }
                 }
             "projects" -> projects()
+            "addVideo" -> importVideo()
             "play" -> playback.toggle()
             "audition" -> playback.audition()
             "previous" -> {
@@ -379,9 +375,9 @@ class MainActivity : Activity() {
         val width =
             px(
                 if (title == "Palette") 185f
-                else if (title == "Camera" || title == "Microphone") 180f else 165f
+                else if (title == "Camera") 187f else if (title == "Microphone") 180f else 165f
             )
-        val rowHeight = if (title == "Palette") 31f else 29f
+        val rowHeight = if (title == "Camera") 32f else if (title == "Palette") 31f else 29f
         val height = minOf(px(items.size * rowHeight + 12), root.height - px(80f))
         val popup =
             PopupWindow(scroll, width, height, true).apply {
@@ -395,7 +391,7 @@ class MainActivity : Activity() {
             val label =
                 TextView(this).apply {
                     text =
-                        if (i == checked)
+                        if (i == checked && title != "Camera")
                             android.text.SpannableString("✓   $item").apply {
                                 setSpan(
                                     android.text.style.ForegroundColorSpan(Color.rgb(225, 166, 99)),
@@ -420,7 +416,27 @@ class MainActivity : Activity() {
                         selected(i)
                     }
                 }
-            list.addView(label, LinearLayout.LayoutParams(-1, px(rowHeight)))
+            if (title == "Camera") {
+                val item =
+                    LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(px(12f), 0, px(8f), 0)
+                        contentDescription = items[i]
+                        setOnClickListener {
+                            popup.dismiss()
+                            selected(i)
+                        }
+                    }
+                item.addView(
+                    Glyph(this, if (i == checked) "Check" else "Camera", Panels.RED),
+                    LinearLayout.LayoutParams(px(18f), px(18f)),
+                )
+                label.contentDescription = null
+                label.setPadding(px(9f), 0, 0, 0)
+                item.addView(label, LinearLayout.LayoutParams(0, -1, 1f))
+                list.addView(item, LinearLayout.LayoutParams(-1, px(rowHeight)))
+            } else list.addView(label, LinearLayout.LayoutParams(-1, px(rowHeight)))
         }
         val location = IntArray(2)
         anchor?.getLocationInWindow(location)
@@ -429,7 +445,9 @@ class MainActivity : Activity() {
                 "Timeline scale" -> root.width - width - px(if (landscape) 46f else 3f)
                 "Playback speed",
                 "Microphone" -> px(if (landscape) 46f else 8f)
-                "Camera" -> px(if (landscape) 124f else 62f)
+                "Camera" ->
+                    capture?.controlBounds("camera")?.left?.toInt()
+                        ?: px(if (landscape) 124f else 62f)
                 "Palette" ->
                     if (anchor != null) location[0] + anchor.width - width
                     else if (landscape) px(399f) else root.width - width - px(12f)
@@ -440,13 +458,15 @@ class MainActivity : Activity() {
                 "Timeline scale" -> px(if (landscape) 20f else 280f)
                 "Playback speed" -> px(if (landscape) 25f else 230f)
                 "Microphone" -> px(if (landscape) 33f else 62f)
-                "Camera" -> root.height - height - px(if (landscape) 40f else 170f)
+                "Camera" ->
+                    (capture?.controlBounds("camera")?.bottom?.toInt()
+                        ?: (root.height - px(if (landscape) 40f else 119f))) - height
                 "Palette" ->
                     if (anchor != null) location[1] + anchor.height - height
                     else px(if (landscape) 62f else 300f)
                 else -> (root.height - height) / 2
             }
-        if (title == "Palette") {
+        if (title == "Palette" || title == "Camera") {
             val backdrop =
                 android.graphics.Bitmap.createBitmap(
                     maxOf(1, width / 2),
@@ -457,6 +477,7 @@ class MainActivity : Activity() {
             canvas.scale(.5f, .5f)
             canvas.translate(-x.toFloat(), -y.toFloat())
             root.draw(canvas)
+            if (title == "Camera") capture?.drawCamera(canvas)
             val frame =
                 FrameLayout(this).apply {
                     background =
@@ -482,7 +503,12 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams(-1, -1),
             )
             frame.addView(
-                View(this).apply { setBackgroundColor(Color.argb(225, 61, 61, 63)) },
+                View(this).apply {
+                    setBackgroundColor(
+                        if (title == "Camera") Color.argb(175, 35, 35, 35)
+                        else Color.argb(225, 61, 61, 63)
+                    )
+                },
                 FrameLayout.LayoutParams(-1, -1),
             )
             list.background = null
@@ -588,30 +614,11 @@ class MainActivity : Activity() {
     }
 
     private fun setProjectFormat(clip: Clip) {
-        val r = MediaMetadataRetriever()
-        try {
-            r.setDataSource(clip.path)
-            var w =
-                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
-                    ?: 1920
-            var h =
-                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
-                    ?: 1080
-            val rotation =
-                r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
-                    ?: 0
-            if (rotation % 180 != 0) {
-                val temp = w
-                w = h
-                h = temp
-            }
-            editor.project.width = w
-            editor.project.height = h
-            playback.frameWidth = if (w >= h) 768 else 432
-            playback.frameHeight = (playback.frameWidth.toFloat() * h / w).toInt()
-        } finally {
-            r.release()
-        }
+        val (w, h) = ProjectStore.shape(clip.path)
+        editor.project.width = w
+        editor.project.height = h
+        playback.frameWidth = if (w >= h) 768 else 432
+        playback.frameHeight = (playback.frameWidth.toFloat() * h / w).toInt()
     }
 
     fun export(width: Int, height: Int) {
@@ -719,16 +726,46 @@ class MainActivity : Activity() {
         }
     }
 
+    fun prepareAudioModel(name: String, done: (Boolean) -> Unit) {
+        if (AudioModels.kind(name) == 2) {
+            prepareStudio(done)
+            return
+        }
+        if (AudioModels.ready(name)) {
+            done(true)
+            return
+        }
+        AudioModels.cancelled = false
+        val size = AudioModels.bytes(name) / 1000000.0
+        panels.progress("Downloading $name · %.1f MB".format(java.util.Locale.US, size), 0f) {
+            AudioModels.cancelled = true
+        }
+        worker.execute {
+            var success = false
+            try {
+                AudioModels.download(name) { value -> ui.post { panels.updateProgress(value) } }
+                success = true
+            } catch (error: Exception) {
+                if (!AudioModels.cancelled)
+                    ui.post { message(error.message ?: "Cannot prepare audio model") }
+            }
+            ui.post {
+                if (!isFinishing && !isDestroyed) {
+                    panels.close()
+                    done(success)
+                }
+            }
+        }
+    }
+
     private fun updateBars() {
         window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                else 0
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
     }
 
     override fun onConfigurationChanged(config: Configuration) {

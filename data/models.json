@@ -48,5 +48,53 @@
     "url": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/",
     "bytes": 1876091704,
     "sha256": "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea"
+  },
+  "deepfilter": {
+    "version": "deepfilter-v3-c-1",
+    "directory": "deepfilter-v3",
+    "files": [
+      {
+        "name": "enc.onnx",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-deepfilternet/resolve/9e9bbc9ca4a09fe53440e223abf06f879d91f876/enc.onnx",
+        "bytes": 1954042,
+        "sha256": "7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"
+      },
+      {
+        "name": "erb_dec.onnx",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-deepfilternet/resolve/9e9bbc9ca4a09fe53440e223abf06f879d91f876/erb_dec.onnx",
+        "bytes": 3292397,
+        "sha256": "ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"
+      },
+      {
+        "name": "df_dec.onnx",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-deepfilternet/resolve/9e9bbc9ca4a09fe53440e223abf06f879d91f876/df_dec.onnx",
+        "bytes": 3340803,
+        "sha256": "23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"
+      }
+    ]
+  },
+  "voicefixer": {
+    "version": "voicefixer-v1-c-1",
+    "directory": "voicefixer-v1",
+    "files": [
+      {
+        "name": "analysis.onnx",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-voicefixer/resolve/aa259fa578b9d5f4c76fda3cd967f73542b0e15b/analysis.onnx",
+        "bytes": 282016051,
+        "sha256": "113d24062c5c9f87293a4e4771fbd4930136ccdff87ccbe6a6cb47726fc9cae9"
+      },
+      {
+        "name": "vocoder.onnx",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-voicefixer/resolve/aa259fa578b9d5f4c76fda3cd967f73542b0e15b/vocoder.onnx",
+        "bytes": 132905282,
+        "sha256": "51b513f2e5510bd7d1e61d255015d47e2fc7b5af95eb35f25b6e5030446c5310"
+      },
+      {
+        "name": "mel_filters.npy",
+        "url": "https://huggingface.co/TigreGotico/audiosronnx-voicefixer/resolve/aa259fa578b9d5f4c76fda3cd967f73542b0e15b/mel_filters.npy",
+        "bytes": 524928,
+        "sha256": "d534ace99f19552fadd89d07d8cef0e3ff398b608ed2247c975c153b95b17f04"
+      }
+    ]
   }
 }

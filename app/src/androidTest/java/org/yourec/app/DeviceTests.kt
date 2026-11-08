@@ -40,6 +40,57 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
+        if (suite == "hdr-scene") {
+            hdrScene()
+            return
+        }
+        if (suite == "hdr-color") {
+            var activity: MainActivity? = null
+            try {
+                val a =
+                    startActivitySync(
+                        Intent(targetContext, MainActivity::class.java)
+                            .putExtra("testSession", true)
+                            .putExtra("testSessionId", testSessionId)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                        as MainActivity
+                activity = a
+                test("HLG YUV sampling preserves colour and preview matches BT2020 tone mapping") {
+                    HdrColorTest.run(this, a)
+                }
+                onMain { a.finish() }
+                finish(
+                    Activity.RESULT_OK,
+                    Bundle().apply { putString("stream", report.toString()) },
+                )
+            } catch (e: Throwable) {
+                activity?.let { onMain { it.finish() } }
+                finish(
+                    Activity.RESULT_CANCELED,
+                    Bundle().apply {
+                        putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                    },
+                )
+            }
+            return
+        }
+        if (suite == "new-ui") {
+            newUi()
+            return
+        }
+        if (suite == "composition") {
+            composition()
+            return
+        }
+        if (suite == "camera-gaps") {
+            cameraGaps()
+            return
+        }
+        if (suite == "gaps") {
+            gaps()
+            return
+        }
         if (suite == "speech") {
             speech()
             return
@@ -732,7 +783,7 @@ class DeviceTests : Instrumentation() {
                 }
                 Thread.sleep(200)
             }
-            test("portrait camera places scissors left of Record and AF alone controls focus") {
+            test("portrait camera places scissors right of Record and AF alone controls focus") {
                 onMain { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
                 Thread.sleep(1000)
                 onMain {
@@ -740,7 +791,7 @@ class DeviceTests : Instrumentation() {
                     val record = camera.controlBounds("record")!!
                     val projects = camera.controlBounds("projects")!!
                     check(
-                        edit.centerX() < record.centerX() && record.centerX() < projects.centerX()
+                        projects.centerX() < record.centerX() && record.centerX() < edit.centerX()
                     )
                     check(abs(edit.centerY() - record.centerY()) < 2)
                     check(abs(projects.centerY() - record.centerY()) < 2)
@@ -927,7 +978,7 @@ class DeviceTests : Instrumentation() {
                                     view.draw(Canvas(it))
                                 }
                             val before = draw()
-                            val left = if (label == "portrait") 0 else 46
+                            val left = if (label == "portrait") 36 else 46
                             val right = if (label == "portrait") 294 else 594
                             val y = if (label == "portrait") 430 else 174
                             val x = (left + right) / 2f + 40
@@ -2229,6 +2280,834 @@ class DeviceTests : Instrumentation() {
             )
         } finally {
             activity?.let { onMain { it.finish() } }
+        }
+    }
+
+    private fun hdrScene() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            onMain { a.showCapture() }
+            Thread.sleep(1500)
+            val capture =
+                (0 until a.root.childCount)
+                    .map { a.root.getChildAt(it) }
+                    .filterIsInstance<Capture>()
+                    .single()
+            val folder =
+                File(targetContext.getExternalFilesDir(null), "hdr-scene").apply { mkdirs() }
+            for (hdr in listOf(false, true)) test(
+                "${if(hdr) "HDR" else "SDR"} rear camera scene is recorded and rendered"
+            ) {
+                onMain { capture.setHdr(hdr) }
+                Thread.sleep(2000)
+                val name = if (hdr) "hdr" else "sdr"
+                val preview =
+                    Bitmap.createBitmap(a.root.width, a.root.height, Bitmap.Config.ARGB_8888)
+                onMain { capture.drawCamera(Canvas(preview)) }
+                File(folder, "$name-preview.png").outputStream().use {
+                    preview.compress(Bitmap.CompressFormat.PNG, 100, it)
+                }
+                preview.recycle()
+                capture.latestResult?.let { result ->
+                    val info =
+                        org.json
+                            .JSONObject()
+                            .put(
+                                "gains",
+                                result
+                                    .get(
+                                        android.hardware.camera2.CaptureResult
+                                            .COLOR_CORRECTION_GAINS
+                                    )
+                                    .toString(),
+                            )
+                            .put(
+                                "transform",
+                                result
+                                    .get(
+                                        android.hardware.camera2.CaptureResult
+                                            .COLOR_CORRECTION_TRANSFORM
+                                    )
+                                    .toString(),
+                            )
+                            .put(
+                                "awb",
+                                result.get(android.hardware.camera2.CaptureResult.CONTROL_AWB_STATE),
+                            )
+                            .put(
+                                "physical",
+                                result.get(
+                                    android.hardware.camera2.CaptureResult
+                                        .LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID
+                                ),
+                            )
+                    File(folder, "$name-camera-color.json").writeText(info.toString(2))
+                }
+                File(folder, "$name-data-space.json")
+                    .writeText(org.json.JSONArray(capture.inputDataSpaces()).toString())
+                val before = a.editor.project.clips.size
+                onMain { capture.start() }
+                Thread.sleep(2200)
+                check(capture.recording && !capture.paused)
+                onMain { capture.stop() }
+                check(a.editor.project.clips.size == before + 1)
+                val clip = a.editor.project.clips.last()
+                File(clip.path).copyTo(File(folder, "$name.mp4"), true)
+                VideoDecoder(clip.path).use { decoder ->
+                    val image =
+                        decoder.frame(.8, 360, 640) ?: error("Cannot render camera recording")
+                    File(folder, "$name-editor.png").outputStream().use {
+                        image.compress(Bitmap.CompressFormat.PNG, 100, it)
+                    }
+                    image.recycle()
+                }
+            }
+            onMain { capture.suspendCamera() }
+            Thread.sleep(400)
+            test("direct HLG camera reference bypasses the compositor") {
+                DirectHdrTest.run(a, folder)
+            }
+            onMain {
+                capture.suspendCamera()
+                a.finish()
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            activity?.let { onMain { it.finish() } }
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        }
+    }
+
+    private fun newUi() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            val source = File(targetContext.cacheDir, "new-ui.mp4")
+            context.assets.open("fixture.mp4").use { input ->
+                source.outputStream().use { input.copyTo(it) }
+            }
+            onMain {
+                a.editor.load(Project(clips = mutableListOf(ProjectStore.inspect(source))))
+                a.playback.pause()
+            }
+            fun click(label: String) {
+                onMain {
+                    var view =
+                        findView(a.root) {
+                            it.contentDescription == label ||
+                                (it is android.widget.TextView && it.text.toString() == label)
+                        } ?: error("Missing $label")
+                    while (
+                        view !is ReferenceToggle &&
+                            !view!!.hasOnClickListeners() &&
+                            view.parent is android.view.View
+                    ) view = view.parent as android.view.View
+                    check(view.performClick()) { "Cannot click $label" }
+                }
+                Thread.sleep(140)
+            }
+            for (orientation in
+                listOf(
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                )) {
+                val name =
+                    if (orientation == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) "portrait"
+                    else "landscape"
+                onMain {
+                    a.panels.close()
+                    a.requestedOrientation = orientation
+                }
+                Thread.sleep(900)
+                test("$name live effects sheet expands, toggles and clears immediately") {
+                    var chain = listOf(Effect(kind = "Kaleidoscope"))
+                    onMain { a.panels.captureEffects(chain) { chain = it } }
+                    Thread.sleep(180)
+                    screenshot("new-live-$name", a)
+                    val panel = a.root.getChildAt(a.root.childCount - 1)
+                    val height = panel.height
+                    click("Expand effects")
+                    check(panel.height > height)
+                    screenshot("new-live-expanded-$name", a)
+                    click("Kaleidoscope enabled")
+                    Thread.sleep(150)
+                    check(chain.single().enabled == false)
+                    click("Clear all effects")
+                    Thread.sleep(150)
+                    check(chain.isEmpty())
+                    click("Done")
+                    check(!a.panels.isOpen)
+                }
+                test("$name Widescreen controls retain independent parameters") {
+                    onMain { a.panels.videoEffects(Effect(kind = "Widescreen 1953")) }
+                    Thread.sleep(180)
+                    check(
+                        findView(a.root) {
+                            it is android.widget.TextView && it.text.toString() == "Flares"
+                        } != null
+                    )
+                    screenshot("new-widescreen-$name", a)
+                    onMain { a.panels.close() }
+                }
+                test("$name crop exposes 4:5 and separate quarter turn") {
+                    onMain { a.panels.effect("Crop") }
+                    Thread.sleep(180)
+                    onMain {
+                        val label =
+                            findView(a.root) {
+                                it is android.widget.TextView &&
+                                    it.text.toString().startsWith("Original")
+                            }!!
+                        (label.parent as android.view.View).performClick()
+                    }
+                    Thread.sleep(180)
+                    val choice =
+                        uiAutomation.rootInActiveWindow
+                            .findAccessibilityNodeInfosByText("4:5")
+                            .firstOrNull() ?: error("Missing 4:5 crop choice")
+                    check(
+                        choice.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK
+                        )
+                    )
+                    Thread.sleep(200)
+                    val preview = a.playback.previewProject ?: error("Crop preview missing")
+                    check(abs(preview.width.toFloat() / preview.height - .8f) < .01f)
+                    if (name == "portrait")
+                        check(
+                            findView(a.root) {
+                                it is android.widget.TextView && it.text.toString() == "Inspect"
+                            } != null
+                        )
+                    click("Rotate 90 degrees")
+                    screenshot("new-crop-$name", a)
+                    click("Apply")
+                    check(
+                        a.editor.project.clips
+                            .single()
+                            .effects
+                            .last { it.kind == "Crop" }
+                            .number("quarter") == 1f
+                    )
+                    onMain { a.panels.effect("Crop") }
+                    Thread.sleep(100)
+                    onMain {
+                        val label =
+                            findView(a.root) {
+                                it is android.widget.TextView &&
+                                    it.text.toString().startsWith("Original")
+                            }!!
+                        (label.parent as android.view.View).performClick()
+                    }
+                    Thread.sleep(150)
+                    val original =
+                        uiAutomation.rootInActiveWindow
+                            .findAccessibilityNodeInfosByText("Original")
+                            .first()
+                    check(
+                        original.performAction(
+                            android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK
+                        )
+                    )
+                    Thread.sleep(150)
+                    click("Apply")
+                    check(a.editor.project.width == 640 && a.editor.project.height == 360)
+                }
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { onMain { it.finish() } }
+        }
+    }
+
+    private fun composition() {
+        try {
+            for (hint in listOf(0, 90, 180, 270)) test(
+                "composition pixels match every layout and flip at $hint degrees"
+            ) {
+                val reader =
+                    android.media.ImageReader.newInstance(
+                        if (hint % 180 == 0) 320 else 180,
+                        if (hint % 180 == 0) 180 else 320,
+                        android.graphics.PixelFormat.RGBA_8888,
+                        3,
+                    )
+                val thread = android.os.HandlerThread("composition-test").apply { start() }
+                reader.setOnImageAvailableListener(
+                    { it.acquireLatestImage()?.close() },
+                    android.os.Handler(thread.looper),
+                )
+                val file = File(targetContext.cacheDir, "composition-$hint.mp4")
+                val recorder =
+                    if (android.os.Build.VERSION.SDK_INT >= 31)
+                        android.media.MediaRecorder(targetContext)
+                    else android.media.MediaRecorder()
+                var renderer: CameraComposition? = null
+                var started = false
+                val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
+                val centers = mutableListOf<Triple<Double, Int, Boolean>>()
+                try {
+                    recorder.setVideoSource(android.media.MediaRecorder.VideoSource.SURFACE)
+                    recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
+                    recorder.setOutputFile(file.path)
+                    recorder.setVideoEncoder(android.media.MediaRecorder.VideoEncoder.H264)
+                    recorder.setVideoSize(320, 180)
+                    recorder.setVideoFrameRate(30)
+                    recorder.setVideoEncodingBitRate(1000000)
+                    recorder.setOrientationHint(hint)
+                    recorder.prepare()
+                    renderer =
+                        CameraComposition(reader.surface, reader.width, reader.height) {
+                            failure.set(it)
+                        }
+                    val inputs =
+                        listOf(
+                            renderer.input(320, 180, 0, false),
+                            renderer.input(320, 180, 0, false),
+                        )
+                    renderer.record(recorder.surface, 320, 180, hint)
+                    recorder.start()
+                    started = true
+                    val begin = android.os.SystemClock.elapsedRealtimeNanos()
+                    for (flip in listOf(false, true)) for (mode in 0..4) {
+                        renderer.configure(mode, flip, 0, reader.width, reader.height)
+                        centers.add(
+                            Triple(
+                                (android.os.SystemClock.elapsedRealtimeNanos() - begin) / 1e9 + .25,
+                                mode,
+                                flip,
+                            )
+                        )
+                        repeat(14) {
+                            inputs.forEachIndexed { index, surface ->
+                                val canvas = surface.lockCanvas(null)
+                                canvas.drawColor(if (index == 0) Color.RED else Color.BLUE)
+                                surface.unlockCanvasAndPost(canvas)
+                            }
+                            Thread.sleep(36)
+                        }
+                    }
+                    recorder.stop()
+                    started = false
+                    renderer.record(null)
+                    failure.get()?.let { throw it }
+                    VideoDecoder(file.path).use { decoder ->
+                        for ((time, mode, flip) in centers) {
+                            val image =
+                                decoder.frame(time, 640, 640) ?: error("Missing composed frame")
+                            try {
+                                val points =
+                                    when (mode) {
+                                        0 -> listOf(Triple(.2f, .7f, 0), Triple(.8f, .2f, 1))
+                                        1 -> listOf(Triple(.2f, .5f, 0), Triple(.8f, .5f, 1))
+                                        2 -> listOf(Triple(.5f, .2f, 0), Triple(.5f, .8f, 1))
+                                        3 -> listOf(Triple(.15f, .15f, 0), Triple(.85f, .85f, 1))
+                                        else -> listOf(Triple(.2f, .5f, 0), Triple(.8f, .5f, 0))
+                                    }
+                                for ((x, y, index) in points) {
+                                    val pixel =
+                                        image.getPixel(
+                                            (x * image.width).toInt(),
+                                            (y * image.height).toInt(),
+                                        )
+                                    val red = (index == 0) != flip
+                                    check(
+                                        if (red) Color.red(pixel) > 200 && Color.blue(pixel) < 40
+                                        else Color.blue(pixel) > 200 && Color.red(pixel) < 40
+                                    ) {
+                                        "Composition $hint mode=$mode flip=$flip at $x,$y = ${pixel.toUInt().toString(16)}"
+                                    }
+                                }
+                            } finally {
+                                image.recycle()
+                            }
+                        }
+                    }
+                } finally {
+                    if (started) runCatching { recorder.stop() }
+                    renderer?.close()
+                    recorder.release()
+                    reader.close()
+                    thread.quitSafely()
+                    file.delete()
+                }
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        }
+    }
+
+    private fun cameraGaps() {
+        var activity: MainActivity? = null
+        try {
+            val a =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            activity = a
+            onMain { a.showCapture() }
+            Thread.sleep(1800)
+            val capture =
+                (0 until a.root.childCount)
+                    .map { a.root.getChildAt(it) }
+                    .filterIsInstance<Capture>()
+                    .single()
+            val manager = a.getSystemService(android.hardware.camera2.CameraManager::class.java)
+            val images =
+                File(targetContext.getExternalFilesDir(null), "gap-screens").apply { mkdirs() }
+            fun snapshot(name: String) {
+                val image = uiAutomation.takeScreenshot() ?: error("Cannot capture $name")
+                File(images, "$name.png").outputStream().use {
+                    image.compress(Bitmap.CompressFormat.PNG, 100, it)
+                }
+                image.recycle()
+            }
+            fun fileTest(hdr: Boolean) {
+                val before = a.editor.project.clips.size
+                onMain { capture.start() }
+                Thread.sleep(2200)
+                check(capture.recording && !capture.paused) { "Camera did not start" }
+                if (capture.concurrentInputSizes().size == 2) {
+                    onMain { capture.setDualLayout(2) }
+                    Thread.sleep(1000)
+                    onMain { capture.setDualLayout(0) }
+                    Thread.sleep(800)
+                    onMain { capture.setDualLayout(3) }
+                    Thread.sleep(500)
+                    onMain { capture.setDualLayout(4) }
+                    Thread.sleep(500)
+                    onMain { capture.setDualLayout(0) }
+                }
+                onMain { capture.pause() }
+                Thread.sleep(400)
+                onMain { capture.pause() }
+                Thread.sleep(1600)
+                snapshot(if (hdr) "hdr-recording" else "dual-recording")
+                onMain { capture.stop() }
+                check(a.editor.project.clips.size == before + 1) { "Recording was not saved" }
+                val clip = a.editor.project.clips.last()
+                if (hdr)
+                    File(images, "hdr-camera-data-space.json")
+                        .writeText(org.json.JSONArray(capture.inputDataSpaces()).toString())
+                val ex = android.media.MediaExtractor()
+                try {
+                    ex.setDataSource(clip.path)
+                    val ranges = mutableMapOf<String, Pair<Long, Long>>()
+                    for (index in 0 until ex.trackCount) {
+                        val f = ex.getTrackFormat(index)
+                        val mime = f.getString(android.media.MediaFormat.KEY_MIME)!!
+                        if (mime.startsWith("video/")) {
+                            if (hdr) {
+                                check(mime == "video/hevc")
+                                check(
+                                    f.getInteger(android.media.MediaFormat.KEY_PROFILE) ==
+                                        android.media.MediaCodecInfo.CodecProfileLevel
+                                            .HEVCProfileMain10
+                                )
+                                check(
+                                    f.getInteger(android.media.MediaFormat.KEY_COLOR_TRANSFER) ==
+                                        android.media.MediaFormat.COLOR_TRANSFER_HLG
+                                ) {
+                                    "Missing HLG transfer: $f"
+                                }
+                                check(
+                                    f.getInteger(android.media.MediaFormat.KEY_COLOR_STANDARD) ==
+                                        android.media.MediaFormat.COLOR_STANDARD_BT2020
+                                )
+                            }
+                            File(images, if (hdr) "hdr-format.txt" else "dual-format.txt")
+                                .writeText(f.toString())
+                        }
+                        ex.selectTrack(index)
+                        var first = -1L
+                        var last = -1L
+                        var count = 0
+                        while (ex.sampleTime >= 0) {
+                            if (first < 0) first = ex.sampleTime
+                            if (mime.startsWith("audio/"))
+                                check(ex.sampleTime >= last) { "Audio timestamps moved backwards" }
+                            last = max(last, ex.sampleTime)
+                            count++
+                            ex.advance()
+                        }
+                        check(count > 20) { "Empty $mime" }
+                        ranges[mime.substringBefore('/')] = first to last
+                        ex.unselectTrack(index)
+                        ex.seekTo(0, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    }
+                    check(ranges.keys.containsAll(listOf("video", "audio")))
+                    check(
+                        abs(ranges.getValue("video").second - ranges.getValue("audio").second) <
+                            300000
+                    ) {
+                        "AV timing: $ranges"
+                    }
+                } finally {
+                    ex.release()
+                }
+                VideoDecoder(clip.path).use { decoder ->
+                    val bitmap =
+                        decoder.frame(.7, 320, 640) ?: error("Recorded frame cannot be decoded")
+                    File(images, if (hdr) "hdr-frame.png" else "dual-frame.png")
+                        .outputStream()
+                        .use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+                if (hdr) {
+                    val project =
+                        Project(
+                            width = 180,
+                            height = 320,
+                            clips =
+                                mutableListOf(clip.duplicate().apply { sourceOut = sourceIn + 1.0 }),
+                        )
+                    val output = File(images, "hdr-editor-export.mp4")
+                    Export(AudioCache(File(targetContext.cacheDir, "hdr-export-audio"))).run(
+                        project,
+                        output,
+                        180,
+                        320,
+                    ) {}
+                    VideoDecoder(output.path).use { decoder ->
+                        val bitmap = decoder.frame(.5, 180, 320) ?: error("HDR edit did not export")
+                        bitmap.recycle()
+                    }
+                }
+                File(clip.path).copyTo(File(images, if (hdr) "hdr.mp4" else "dual.mp4"), true)
+            }
+            if (DualCamera.pair(manager) != null)
+                test("concurrent cameras record layout changes and pause with synchronized audio") {
+                    onMain { capture.setDualLayout(1) }
+                    Thread.sleep(2200)
+                    snapshot("dual-preview")
+                    check(capture.concurrentInputSizes().size == 2)
+                    File(images, "concurrent-input-sizes.txt")
+                        .writeText(capture.concurrentInputSizes().toString())
+                    fileTest(false)
+                    fun tap(id: String) {
+                        onMain {
+                            val bounds = capture.controlBounds(id) ?: error("Missing $id")
+                            val now = android.os.SystemClock.uptimeMillis()
+                            for (action in
+                                listOf(
+                                    android.view.MotionEvent.ACTION_DOWN,
+                                    android.view.MotionEvent.ACTION_UP,
+                                )) {
+                                val event =
+                                    android.view.MotionEvent.obtain(
+                                        now,
+                                        now + 30,
+                                        action,
+                                        bounds.centerX(),
+                                        bounds.centerY(),
+                                        0,
+                                    )
+                                capture.dispatchTouchEvent(event)
+                                event.recycle()
+                            }
+                        }
+                        Thread.sleep(160)
+                    }
+                    onMain { capture.setDualLayout(3) }
+                    tap("dual")
+                    snapshot("dual-diagonal-toolbar")
+                    tap("dualReset")
+                    check(capture.concurrentInputSizes().isEmpty()) {
+                        "Circular arrow did not return to normal capture"
+                    }
+                    snapshot("dual-normal-toolbar")
+                    tap("dualDone")
+                    onMain { capture.setDualLayout(4) }
+                    Thread.sleep(1600)
+                }
+            val id =
+                manager.cameraIdList.first {
+                    manager
+                        .getCameraCharacteristics(it)
+                        .get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) == 1
+                }
+            if (HdrRecorder.supported(manager, id))
+                test("HLG recording has HEVC BT2020 metadata and decodes for the editor") {
+                    onMain { capture.setHdr(true) }
+                    Thread.sleep(2000)
+                    snapshot("hdr-preview")
+                    fileTest(true)
+                    onMain { capture.setHdr(false) }
+                }
+            if (DualCamera.pair(manager) != null)
+                test("HDR concurrent profiles record together or retain a working single camera") {
+                    onMain { capture.setDualLayout(1) }
+                    Thread.sleep(1700)
+                    onMain { capture.setHdr(true) }
+                    Thread.sleep(2000)
+                    File(images, "hdr-concurrent-input-sizes.txt")
+                        .writeText(capture.concurrentInputSizes().toString())
+                    fileTest(true)
+                    onMain {
+                        capture.setHdr(false)
+                        capture.setDualLayout(4)
+                    }
+                }
+            test("live capture effect changes save their time ranges in the recorded clip") {
+                fun click(label: String) {
+                    onMain {
+                        var view =
+                            findView(a.root) {
+                                it.contentDescription == label ||
+                                    it is android.widget.TextView && it.text.toString() == label
+                            } ?: error("Missing live effect control $label")
+                        while (
+                            view !is ReferenceToggle &&
+                                !view.hasOnClickListeners() &&
+                                view.parent is android.view.View
+                        ) view = view.parent as android.view.View
+                        check(view.performClick())
+                    }
+                    Thread.sleep(180)
+                }
+                Thread.sleep(1200)
+                onMain { capture.effects() }
+                click("+ Add")
+                click("Camera & frame")
+                click("Kaleidoscope")
+                click("Done")
+                val before = a.editor.project.clips.size
+                onMain { capture.start() }
+                Thread.sleep(1600)
+                check(capture.recording && !capture.paused)
+                onMain { capture.effects() }
+                Thread.sleep(150)
+                click("Kaleidoscope enabled")
+                click("Clear all effects")
+                click("Done")
+                Thread.sleep(1000)
+                onMain { capture.stop() }
+                check(a.editor.project.clips.size == before + 1)
+                val clip = a.editor.project.clips.last()
+                val effect = clip.effects.single { it.kind == "Kaleidoscope" }
+                check(effect.from == 0.0 && effect.to > .8 && effect.to < clip.duration - .5) {
+                    "Live range ${effect.from}..${effect.to} in ${clip.duration}"
+                }
+            }
+            onMain {
+                capture.suspendCamera()
+                a.showEditor()
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { onMain { it.finish() } }
+        }
+    }
+
+    private fun gaps() {
+        var activity: MainActivity? = null
+        try {
+            activity =
+                startActivitySync(
+                    Intent(targetContext, MainActivity::class.java)
+                        .putExtra("testSession", true)
+                        .putExtra("testSessionId", testSessionId)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                    as MainActivity
+            test("camera concurrency and HDR capabilities are enumerated") {
+                val manager =
+                    targetContext.getSystemService(
+                        android.hardware.camera2.CameraManager::class.java
+                    )
+                val result = org.json.JSONObject()
+                result.put(
+                    "concurrent",
+                    if (android.os.Build.VERSION.SDK_INT >= 30)
+                        org.json.JSONArray(manager.concurrentCameraIds.map { it.toList() })
+                    else org.json.JSONArray(),
+                )
+                result.put(
+                    "cameras",
+                    org.json.JSONArray(
+                        manager.cameraIdList.map { id ->
+                            val c = manager.getCameraCharacteristics(id)
+                            org.json
+                                .JSONObject()
+                                .put("id", id)
+                                .put(
+                                    "facing",
+                                    c.get(
+                                        android.hardware.camera2.CameraCharacteristics.LENS_FACING
+                                    ),
+                                )
+                                .put(
+                                    "sensor",
+                                    c.get(
+                                        android.hardware.camera2.CameraCharacteristics
+                                            .SENSOR_ORIENTATION
+                                    ),
+                                )
+                                .put(
+                                    "hdr",
+                                    if (android.os.Build.VERSION.SDK_INT >= 33)
+                                        c.get(
+                                                android.hardware.camera2.CameraCharacteristics
+                                                    .REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES
+                                            )
+                                            ?.supportedProfiles
+                                            ?.toList()
+                                            .toString()
+                                    else "[]",
+                                )
+                        }
+                    ),
+                )
+                File(targetContext.getExternalFilesDir(null), "gap-capabilities.json")
+                    .writeText(result.toString(2))
+            }
+            for ((name, kind) in listOf("Noise reduction" to 0, "Studio restoration" to 1)) {
+                test("$name loads and processes through the Android C API") {
+                    check(AudioModels.ready(name))
+                    val input =
+                        FloatArray(48000) { i ->
+                            (.1 * sin(i * 2 * PI * 220 / 48000) +
+                                    .02 * sin(i * 2 * PI * 4100 / 48000))
+                                .toFloat()
+                        }
+                    val start = System.nanoTime()
+                    val handle =
+                        Native.neuralLoad(AudioModels.directory(name).absolutePath, kind, 2)
+                    check(handle != 0L)
+                    try {
+                        val output = Native.neuralProcess(handle, input)
+                        check(output.size == input.size && output.all { it.isFinite() })
+                        check(output.any { abs(it) > .00001f })
+                        check(!output.contentEquals(input))
+                        val elapsed = (System.nanoTime() - start) / 1e9
+                        File(targetContext.getExternalFilesDir(null), "gap-audio-$kind.json")
+                            .writeText("{\"seconds\":$elapsed,\"samples\":${output.size}}")
+                    } finally {
+                        Native.neuralFree(handle)
+                    }
+                }
+            }
+            val speech = File(targetContext.cacheDir, "gap-speech.wav")
+            context.assets.open("speech.wav").use { input ->
+                speech.outputStream().use { input.copyTo(it) }
+            }
+            val sourceClip = ProjectStore.inspect(speech).apply { sourceOut = min(sourceOut, 1.0) }
+            val dry = Project(clips = mutableListOf(sourceClip))
+            val cache = AudioCache(File(targetContext.cacheDir, "gap-audio"))
+            fun samples(project: Project) =
+                AudioMixer(project, cache).use {
+                    it.prepare()
+                    it.read((project.duration * 48000).roundToInt())
+                }
+            val original = samples(dry)
+            for (name in AudioModels.effects) test(
+                "$name mixer preserves effect ranges, mute and prepared cache"
+            ) {
+                val wet =
+                    dry.duplicate().apply {
+                        clips.single().effects.add(Effect(kind = name, from = .25, to = .75))
+                    }
+                val output = samples(wet)
+                check(output.size == original.size && output.all { it.isFinite() })
+                var error = 0.0
+                for (i in output.indices) {
+                    val time = i / 2.0 / 48000
+                    val delta = abs(output[i] - original[i])
+                    if (time < .2 || time > .8)
+                        check(delta < .000001f) { "Effect escaped its range at $time" }
+                    else error += delta
+                }
+                check(error > .001)
+                check(samples(wet).contentEquals(output))
+                wet.clips.single().audio = false
+                check(samples(wet).all { abs(it) < .000001f })
+            }
+            test("three neural audio stages retain their order and share one engine safely") {
+                val project =
+                    dry.duplicate().apply {
+                        clips.single().effects.addAll(AudioModels.effects.map { Effect(kind = it) })
+                    }
+                val output = samples(project)
+                check(output.size == original.size && output.all { it.isFinite() })
+                check(output.any { abs(it) > .00001f })
+            }
+            test("Kaleidoscope and Widescreen preserve zero strength and change pixels") {
+                val source = Bitmap.createBitmap(128, 96, Bitmap.Config.ARGB_8888)
+                for (y in 0 until 96) for (x in 0 until 128) source.setPixel(
+                    x,
+                    y,
+                    Color.rgb(x * 2, y * 2, if (x > 64) 255 else 0),
+                )
+                for (kind in listOf("Kaleidoscope", "Widescreen 1953")) {
+                    val bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+                    try {
+                        Effects.correct(bitmap, Effect(kind = kind), 0f)
+                        check(bitmap.sameAs(source))
+                        Effects.correct(bitmap, Effect(kind = kind), 1f)
+                        check(!bitmap.sameAs(source))
+                        if (kind == "Widescreen 1953") check(bitmap.getPixel(64, 1) == Color.BLACK)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+                source.recycle()
+            }
+            finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+        } catch (e: Throwable) {
+            finish(
+                Activity.RESULT_CANCELED,
+                Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                },
+            )
+        } finally {
+            activity?.let { a -> onMain { a.finish() } }
         }
     }
 

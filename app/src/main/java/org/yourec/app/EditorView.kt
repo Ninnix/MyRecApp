@@ -128,7 +128,13 @@ class EditorView(
         enabled: Boolean = true,
         active: Boolean = false,
     ) {
-        rect(c, r, if (active) Color.rgb(50, 45, 19) else Color.rgb(29, 29, 31), 7f)
+        rect(
+            c,
+            r,
+            if (id == "export" && enabled) Color.rgb(34, 84, 60)
+            else if (active) Color.rgb(50, 45, 19) else Color.rgb(29, 29, 31),
+            7f,
+        )
         icon(
             c,
             symbol,
@@ -296,6 +302,10 @@ class EditorView(
                 c.restore()
             }
             "move",
+            "add" -> {
+                line(-1f, 0f, 1f, 0f)
+                line(0f, -1f, 0f, 1f)
+            }
             "scale" -> {
                 line(-1f, 0f, 1f, 0f)
                 path(-0.5f, -0.5f, -1f, 0f, -0.5f, 0.5f)
@@ -373,8 +383,19 @@ class EditorView(
             rect(canvas, RectF(0f, 350f, 294f, 383f), Color.rgb(15, 15, 16))
             transport(canvas, RectF(8f, 350f, 286f, 380f))
             controls(canvas, 8f, 536f, 278f)
-            timeline = RectF(0f, 383f, 294f, 492f)
+            timeline = RectF(36f, 383f, 294f, 492f)
         }
+        val addX = timeline.left - 18f
+        val addY = timeline.top + 52f
+        p.color = Color.rgb(60, 60, 62)
+        p.style = Paint.Style.FILL
+        canvas.drawCircle(addX, addY, 9f, p)
+        p.color = grey
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = .8f
+        canvas.drawCircle(addX, addY, 9f, p)
+        icon(canvas, "add", addX, addY, 5f)
+        hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addVideo")
         drawTimeline(canvas)
         val fxY = timeline.bottom + 12f
         val hasChips = drawSelection(canvas, fxY)
@@ -492,7 +513,7 @@ class EditorView(
         val first = if (landscape) 31f else 41f
         button(
             c,
-            RectF(x, y, x + cell, y + first),
+            RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
             "split",
             "Split",
             "split",
@@ -509,7 +530,7 @@ class EditorView(
         )
         button(
             c,
-            RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
+            RectF(x + 3 * (cell + gap), y, x + w, y + first),
             "tools",
             "Tools",
             "tools",
@@ -517,7 +538,7 @@ class EditorView(
         )
         button(
             c,
-            RectF(x + 3 * (cell + gap), y, x + w, y + first),
+            RectF(x, y, x + cell, y + first),
             "export",
             "Export",
             "export",
