@@ -19,6 +19,17 @@ lock. The app uses a supported autofocus mode and checks Camera2's lock state
 in device tests. Fixed-focus cameras are labelled Fixed. Lenses, zoom ranges
 and focus behavior come from camera capabilities, not manufacturer checks.
 
+Switching cameras keeps the same recording. Camera frames are rotated into the
+encoder's initial orientation before encoding, so different front/rear sensor
+orientations do not turn part of the file upside down. Source resolution can
+change while the encoded resolution stays fixed. Frame timestamps use the
+recording clock to preserve audio/video timing.
+
+The renderer removes the sensor rotation already carried by a camera texture
+before applying the recording correction. Canvas inputs do not carry that
+camera transform. This distinction follows Android's
+[camera texture transform handling](https://android.googlesource.com/platform/frameworks/support/+/6353c5d0cbdb0a766f9640dde3ffcb0f9e4cfcf1/camera/camera-core/src/main/java/androidx/camera/core/processing/SurfaceOutputImpl.java).
+
 ## Microphones
 
 Tap the microphone name to choose an input. The list includes physical recording
@@ -26,12 +37,6 @@ routes and excludes system-only tuner, telephony and echo-reference inputs.
 Labels distinguish USB, Bluetooth, wired and phone inputs. Phone locations are
 shown when reported; otherwise distinct route labels avoid guessing which hole
 or microphone array a route represents.
-
-Switching cameras keeps the same recording. Camera frames are rotated into the
-encoder's initial orientation before encoding, so different front/rear sensor
-orientations do not turn part of the file upside down. Source resolution can
-change while the encoded resolution stays fixed. Frame timestamps use the
-recording clock to preserve audio/video timing.
 
 Microphone priority lets you move an input to the top of the preferred list.
 Separate routes with the same product name retain separate preference keys.

@@ -47,8 +47,12 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   cancellation, live changes and audio export; requires Studio weights.
 * `--orientation`: asymmetric corner markers through 0/90/180/270-degree changes
   and different source sizes in one encoded file, plus real front/rear switching
-  in portrait and landscape with either camera first. Checks include audio/video
-  timestamp alignment; playback dimensions alone do not prove upright content.
+  in portrait and landscape with either camera first. Real recorded pixels are
+  compared against independently rotated raw ImageReader frames at 0/90/180/270
+  degrees, allowing for stabilization crop and optical-center differences. Leave
+  the phone stationary with both cameras facing a visible scene.
+  Checks include audio/video timestamp alignment; playback dimensions alone do
+  not prove upright content.
 * `--timeline`: rendered thumbnail pixels move together across split boundaries
   when dragging in either direction, in portrait and landscape. Covers splits
   from one source and adjacent clips from separate sources, and verifies that

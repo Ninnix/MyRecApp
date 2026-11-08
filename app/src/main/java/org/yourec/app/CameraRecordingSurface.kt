@@ -45,6 +45,7 @@ class CameraRecordingSurface(
         val realtime: Boolean,
         val monotonic: Boolean,
         val unmirror: Boolean,
+        val sensorOrientation: Int,
     ) {
         var offset: Long? = null
         var timestamp = 0L
@@ -170,6 +171,7 @@ class CameraRecordingSurface(
         realtime: Boolean,
         monotonic: Boolean = false,
         unmirror: Boolean = false,
+        sensorOrientation: Int = 0,
     ): Surface = call {
         check(!closed && !failed)
         releaseInput()
@@ -192,6 +194,7 @@ class CameraRecordingSurface(
                 realtime,
                 monotonic,
                 unmirror,
+                sensorOrientation,
             )
         source = input
         image.setOnFrameAvailableListener(
@@ -227,7 +230,15 @@ class CameraRecordingSurface(
         val rotation = FloatArray(16)
         Matrix.setIdentityM(rotation, 0)
         Matrix.translateM(rotation, 0, .5f, .5f, 0f)
-        Matrix.rotateM(rotation, 0, input.rotation.toFloat(), 0f, 0f, 1f)
+        // Camera textures already carry sensor rotation, unlike canvas inputs.
+        Matrix.rotateM(
+            rotation,
+            0,
+            (input.rotation - input.sensorOrientation).toFloat(),
+            0f,
+            0f,
+            1f,
+        )
         Matrix.translateM(rotation, 0, -.5f, -.5f, 0f)
         val transform = FloatArray(16)
         Matrix.multiplyMM(transform, 0, sourceTransform, 0, rotation, 0)

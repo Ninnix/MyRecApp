@@ -1176,10 +1176,28 @@ class DeviceTests : Instrumentation() {
                         "$name $label start switches cameras both ways without changing recording orientation"
                     ) {
                         onMain {
+                            capture.suspendCamera()
                             a.requestedOrientation = orientation
-                            capture.switchCamera(first)
                         }
-                        Thread.sleep(1000)
+                        Thread.sleep(5000)
+                        val references =
+                            listOf(first, next).associateWith { id ->
+                                val chars = manager.getCameraCharacteristics(id)
+                                val rotation =
+                                    CameraOrientation.recording(
+                                        chars.get(
+                                            android.hardware.camera2.CameraCharacteristics
+                                                .SENSOR_ORIENTATION
+                                        )!!,
+                                        a.windowManager.defaultDisplay.rotation * 90,
+                                        id == front,
+                                    )
+                                cameraReference(manager, id, rotation)
+                            }
+                        onMain { capture.resumeCamera() }
+                        Thread.sleep(700)
+                        onMain { capture.switchCamera(first) }
+                        Thread.sleep(800)
                         val before = a.editor.project.clips.size
                         val sensor =
                             manager
@@ -1217,17 +1235,44 @@ class DeviceTests : Instrumentation() {
                                     )
                                     ?.toInt() ?: 0
                             check(actual == expected) { "Rotation $actual, expected $expected" }
-                            for (time in listOf(500_000L, 1_600_000L, 2_700_000L)) {
+                            for ((time, id) in
+                                listOf(
+                                    500_000L to first,
+                                    1_600_000L to next,
+                                    2_700_000L to first,
+                                )) {
                                 val frame =
                                     reader.getFrameAtTime(
                                         time,
                                         MediaMetadataRetriever.OPTION_CLOSEST,
                                     ) ?: error("Missing camera frame")
                                 check((frame.height > frame.width) == (name == "portrait"))
+                                val scores = cameraCorrelations(references.getValue(id), frame)
+                                report.append("Camera pixels $name $label at $time: $scores\n")
+                                val captures =
+                                    File(
+                                            targetContext.getExternalFilesDir(null),
+                                            "orientation-frames",
+                                        )
+                                        .apply { mkdirs() }
+                                File(captures, "$name-$label-$time.png").outputStream().use {
+                                    frame.compress(Bitmap.CompressFormat.PNG, 100, it)
+                                }
+                                File(captures, "$name-$label-$time-reference.png")
+                                    .outputStream()
+                                    .use {
+                                        references
+                                            .getValue(id)
+                                            .compress(Bitmap.CompressFormat.PNG, 100, it)
+                                    }
+                                check(scores[0] > .4 && scores[0] > scores.drop(1).max() + .15) {
+                                    "Camera pixels do not match the upright reference: $name $label at $time, correlations for 0/90/180/270: $scores"
+                                }
                                 frame.recycle()
                             }
                         } finally {
                             reader.release()
+                            references.values.forEach { it.recycle() }
                         }
                         val extractor = android.media.MediaExtractor()
                         try {

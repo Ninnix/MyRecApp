@@ -1,13 +1,14 @@
 {
-  "date": "2026-11-07T17:47:35.099384+00:00",
+  "date": "2026-11-08T14:17:56.878075+00:00",
   "apk": "artifacts/yourec-debug.apk",
-  "sha256": "29b2dd960ffa45762d73fdb347637155e1d6f8e1050c0713eccf57db428c70be",
-  "bytes": 45421029,
+  "sha256": "358a5307e2bd61dcf77efac31170dbc50980e016eb2a395e1b0dbd9a66aacd78",
+  "bytes": 45421313,
   "device": "OnePlus 15, Android 16, arm64-v8a",
   "suites": {
     "device": {
       "checks": 26,
-      "log": "artifacts/device-test.txt"
+      "log": "artifacts/device-test.txt",
+      "run_time": "2026-11-08T14:17:56.878075+00:00"
     },
     "parity": {
       "checks": 58,
@@ -32,11 +33,12 @@
     "editor": {
       "checks": 38,
       "log": "artifacts/build-test.txt",
-      "run_time": "2026-11-07T17:36:06.996312+00:00"
+      "run_time": "2026-11-08T14:17:56.878075+00:00"
     },
     "orientation": {
       "checks": 5,
-      "log": "artifacts/orientation-test.txt"
+      "log": "artifacts/orientation-test.txt",
+      "run_time": "2026-11-08T14:17:56.878075+00:00"
     },
     "timeline": {
       "checks": 2,
@@ -45,7 +47,7 @@
     }
   },
   "total_checks": 146,
-  "scope": "Settings card and Animate button corrections: 58 UI checks pass on this build, including label bounds and both settings toggles in portrait/landscape. Captures were visually compared with supplied horizontal frames 673 (Settings) and 789 (Animate). Earlier model, timeline, default device, orientation, export, studio and speech results remain previous-checkpoint evidence.",
+  "scope": "Camera texture rotation fix: 38 model, 26 default device and 5 orientation checks pass on this build. Twelve real recorded frames match independently rotated raw ImageReader references more closely at 0 degrees than at 90/180/270, with stabilization crop alignment. Both front/rear starting cameras and both orientations pass, including camera switches and audio/video timing. UI, timeline, export, studio and speech suites remain previous-checkpoint evidence.",
   "manual_build": {
     "apk": ".build/manual/yourec-debug.apk",
     "sha256": "aa38f4c2f4afd96f449783abf49569cbe998776fff98dff6c963c81ad0f3e7d0",
@@ -62,26 +64,157 @@
     "runtime_and_model_preparation": "Verified with production manifests, outside the excluded folders.",
     "scope": "Earlier repository snapshot, before the recording orientation normalizer."
   },
-  "camera_frame_comparison": {
-    "rear": {
-      "upright_correlation": 0.9259187177217203,
-      "rotated_180_correlation": -0.7538129645587165
-    },
-    "front": {
-      "upright_correlation": 0.9997580728055515,
-      "rotated_180_correlation": -0.18810316772683972
-    }
-  },
   "timeline_regression": {
     "before_fix": "A small drag left 98 of 252 sampled thumbnail pixels stationary or incorrectly positioned.",
     "after_fix": "Rendered thumbnail pixels translate together through split boundaries in portrait and landscape.",
     "user_project": "The saved outlet project is byte-for-byte unchanged."
   },
-  "ui_build": {
+  "build": {
     "tasks": [
       "assembleDebug",
-      "assembleDebugAndroidTest"
+      "assembleDebugAndroidTest",
+      "testEditor"
     ],
-    "log": "artifacts/ui-build-test.txt"
+    "log": "artifacts/build-test.txt"
+  },
+  "camera_pixel_comparison": {
+    "reference": "Raw ImageReader sensor pixels rotated once using sensor/display orientation. Crop and optical-center alignment are allowed; no original footage is published.",
+    "samples": [
+      {
+        "orientation": "portrait",
+        "first_camera": "rear",
+        "time_us": 500000,
+        "correlations_0_90_180_270": [
+          0.5392405184790744,
+          0.16635986674083256,
+          0.0845279886770632,
+          0.186047305722855
+        ]
+      },
+      {
+        "orientation": "portrait",
+        "first_camera": "rear",
+        "time_us": 1600000,
+        "correlations_0_90_180_270": [
+          0.8746317311278132,
+          0.1740472976538249,
+          0.3759190745063671,
+          0.2057425119936067
+        ]
+      },
+      {
+        "orientation": "portrait",
+        "first_camera": "rear",
+        "time_us": 2700000,
+        "correlations_0_90_180_270": [
+          0.5701629141638312,
+          0.19125697003077574,
+          0.11406107301818202,
+          0.22590221459374737
+        ]
+      },
+      {
+        "orientation": "portrait",
+        "first_camera": "front",
+        "time_us": 500000,
+        "correlations_0_90_180_270": [
+          0.596969584089445,
+          0.23428197226888653,
+          0.16507488107873822,
+          0.26379707504580824
+        ]
+      },
+      {
+        "orientation": "portrait",
+        "first_camera": "front",
+        "time_us": 1600000,
+        "correlations_0_90_180_270": [
+          0.45580999911203013,
+          0.18267279490573934,
+          0.13470836189560942,
+          0.28794630692455436
+        ]
+      },
+      {
+        "orientation": "portrait",
+        "first_camera": "front",
+        "time_us": 2700000,
+        "correlations_0_90_180_270": [
+          0.809182275604059,
+          0.30579494608663105,
+          0.2866779829010886,
+          0.22656209634441088
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "rear",
+        "time_us": 500000,
+        "correlations_0_90_180_270": [
+          0.5847977488209214,
+          0.21208592284679195,
+          0.025434866743792656,
+          0.19022297176306938
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "rear",
+        "time_us": 1600000,
+        "correlations_0_90_180_270": [
+          0.9003983086739117,
+          0.5121686211657285,
+          0.33836264541100475,
+          0.5267351055998568
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "rear",
+        "time_us": 2700000,
+        "correlations_0_90_180_270": [
+          0.5576748753169815,
+          0.18794532259557387,
+          0.01058549602795269,
+          0.21952798353309091
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "front",
+        "time_us": 500000,
+        "correlations_0_90_180_270": [
+          0.9595630133638259,
+          0.4586034567269753,
+          0.2500150861701829,
+          0.507684492727468
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "front",
+        "time_us": 1600000,
+        "correlations_0_90_180_270": [
+          0.8492635119051904,
+          0.18921842048423543,
+          -0.048547289731789095,
+          0.2010153240984518
+        ]
+      },
+      {
+        "orientation": "landscape",
+        "first_camera": "front",
+        "time_us": 2700000,
+        "correlations_0_90_180_270": [
+          0.8610814668574245,
+          0.38728406428574236,
+          0.2810745824766561,
+          0.5121072160850553
+        ]
+      }
+    ],
+    "original_clip_records_and_sources_unchanged": true,
+    "additional_user_project_clips_preserved": 3,
+    "note": "Supersedes earlier comparisons between two recordings, which did not establish absolute upright orientation."
   }
 }

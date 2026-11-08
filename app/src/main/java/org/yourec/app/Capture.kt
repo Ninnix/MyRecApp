@@ -311,7 +311,9 @@ class Capture(
                         chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) ==
                             CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                         monotonic = Build.VERSION.SDK_INT >= 33,
-                        unmirror = front && Build.VERSION.SDK_INT < 33,
+                        unmirror = front,
+                        sensorOrientation =
+                            chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
                     )
                 )
             }
@@ -778,7 +780,7 @@ class Capture(
     private fun closeRecordingSurface() {
         val surface = recordingSurface
         recordingSurface = null
-        // Drain the recorder even if a stalled graphics driver delays renderer cleanup.
+        // A stalled graphics driver must not prevent recorder cleanup.
         try {
             surface?.close()
         } catch (_: Exception) {}
@@ -820,7 +822,6 @@ class Capture(
         paused = false
         var success = true
         try {
-            closeRecordingSurface()
             r?.stop()
         } catch (_: Exception) {
             success = false
