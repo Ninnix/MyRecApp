@@ -90,6 +90,11 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   part of the committed fixtures.
 * `--hdr-scene`: a short SDR/HDR scene comparison plus a direct HDR camera
   recording that bypasses the compositor. Keep the rear lens clear and still.
+* `--audio-precision --precision fp32|fp16|fp16-storage`: isolated VoiceFixer
+  loading, timing and finite-output checks on speech, quiet speech, noise and
+  silence. Compare the saved waveforms against FP32 before accepting a format;
+  a model can produce finite numbers and still corrupt the audio. See the
+  [precision trial](VOICEFIXER_FP16.md) for conversion and comparison commands.
 
 The latest local verification summary is kept in
 [artifacts/validation.json](../artifacts/validation.json). APKs, raw captures,

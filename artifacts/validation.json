@@ -363,5 +363,246 @@
       "HLG10"
     ],
     "scope": "Attached-device concurrent configuration accepted and actual recordings passed; other devices negotiate supported combinations."
+  },
+  "voicefixer_fp16_trial": {
+    "scope": "Isolated experiment; production manifests and FP32 files unchanged. Load/finite checks do not establish audio quality. DeepFilterNet3 unchanged.",
+    "model_bytes": {
+      "fp32": 415446261,
+      "fp16_graph": 208382864,
+      "fp16_storage_fp32_compute": 208417564
+    },
+    "device": "OnePlus 15, Android 16, CPU via ONNX Runtime 1.31.1 C API, two threads",
+    "input_seconds": 2,
+    "finite_checks_completed": 3,
+    "graph_result": "Rejected: loud output from silence and substantial waveform error.",
+    "storage_result": "Candidate; close numerical agreement on four Android cases, with no demonstrated inference speedup.",
+    "runs": {
+      "fp32": {
+        "precision": "fp32",
+        "threads": 2,
+        "cases": [
+          {
+            "case": "normal",
+            "seconds": 5.334749269,
+            "samples": 96000,
+            "peak": 0.7494163,
+            "rms": 0.13304272257922364
+          },
+          {
+            "case": "quiet",
+            "seconds": 4.962523436,
+            "samples": 96000,
+            "peak": 0.016637076,
+            "rms": 0.0019281806098035226
+          },
+          {
+            "case": "noise",
+            "seconds": 4.451879322,
+            "samples": 96000,
+            "peak": 0.710912,
+            "rms": 0.12735778530186379
+          },
+          {
+            "case": "silence",
+            "seconds": 4.447429009,
+            "samples": 96000,
+            "peak": 0.0019061608,
+            "rms": 0.0008505749476631791
+          }
+        ],
+        "load_seconds": 0.998074895,
+        "passed": true,
+        "median_seconds": 4.707201379
+      },
+      "fp16": {
+        "precision": "fp16",
+        "threads": 2,
+        "cases": [
+          {
+            "case": "normal",
+            "seconds": 4.704562185,
+            "samples": 96000,
+            "peak": 0.91289896,
+            "rms": 0.3254881931636714
+          },
+          {
+            "case": "quiet",
+            "seconds": 4.532313123,
+            "samples": 96000,
+            "peak": 0.8867624,
+            "rms": 0.31392944515443916
+          },
+          {
+            "case": "noise",
+            "seconds": 4.631711144,
+            "samples": 96000,
+            "peak": 0.9075055,
+            "rms": 0.31935509775939497
+          },
+          {
+            "case": "silence",
+            "seconds": 4.377705936,
+            "samples": 96000,
+            "peak": 0.8867624,
+            "rms": 0.31392944515443916
+          }
+        ],
+        "load_seconds": 0.710908801,
+        "passed": true,
+        "median_seconds": 4.582012133499999
+      },
+      "fp16-storage": {
+        "precision": "fp16-storage",
+        "threads": 2,
+        "cases": [
+          {
+            "case": "normal",
+            "seconds": 5.658269582,
+            "samples": 96000,
+            "peak": 0.7517558,
+            "rms": 0.13337960634951984
+          },
+          {
+            "case": "quiet",
+            "seconds": 5.072221561,
+            "samples": 96000,
+            "peak": 0.016701471,
+            "rms": 0.001934105306093689
+          },
+          {
+            "case": "noise",
+            "seconds": 4.551694113,
+            "samples": 96000,
+            "peak": 0.71331394,
+            "rms": 0.12767172217324446
+          },
+          {
+            "case": "silence",
+            "seconds": 4.391620363,
+            "samples": 96000,
+            "peak": 0.0019143824,
+            "rms": 0.0008508208004678077
+          }
+        ],
+        "load_seconds": 0.506684583,
+        "passed": true,
+        "median_seconds": 4.811957837
+      }
+    },
+    "comparisons": [
+      {
+        "case": "normal",
+        "precision": "fp16",
+        "correlation": -0.00044841328711322376,
+        "maximum_error": 1.2976452112197876,
+        "rms_error": 0.3516666491489889,
+        "signal_to_difference_db": -8.442801191975152,
+        "peak_ratio": 1.2181466667101457,
+        "rms_ratio": 2.446493779243361
+      },
+      {
+        "case": "normal",
+        "precision": "fp16-storage",
+        "correlation": 0.9999744249082627,
+        "maximum_error": 0.009727459400892258,
+        "rms_error": 0.0010105663755057052,
+        "signal_to_difference_db": 42.38852559569299,
+        "peak_ratio": 1.003121739323393,
+        "rms_ratio": 1.0025321472964825
+      },
+      {
+        "case": "quiet",
+        "precision": "fp16",
+        "correlation": -0.007878405126405315,
+        "maximum_error": 0.8860315693309531,
+        "rms_error": 0.3139321456394188,
+        "signal_to_difference_db": -44.23376154285335,
+        "peak_ratio": 53.30037543822959,
+        "rms_ratio": 162.8112239892416
+      },
+      {
+        "case": "quiet",
+        "precision": "fp16-storage",
+        "correlation": 0.9999853295472814,
+        "maximum_error": 0.00012700865045189857,
+        "rms_error": 1.1846721912162651e-05,
+        "signal_to_difference_db": 44.23099034328466,
+        "peak_ratio": 1.0038705941650894,
+        "rms_ratio": 1.0030726874132239
+      },
+      {
+        "case": "noise",
+        "precision": "fp16",
+        "correlation": -0.00046850649768028277,
+        "maximum_error": 1.2488087713718414,
+        "rms_error": 0.34385506460211984,
+        "signal_to_difference_db": -8.626998542753208,
+        "peak_ratio": 1.2765370763312263,
+        "rms_ratio": 2.5075428015841785
+      },
+      {
+        "case": "noise",
+        "precision": "fp16-storage",
+        "correlation": 0.9999683718114334,
+        "maximum_error": 0.011523261666297913,
+        "rms_error": 0.0010616895246413323,
+        "signal_to_difference_db": 41.580559318621525,
+        "peak_ratio": 1.003378685423242,
+        "rms_ratio": 1.002464999455177
+      },
+      {
+        "case": "silence",
+        "precision": "fp16",
+        "correlation": 0.07642776953896886,
+        "maximum_error": 0.8868696422941866,
+        "rms_error": 0.3138702420042093,
+        "signal_to_difference_db": -51.340751102782285,
+        "peak_ratio": 465.20857978146427,
+        "rms_ratio": 369.0791105674014
+      },
+      {
+        "case": "silence",
+        "precision": "fp16-storage",
+        "correlation": 0.9999336940976421,
+        "maximum_error": 5.355867324396968e-05,
+        "rms_error": 3.884644181286086e-06,
+        "signal_to_difference_db": 46.80722683768068,
+        "peak_ratio": 1.0043131718317992,
+        "rms_ratio": 1.000289043082334
+      }
+    ],
+    "production_voicefixer_sha256_verified_unchanged": true,
+    "host_comparison": {
+      "cases": 8,
+      "minimum_correlation": 0.9999050815906205,
+      "minimum_signal_to_difference_db": 37.16835516720899,
+      "maximum_rms_error": 0.0011231024314634576,
+      "scope": "Two source excerpts at normal level, quiet level, with noise and silence; host timings excluded because work ran concurrently."
+    },
+    "candidate_files": {
+      "precision": "fp16-storage",
+      "float32_io": true,
+      "files": [
+        {
+          "name": "analysis.onnx",
+          "fp32_bytes": 282016051,
+          "bytes": 141307435,
+          "sha256": "06414195523c3716939a24d6f985e916696a11ea13a8388e554018259ebb4efb"
+        },
+        {
+          "name": "vocoder.onnx",
+          "fp32_bytes": 132905282,
+          "bytes": 66585201,
+          "sha256": "e8d63533ac4ba74ea78f1018fc566dcbebd42d44e1a0fc07e5035b6a40ece0e5"
+        },
+        {
+          "name": "mel_filters.npy",
+          "fp32_bytes": 524928,
+          "bytes": 524928,
+          "sha256": "d534ace99f19552fadd89d07d8cef0e3ff398b608ed2247c975c153b95b17f04"
+        }
+      ],
+      "bytes": 208417564
+    }
   }
 }
