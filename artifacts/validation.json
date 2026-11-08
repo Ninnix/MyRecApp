@@ -1,8 +1,8 @@
 {
-  "date": "2026-11-08T21:09:11.370197+00:00",
+  "date": "2026-11-08T21:18:00.450399+00:00",
   "apk": "artifacts/yourec-debug.apk",
-  "sha256": "c09eb8e08f5edc7c8f0fedf4e8b6ad206f2300159caa5e0312bdcd152efc0b9a",
-  "bytes": 45568387,
+  "sha256": "d7344aabea5dac4688825d6e3e3d214c5cfda10fef1b5ae45ded9ceaee731279",
+  "bytes": 45568659,
   "device": "OnePlus 15, Android 16, arm64-v8a",
   "suites": {
     "editor": {
@@ -62,7 +62,7 @@
     }
   },
   "total_checks": 159,
-  "scope": "FP16 experiment and all uncommitted precision changes reverted. Application source matches the FP32 baseline eb1bfe8. Fresh verification: 38 editor checks and eight Android neural/effects checks. Other suites retain their earlier baseline evidence.",
+  "scope": "Timeline transition markers updated to an orange rounded outline with inward-facing filled triangles. Fresh verification: assembleDebug and visual inspection on Android using an isolated three-clip project. Automated suites retain their earlier evidence; they were not rerun for this drawing-only change.",
   "manual_build": {
     "apk": ".build/manual/yourec-debug.apk",
     "sha256": "aa38f4c2f4afd96f449783abf49569cbe998776fff98dff6c963c81ad0f3e7d0",
@@ -86,11 +86,9 @@
   },
   "build": {
     "tasks": [
-      "assembleDebug",
-      "assembleDebugAndroidTest",
-      "testEditor"
+      "assembleDebug"
     ],
-    "log": "artifacts/build-test.txt"
+    "log": "artifacts/transition-icon-build.txt"
   },
   "camera_pixel_comparison": {
     "reference": "Raw ImageReader sensor pixels rotated once using sensor/display orientation. Crop and optical-center alignment are allowed; no original footage is published.",
@@ -371,5 +369,10 @@
     "experimental_device_models_removed": true,
     "previous_baseline_apk_sha256": "7044debd47faed74e6eed29016c1cd9eef8ba09adba218a638113bad7b04e316",
     "source_matches_pre_fp16_baseline": true
+  },
+  "transition_icon": {
+    "reference": "Recent iOS editor screenshot supplied by the user",
+    "manual_check": "Two transition markers rendered between three clips on the connected device. Checked border, inward triangles, size and dark fill.",
+    "user_projects_untouched": true
   }
 }

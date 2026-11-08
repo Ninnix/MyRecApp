@@ -206,6 +206,19 @@ class EditorView(
                 c.drawRoundRect(x - s, y - s, x - s * 0.15f, y + s, 0.3f, 0.3f, p)
                 c.drawRoundRect(x + s * 0.15f, y - s, x + s, y + s, 0.3f, 0.3f, p)
             }
+            "transition" -> {
+                p.strokeWidth = size * .065f
+                c.drawRoundRect(x - s, y - s, x + s, y + s, s * .35f, s * .35f, p)
+                p.style = Paint.Style.FILL
+                for (side in floatArrayOf(-1f, 1f)) {
+                    val triangle = Path()
+                    triangle.moveTo(x + side * s * .62f, y - s * .53f)
+                    triangle.lineTo(x + side * s * .1f, y)
+                    triangle.lineTo(x + side * s * .62f, y + s * .53f)
+                    triangle.close()
+                    c.drawPath(triangle, p)
+                }
+            }
             "back" -> path(0.5f, -1f, -0.5f, 0f, 0.5f, 1f)
             "undo",
             "redo" -> {
@@ -744,13 +757,9 @@ class EditorView(
         }
         for (tr in editor.project.transitions) {
             val x = xFor(tr.cut)
-            rect(
-                c,
-                RectF(x - 5, timeline.top + 44, x + 5, timeline.top + 54),
-                Color.rgb(90, 45, 12),
-                2f,
-            )
-            text(c, "◀▶", x, timeline.top + 51, 5f, Color.rgb(239, 151, 45), Paint.Align.CENTER)
+            val y = timeline.top + 49
+            rect(c, RectF(x - 8.5f, y - 8.5f, x + 8.5f, y + 8.5f), Color.argb(220, 18, 18, 20), 3f)
+            icon(c, "transition", x, y, 17f, Color.rgb(255, 149, 32))
         }
         val cursor = xFor(editor.cursor)
         p.color = Color.WHITE
