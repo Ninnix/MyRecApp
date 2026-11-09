@@ -12,6 +12,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
+import kotlin.math.min
 
 class CameraRecordingSurface(
     private val output: Surface,
@@ -41,11 +42,14 @@ class CameraRecordingSurface(
         val surface: Surface,
         val width: Int,
         val height: Int,
-        val rotation: Int,
+        var rotation: Int,
         val realtime: Boolean,
         val monotonic: Boolean,
         val unmirror: Boolean,
         val sensorOrientation: Int,
+        val mirror: Boolean,
+        val outputRotation: Int,
+        var fitFrame: Boolean,
     ) {
         var offset: Long? = null
         var timestamp = 0L
@@ -172,6 +176,9 @@ class CameraRecordingSurface(
         monotonic: Boolean = false,
         unmirror: Boolean = false,
         sensorOrientation: Int = 0,
+        mirror: Boolean = false,
+        outputRotation: Int = 0,
+        fitFrame: Boolean = false,
     ): Surface = call {
         check(!closed && !failed)
         releaseInput()
@@ -195,6 +202,9 @@ class CameraRecordingSurface(
                 monotonic,
                 unmirror,
                 sensorOrientation,
+                mirror,
+                outputRotation,
+                fitFrame,
             )
         source = input
         image.setOnFrameAvailableListener(
@@ -210,6 +220,13 @@ class CameraRecordingSurface(
             handler,
         )
         input.surface
+    }
+
+    fun rotate(rotation: Int, fitFrame: Boolean) = call {
+        source?.let {
+            it.rotation = rotation
+            it.fitFrame = fitFrame
+        }
     }
 
     private fun draw(input: Input) {
@@ -242,10 +259,19 @@ class CameraRecordingSurface(
         Matrix.translateM(rotation, 0, -.5f, -.5f, 0f)
         val transform = FloatArray(16)
         Matrix.multiplyMM(transform, 0, sourceTransform, 0, rotation, 0)
+        if (input.mirror) {
+            // Mirror the displayed frame, including its encoder rotation hint.
+            val quarter = input.outputRotation % 180 != 0
+            Matrix.translateM(transform, 0, .5f, .5f, 0f)
+            Matrix.scaleM(transform, 0, if (quarter) 1f else -1f, if (quarter) -1f else 1f, 1f)
+            Matrix.translateM(transform, 0, -.5f, -.5f, 0f)
+        }
         val quarter = input.rotation % 180 != 0
         val w = if (quarter) input.height else input.width
         val h = if (quarter) input.width else input.height
-        val fit = max(width.toFloat() / w, height.toFloat() / h)
+        val fit =
+            if (input.fitFrame) min(width.toFloat() / w, height.toFloat() / h)
+            else max(width.toFloat() / w, height.toFloat() / h)
         GLES20.glViewport(0, 0, width, height)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)

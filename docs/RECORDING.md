@@ -6,7 +6,12 @@ stops capture. Pause keeps the recording session and project together.
 
 In portrait, scissors sit to the right of Record. They open the editor, stopping
 an active recording first. The stacked icon opens Projects while idle; that
-position to the left holds Pause during recording.
+position to the left holds Pause during recording. In landscape, scissors sit
+above Record and Projects below it; the lower position holds Pause during recording.
+
+YouRec follows Android’s auto-rotate setting during recording. Turning the phone
+updates the controls and live view without stopping the take. A take keeps its
+starting frame size; rotated views fit inside it without cropping the scene.
 
 ## Cameras and focus
 
@@ -18,6 +23,16 @@ Tap AF to lock or release focus. AF L and the yellow indicator show a requested
 lock. The app uses a supported autofocus mode and checks Camera2's lock state
 in device tests. Fixed-focus cameras are labelled Fixed. Lenses, zoom ranges
 and focus behavior come from camera capabilities, not manufacturer checks.
+
+The Torch option in Recording settings toggles the light. Rear cameras use their hardware light
+when available. The front camera uses a slightly transparent white screen border
+at full window brightness, keeping the scene visible beneath its rounded inner
+edge. Bars outside the video are fully white. Drag the white
+border inward or outward to change its thickness;
+the chosen thickness is retained. Brightness returns to its previous setting
+when the light is turned off, a rear-only view is selected or the camera closes.
+Split view also offers the screen light while the front camera is visible.
+The white border and its controls are not drawn into the recorded video.
 
 Switching cameras keeps the same recording. Camera frames are rotated into the
 encoder's initial orientation before encoding, so different front/rear sensor
@@ -36,7 +51,11 @@ The overlapping-camera button opens Picture in picture, side-by-side,
 top/bottom and diagonal layouts. Two cameras run simultaneously when Android reports a
 supported concurrent front/rear pair. Layout changes are recorded in the same
 video. Tap the divider to swap views; use two fingers to pan or zoom either
-composition region. Drag the inset in Picture in picture. The circular arrow
+composition region. In Picture in picture (the first layout), tap the inset's
+camera-arrow button to exchange the large and small views. Drag inside the
+inset to move it, drag an edge to change width or height independently, or drag
+a corner to change both. Swapping, moving and resizing also work while recording
+and affect the saved composition. The circular arrow
 restores normal single-camera framing. Turning two-camera capture on requires
 stopping recording; returning to normal framing works during a dual recording.
 Concurrent streams use up to
@@ -97,3 +116,7 @@ changed during recording. A physical microphone array may be exposed as one
 selectable route rather than individual elements.
 
 Camera effects are non-destructive and remain editable after capture.
+
+The front camera keeps the mirrored selfie view in preview, recorded frames
+and editing. Live effects process the displayed camera transform in portrait
+and landscape.

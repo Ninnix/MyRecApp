@@ -27,8 +27,8 @@ reach additional effects. Drag or pinch text and placement in preview.
 Tap a numeric readout for exact parameter entry. Crop includes 4:5, Frame/Inspect
 and independent quarter turns. Original restores the source video shape.
 
-Kaleidoscope starts with a two-way mirror that keeps more of a centered subject.
-Four segments use a mirrored 2×2 layout; larger counts use angular sections.
+Kaleidoscope starts with four mirrored sections meeting at the frame center.
+Two segments give a two-way mirror; larger counts use angular sections.
 Zoom and Rotation adjust the framing. Center X/Y place the junction where the
 mirrored sections meet. RGB Offset separates green and magenta edges and can be
 combined with Kaleidoscope in either order.

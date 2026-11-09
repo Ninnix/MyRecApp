@@ -1,8 +1,8 @@
 {
-  "date": "2026-11-09T10:21:28.908806+00:00",
+  "date": "2026-11-09T12:50:16.973602+00:00",
   "apk": "artifacts/yourec-debug.apk",
-  "sha256": "065e9f32882820af2953d1fd684c134819fb7b0fdd6489fd2496755e380d2171",
-  "bytes": 45580263,
+  "sha256": "7406456dda2db89f98763465f0ed311a8f988bbd39ccf0c875658d3615980c42",
+  "bytes": 45593731,
   "device": "OnePlus 15, Android 16, arm64-v8a",
   "suites": {
     "editor": {
@@ -43,7 +43,7 @@
     "composition": {
       "checks": 4,
       "log": "artifacts/composition-test.txt",
-      "run_time": "2026-11-08T17:27:46.804573+00:00"
+      "run_time": "2026-11-09T12:31:10.263737+00:00"
     },
     "camera-gaps": {
       "checks": 4,
@@ -61,13 +61,38 @@
       "run_time": "2026-11-08T17:24:59.640897+00:00"
     },
     "references": {
-      "checks": 5,
+      "checks": 7,
       "log": "artifacts/references-test.txt",
-      "run_time": "2026-11-09T10:21:28.908806+00:00"
+      "run_time": "2026-11-09T11:52:05.227838+00:00"
+    },
+    "camera-preview": {
+      "checks": 2,
+      "log": "artifacts/camera-preview-test.txt",
+      "run_time": "2026-11-09T11:51:28.669965+00:00"
+    },
+    "orientation": {
+      "checks": 5,
+      "log": "artifacts/orientation-test.txt",
+      "run_time": "2026-11-09T10:49:17.672878+00:00"
+    },
+    "live-rotation": {
+      "checks": 4,
+      "log": "artifacts/live-rotation-test.txt",
+      "run_time": "2026-11-09T11:32:50.374539+00:00"
+    },
+    "playback": {
+      "checks": 1,
+      "log": "artifacts/playback-test.txt",
+      "run_time": "2026-11-09T11:50:40.168988+00:00"
+    },
+    "capture-controls": {
+      "checks": 5,
+      "log": "artifacts/capture-controls-test.txt",
+      "run_time": "2026-11-09T12:50:02.781880+00:00"
     }
   },
-  "total_checks": 164,
-  "scope": "Fresh verification: five Android reference checks, including movable kaleidoscope junctions across two, four and six sections at 0, 37 and 90 degrees. Default two/four-section RGB Offset combinations have zero channel difference from the preceding build. Other suites retain their earlier evidence.",
+  "total_checks": 183,
+  "scope": "Fresh verification: 5 Android capture-control checks after removing the standalone flash button. Torch toggles through Recording settings in both orientations; screen-light resizing, brightness restoration and inset recording checks pass. Other suites retain earlier timestamps. Installed and verified locally before commit.",
   "manual_build": {
     "apk": ".build/manual/yourec-debug.apk",
     "sha256": "aa38f4c2f4afd96f449783abf49569cbe998776fff98dff6c963c81ad0f3e7d0",
@@ -94,20 +119,20 @@
       "assembleDebug",
       "assembleDebugAndroidTest"
     ],
-    "log": "artifacts/kaleidoscope-center-build.txt"
+    "log": "artifacts/capture-controls-build.txt"
   },
   "camera_pixel_comparison": {
-    "reference": "Raw ImageReader sensor pixels rotated once using sensor/display orientation. Crop and optical-center alignment are allowed; no original footage is published.",
+    "reference": "Raw ImageReader sensor pixels rotated once; front references use the mirrored selfie view. Crop and optical-center alignment are allowed; no original footage is published.",
     "samples": [
       {
         "orientation": "portrait",
         "first_camera": "rear",
         "time_us": 500000,
         "correlations_0_90_180_270": [
-          0.5392405184790744,
-          0.16635986674083256,
-          0.0845279886770632,
-          0.186047305722855
+          0.9809738292548756,
+          0.3785060818936193,
+          0.31043939905809476,
+          0.3644944552521965
         ]
       },
       {
@@ -115,10 +140,10 @@
         "first_camera": "rear",
         "time_us": 1600000,
         "correlations_0_90_180_270": [
-          0.8746317311278132,
-          0.1740472976538249,
-          0.3759190745063671,
-          0.2057425119936067
+          0.6873431734726232,
+          0.25795107710629184,
+          0.2511808188224257,
+          0.3841969818788656
         ]
       },
       {
@@ -126,10 +151,10 @@
         "first_camera": "rear",
         "time_us": 2700000,
         "correlations_0_90_180_270": [
-          0.5701629141638312,
-          0.19125697003077574,
-          0.11406107301818202,
-          0.22590221459374737
+          0.9961899596481482,
+          0.3761240891580682,
+          0.3072182442224408,
+          0.3904354185204514
         ]
       },
       {
@@ -137,10 +162,10 @@
         "first_camera": "front",
         "time_us": 500000,
         "correlations_0_90_180_270": [
-          0.596969584089445,
-          0.23428197226888653,
-          0.16507488107873822,
-          0.26379707504580824
+          0.8352220497466715,
+          0.4012835042737934,
+          0.3900517504706129,
+          0.23748958765829567
         ]
       },
       {
@@ -148,10 +173,10 @@
         "first_camera": "front",
         "time_us": 1600000,
         "correlations_0_90_180_270": [
-          0.45580999911203013,
-          0.18267279490573934,
-          0.13470836189560942,
-          0.28794630692455436
+          0.9948328539461385,
+          0.207333862152089,
+          -0.44237181010824445,
+          0.051450780874775434
         ]
       },
       {
@@ -159,10 +184,10 @@
         "first_camera": "front",
         "time_us": 2700000,
         "correlations_0_90_180_270": [
-          0.809182275604059,
-          0.30579494608663105,
-          0.2866779829010886,
-          0.22656209634441088
+          0.802889480837864,
+          0.37934794743541816,
+          0.3836881311383775,
+          0.24901074774137844
         ]
       },
       {
@@ -170,10 +195,10 @@
         "first_camera": "rear",
         "time_us": 500000,
         "correlations_0_90_180_270": [
-          0.5847977488209214,
-          0.21208592284679195,
-          0.025434866743792656,
-          0.19022297176306938
+          0.9929492687495085,
+          0.3863443297866007,
+          -0.18044703648920193,
+          0.07541364342438961
         ]
       },
       {
@@ -181,10 +206,10 @@
         "first_camera": "rear",
         "time_us": 1600000,
         "correlations_0_90_180_270": [
-          0.9003983086739117,
-          0.5121686211657285,
-          0.33836264541100475,
-          0.5267351055998568
+          0.7945210015504346,
+          0.40301903239993314,
+          0.3860719815911194,
+          0.22394355043909903
         ]
       },
       {
@@ -192,10 +217,10 @@
         "first_camera": "rear",
         "time_us": 2700000,
         "correlations_0_90_180_270": [
-          0.5576748753169815,
-          0.18794532259557387,
-          0.01058549602795269,
-          0.21952798353309091
+          0.9947072365325924,
+          0.3718488107327343,
+          -0.16566709928631598,
+          0.0858824772157675
         ]
       },
       {
@@ -203,10 +228,10 @@
         "first_camera": "front",
         "time_us": 500000,
         "correlations_0_90_180_270": [
-          0.9595630133638259,
-          0.4586034567269753,
-          0.2500150861701829,
-          0.507684492727468
+          0.7551843518221485,
+          0.1760739934660316,
+          0.13277819824783904,
+          0.45303977604922
         ]
       },
       {
@@ -214,10 +239,10 @@
         "first_camera": "front",
         "time_us": 1600000,
         "correlations_0_90_180_270": [
-          0.8492635119051904,
-          0.18921842048423543,
-          -0.048547289731789095,
-          0.2010153240984518
+          0.9990164243423006,
+          0.43443168477539146,
+          -0.021974236826575157,
+          0.08419034920626418
         ]
       },
       {
@@ -225,16 +250,16 @@
         "first_camera": "front",
         "time_us": 2700000,
         "correlations_0_90_180_270": [
-          0.8610814668574245,
-          0.38728406428574236,
-          0.2810745824766561,
-          0.5121072160850553
+          0.7652448675787005,
+          0.19810679889914623,
+          0.14670925795260364,
+          0.47771538467793995
         ]
       }
     ],
     "original_clip_records_and_sources_unchanged": true,
     "additional_user_project_clips_preserved": 3,
-    "note": "Supersedes earlier comparisons between two recordings, which did not establish absolute upright orientation."
+    "note": "Fresh checks include front/rear camera switches while retaining the mirrored front view."
   },
   "model_provenance_audit": {
     "date": "2026-11-08T14:53:31.406430+00:00",
@@ -255,11 +280,6 @@
       "checks": 2,
       "log": "artifacts/speech-test.txt",
       "run_time": "2026-11-07T11:44:26.255860+00:00"
-    },
-    "orientation": {
-      "checks": 5,
-      "log": "artifacts/orientation-test.txt",
-      "run_time": "2026-11-08T14:17:56.878075+00:00"
     }
   },
   "hdr_color": {
@@ -342,7 +362,8 @@
     "current_project_metadata_unchanged": true,
     "legacy_rgb_primaries": "BT709",
     "interpretation_only": true,
-    "recovered_recording_files_sha256_verified": 2
+    "recovered_recording_files_sha256_verified": 2,
+    "latest_identified_recording_sha256_unchanged": true
   },
   "neural_reference_comparisons": {
     "DeepFilterNet3": {
@@ -417,5 +438,98 @@
       }
     },
     "scope": "Synthetic subject and coordinate-pattern checks on Android; exact iOS shader parity is not established."
+  },
+  "selfie_alignment": {
+    "preview": "Original mirrored selfie view retained.",
+    "recording": "Front input is mirrored in displayed coordinates, including the recording rotation hint; rear input remains normal.",
+    "preview_vs_recording_correlations": {
+      "portrait": {
+        "direct": 0.9616024958827042,
+        "mirrored": 0.2770171727433639
+      },
+      "landscape": {
+        "direct": 0.9831169211229545,
+        "mirrored": 0.2990994903748939
+      }
+    },
+    "legacy_correction": "Optional .mirror source metadata is applied before creative effects, timeline thumbnails and project thumbnails.",
+    "identified_legacy_source_sha256_unchanged": true,
+    "original_source_sha256": "413888d02aa8951910bd478bf48754fb895d0e9a272718b46888df54d2b87f75",
+    "first_orientation_attempt": "One moving-person sample missed the fixed correlation margin; an unchanged rerun passed all five checks.",
+    "composition_shutdown": "Detach the compositor encoder tick before MediaRecorder disconnects its surface."
+  },
+  "live_rotation": {
+    "activity_policy": "FULL_USER follows Android rotation settings; recording no longer imposes a portrait/landscape lock.",
+    "encoder": "Display changes update camera correction during capture. The original encoded frame size stays fixed; rotated views are fitted without cropping.",
+    "tested_modes": {
+      "SDR": {
+        "portrait": 0.9556645419936395,
+        "landscape": 0.9518826196206164,
+        "reverse-portrait": 0.9036179796848081,
+        "reverse-landscape": 0.9073744727560648,
+        "portrait-return": 0.9417612414858572
+      },
+      "HDR": {
+        "portrait": 0.9790684268231058,
+        "landscape": 0.9917538672575538,
+        "reverse-portrait": 0.971543825497226,
+        "reverse-landscape": 0.9928250365872617,
+        "portrait-return": 0.9928782028408185
+      },
+      "Split": {
+        "portrait": 0.9986596170245332,
+        "landscape": 0.8788645573938338,
+        "reverse-portrait": 0.9973952259951835,
+        "reverse-landscape": 0.9877806555113017,
+        "portrait-return": 0.9853563116990418
+      },
+      "Diagonal": {
+        "portrait": 0.9922127370216756,
+        "landscape": 0.9932689760248037,
+        "reverse-portrait": 0.9908524475574562,
+        "reverse-landscape": 0.978413805973086,
+        "portrait-return": 0.9935219344700479
+      }
+    },
+    "sequence": [
+      "portrait",
+      "landscape",
+      "reverse-portrait",
+      "reverse-landscape",
+      "portrait-return"
+    ],
+    "take_count_per_sequence": 1,
+    "landscape_controls": "Scissors above Record; Projects/Pause below. Portrait coordinates unchanged.",
+    "manual_layout_review": "App-owned landscape view rendered and visually inspected; no external-app UI interaction."
+  },
+  "v5_playback": {
+    "user_report": "User confirmed playback was working again.",
+    "fresh_check": "A read-only copy of the active five-take project was opened in isolated test storage. Earlier takes were sought, then Play was invoked for V5.",
+    "observed_distinct_images": 31,
+    "sample_duration_seconds": 3.192,
+    "recording_source_preserved": true,
+    "scope": "Frozen-frame fault was not reproduced after restarting the app; no speculative decoder behavior changes were made. Decode failures now produce a diagnostic warning."
+  },
+  "capture_controls": {
+    "screen_light": {
+      "opacity": 0.7843137254901961,
+      "brightness": "Full window brightness, restored on toggle off, rear-only view or camera suspend. No global brightness setting changed.",
+      "shape": "Rounded inner opening clipped to the video bounds; bars outside the video are opaque white.",
+      "resize": "Drag the white border inward or outward; thickness is retained.",
+      "recorded_overlay": false
+    },
+    "hardware_torch": "Rear LED enabled only when the selected camera reports FLASH_INFO_AVAILABLE; front uses screen light.",
+    "picture_in_picture": "First layout opens inset. Camera-arrow control swaps main/inset sources. Drag body to move; edges resize axes independently; corners resize both. Gestures work with torch on and during one uninterrupted recording.",
+    "verified": [
+      "No standalone flash hit target; torch toggled through the existing Recording settings menu in portrait and landscape.",
+      "Portrait and landscape screen-light transparency, rounded corners, opaque bars, resizing and brightness restoration",
+      "Rear hardware torch request and front hardware flash off",
+      "Portrait and landscape inset swapping, movement and free-aspect resizing with screen torch enabled during recording",
+      "Encoded synthetic pixels match resized bounds and swapped inputs",
+      "All composition layouts and swaps at 0/90/180/270 degrees"
+    ],
+    "local_evidence": ".build/capture-controls-final",
+    "screenshots": "App-owned camera bitmaps and overlay renders only.",
+    "torch_access": "Recording settings only; the extra standalone flash button and glyph were removed."
   }
 }

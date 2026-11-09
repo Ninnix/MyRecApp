@@ -1226,11 +1226,14 @@ class Panels(private val a: MainActivity) {
                         val bitmap =
                             try {
                                 reader.setDataSource(clip.path)
-                                reader.getScaledFrameAtTime(
-                                    (clip.sourceIn * 1_000_000).toLong(),
-                                    android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                                    144,
-                                    81,
+                                SourceMirror.frame(
+                                    clip.path,
+                                    reader.getScaledFrameAtTime(
+                                        (clip.sourceIn * 1_000_000).toLong(),
+                                        android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                        144,
+                                        81,
+                                    ),
                                 )
                             } catch (_: Exception) {
                                 null
@@ -2428,7 +2431,7 @@ class Panels(private val a: MainActivity) {
                 slider(
                     parent,
                     "Segments",
-                    fx.number("segments", 2f),
+                    fx.number("segments", 4f),
                     2f,
                     24f,
                     format = { it.toInt().toString() },

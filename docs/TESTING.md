@@ -28,6 +28,10 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py --timeline
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --gaps
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --composition
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --camera-gaps
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --live-rotation
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --capture-controls
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --playback
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --camera-preview
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --references
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --new-ui
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --hdr-color
@@ -41,6 +45,19 @@ Test project metadata is isolated under cache. After instrumentation the runner
 returns to normal project storage. Recording tests create short
 fixture recordings. Keep the phone unlocked and YouRec in the foreground.
 
+* `--live-rotation`: changes display rotation during SDR, HDR and split-view
+  recordings, checks UI reflow and compares saved frames with the live view.
+* `--capture-controls`: toggles the torch through Recording settings and resizes its border,
+  checks rounded translucent edges and opaque bars outside the video,
+  verifies rear hardware torch and brightness restoration, and moves, resizes
+  and swaps Picture in picture while recording in both orientations. A synthetic
+  two-colour recording checks the resized inset and swapped camera pixels.
+* `--playback`: checks that the fifth take renders moving images after seeking
+  through earlier takes. Add `--current-project` to check a read-only copy of
+  the active project; project edits remain in the isolated test store.
+* `--camera-preview`: mirrored front-camera preview/recording orientation and mirror
+  comparisons in portrait and landscape, including Kaleidoscope rendering in
+  the editor. Use a stationary, lit scene with asymmetric detail.
 * `--references`: project deletion/restore persistence and shared media safety,
   mirror geometry, RGB channel offsets, and project-page controls in both orientations.
 * Default: native image/audio processing, decoding, stabilization, composition,

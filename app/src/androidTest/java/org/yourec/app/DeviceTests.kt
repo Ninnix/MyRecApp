@@ -13,11 +13,13 @@ import kotlin.math.*
 class DeviceTests : Instrumentation() {
     private val report = StringBuilder()
     private var suite = ""
+    private var currentProject = false
     private val testSessionId = uid()
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: ""
+        currentProject = arguments?.getString("currentProject") == "true"
         start()
     }
 
@@ -75,7 +77,13 @@ class DeviceTests : Instrumentation() {
             }
             return
         }
-        if (suite == "references") {
+        if (
+            suite == "references" ||
+                suite == "camera-preview" ||
+                suite == "playback" ||
+                suite == "capture-controls" ||
+                suite == "live-rotation"
+        ) {
             references()
             return
         }
@@ -1247,7 +1255,8 @@ class DeviceTests : Instrumentation() {
                                         a.windowManager.defaultDisplay.rotation * 90,
                                         id == front,
                                     )
-                                cameraReference(manager, id, rotation)
+                                val frame = cameraReference(manager, id, rotation)
+                                if (id == front) SourceMirror.flip(frame) else frame
                             }
                         onMain { capture.resumeCamera() }
                         Thread.sleep(700)
@@ -2408,7 +2417,12 @@ class DeviceTests : Instrumentation() {
                 )
                     as MainActivity
             activity = a
-            ReferenceTests.run(this, a, ::onMain, ::test)
+            if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
+            else if (suite == "live-rotation") RecordingRotationTest.run(this, a, ::onMain, ::test)
+            else if (suite == "playback")
+                PlaybackTest.run(this, a, currentProject, ::onMain, ::test)
+            else if (suite == "camera-preview") CameraPreviewTest.run(this, a, ::onMain, ::test)
+            else ReferenceTests.run(this, a, ::onMain, ::test)
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
         } catch (e: Throwable) {
             finish(
@@ -2582,7 +2596,7 @@ class DeviceTests : Instrumentation() {
     private fun composition() {
         try {
             for (hint in listOf(0, 90, 180, 270)) test(
-                "composition pixels match every layout and flip at $hint degrees"
+                "composition pixels match every layout, flip and selfie mirror at $hint degrees"
             ) {
                 val reader =
                     android.media.ImageReader.newInstance(
@@ -2622,7 +2636,7 @@ class DeviceTests : Instrumentation() {
                     val inputs =
                         listOf(
                             renderer.input(320, 180, 0, false),
-                            renderer.input(320, 180, 0, false),
+                            renderer.input(320, 180, 0, true),
                         )
                     renderer.record(recorder.surface, 320, 180, hint)
                     recorder.start()
@@ -2641,14 +2655,31 @@ class DeviceTests : Instrumentation() {
                             inputs.forEachIndexed { index, surface ->
                                 val canvas = surface.lockCanvas(null)
                                 canvas.drawColor(if (index == 0) Color.RED else Color.BLUE)
+                                if (index == 1)
+                                    canvas.drawRect(
+                                        0f,
+                                        0f,
+                                        16f,
+                                        180f,
+                                        Paint().apply { color = Color.WHITE },
+                                    )
                                 surface.unlockCanvasAndPost(canvas)
                             }
                             Thread.sleep(36)
                         }
                     }
+                    val selfie = renderer.snapshot(1, 320, 180) ?: error("No front input snapshot")
+                    try {
+                        check(Color.red(selfie.getPixel(310, 90)) > 230)
+                        check(Color.green(selfie.getPixel(310, 90)) > 230)
+                        check(Color.red(selfie.getPixel(10, 90)) < 40)
+                        check(Color.blue(selfie.getPixel(10, 90)) > 200)
+                    } finally {
+                        selfie.recycle()
+                    }
+                    renderer.record(null)
                     recorder.stop()
                     started = false
-                    renderer.record(null)
                     failure.get()?.let { throw it }
                     VideoDecoder(file.path).use { decoder ->
                         for ((time, mode, flip) in centers) {

@@ -88,6 +88,65 @@ object ReferenceTests {
                 a.playback.pause()
             }
         }
+        test("Legacy selfie orientation reaches decoding, timeline thumbnails and effects") {
+            val source = File(a.store.media, "shared.mp4")
+            val original = source.readBytes()
+            val before = VideoDecoder(source.path).use { it.frame(.7, 240, 135)!! }
+            val marker = File(source.path + ".mirror")
+            val clip = ProjectStore.inspect(source)
+            val index = MediaIndex(a.audioCache) {}
+            try {
+                marker.writeText("horizontal\n")
+                val expected = SourceMirror.flip(before.copy(Bitmap.Config.ARGB_8888, true))
+                val decoded = VideoDecoder(source.path).use { it.frame(.7, 240, 135)!! }
+                check(decoded.sameAs(expected)) { "Decoded selfie was not mirrored exactly once" }
+                decoded.recycle()
+                clip.effects.add(Effect(kind = "Kaleidoscope"))
+                Effects.correct(expected, clip.effects.single(), 1f)
+                Frames().use { frames ->
+                    val rendered = frames.render(Project(clips = mutableListOf(clip)), .7, 240, 135)
+                    check(rendered.sameAs(expected)) { "Mirror must precede creative effects" }
+                    rendered.recycle()
+                }
+                expected.recycle()
+                onMain { index.request(clip) }
+                var thumbnail: Bitmap? = null
+                val deadline = android.os.SystemClock.uptimeMillis() + 5000
+                while (thumbnail == null && android.os.SystemClock.uptimeMillis() < deadline) {
+                    Thread.sleep(50)
+                    onMain {
+                        thumbnail =
+                            index.thumbnails[source.path]
+                                ?.takeIf { it.size == 12 }
+                                ?.first()
+                                ?.copy(Bitmap.Config.ARGB_8888, true)
+                    }
+                }
+                val actual = thumbnail ?: error("Timeline thumbnails did not load")
+                val reader = android.media.MediaMetadataRetriever()
+                try {
+                    reader.setDataSource(source.path)
+                    val raw =
+                        reader.getScaledFrameAtTime(
+                            0,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            144,
+                            81,
+                        )!!
+                    val mirrored = SourceMirror.flip(raw)
+                    check(actual.sameAs(mirrored)) { "Timeline selfie orientation differs" }
+                    mirrored.recycle()
+                } finally {
+                    reader.release()
+                    actual.recycle()
+                }
+                check(source.readBytes().contentEquals(original))
+            } finally {
+                marker.delete()
+                before.recycle()
+                index.close()
+            }
+        }
         test("Kaleidoscope keeps subject detail, original colors and the requested mirror count") {
             val source = Bitmap.createBitmap(240, 400, Bitmap.Config.ARGB_8888)
             for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
@@ -123,6 +182,44 @@ object ReferenceTests {
                 output.recycle()
             }
             source.recycle()
+        }
+        test("Default Kaleidoscope joins four sections at the image center") {
+            val source = Bitmap.createBitmap(113, 193, Bitmap.Config.ARGB_8888)
+            for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
+                x,
+                y,
+                Color.rgb(x * 2, y, (x * 3 + y) % 256),
+            )
+            val output = source.copy(Bitmap.Config.ARGB_8888, true)
+            val four = source.copy(Bitmap.Config.ARGB_8888, true)
+            try {
+                Effects.correct(output, Effect(kind = "Kaleidoscope"), 1f)
+                Effects.correct(
+                    four,
+                    Effect(kind = "Kaleidoscope", values = mutableMapOf("segments" to "4")),
+                    1f,
+                )
+                check(output.sameAs(four)) { "Default still uses two sections" }
+                for (dx in 3 until 56 step 7) for (dy in 3 until 96 step 11) {
+                    val expected = output.getPixel(56 - dx, 96 - dy)
+                    for ((x, y) in
+                        listOf(
+                            56 + dx to 96 - dy,
+                            56 - dx to 96 + dy,
+                            56 + dx to 96 + dy,
+                        )) for (shift in listOf(0, 8, 16)) check(
+                        abs(
+                            (expected shr shift and 255) - (output.getPixel(x, y) shr shift and 255)
+                        ) <= 1
+                    ) {
+                        "Four sections do not join at the image center"
+                    }
+                }
+            } finally {
+                source.recycle()
+                output.recycle()
+                four.recycle()
+            }
         }
         test("Kaleidoscope Center moves the mirror junction without panning its source") {
             val source = Bitmap.createBitmap(113, 193, Bitmap.Config.ARGB_8888)

@@ -7,6 +7,7 @@ import java.io.File
 import kotlin.math.*
 
 class VideoDecoder(path: String) : Closeable {
+    private val mirrored = SourceMirror.enabled(path)
     private val extractor = MediaExtractor()
     private val codec: MediaCodec
     private val info = MediaCodec.BufferInfo()
@@ -161,7 +162,7 @@ class VideoDecoder(path: String) : Closeable {
                                 primaries,
                             )
                             last?.recycle()
-                            last = bitmap
+                            last = if (mirrored) SourceMirror.flip(bitmap) else bitmap
                             lastTime = info.presentationTimeUs
                         } finally {
                             image.close()

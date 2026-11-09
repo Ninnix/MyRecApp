@@ -42,7 +42,7 @@ object Effects {
                 Native.kaleidoscope(
                     bitmap,
                     strength,
-                    effect.number("segments", 2f).toInt(),
+                    effect.number("segments", 4f).toInt(),
                     effect.number("rotation"),
                     effect.number("zoom", .75f),
                     effect.number("centerX", .5f),
@@ -197,7 +197,8 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                 decoder.frame(time, width, height)?.let {
                     return it
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.w("YouRec", "Video decoder failed", e)
                 decoders.remove(stream)?.close()
                 failed.add(path)
             }
@@ -206,13 +207,16 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
 
     private fun stillFrame(path: String, time: Double, width: Int, height: Int): Bitmap? =
         try {
-            reader(path)
-                .getScaledFrameAtTime(
-                    (max(0.0, time) * 1_000_000).toLong(),
-                    MediaMetadataRetriever.OPTION_CLOSEST,
-                    max(2, width),
-                    max(2, height),
-                )
+            SourceMirror.frame(
+                path,
+                reader(path)
+                    .getScaledFrameAtTime(
+                        (max(0.0, time) * 1_000_000).toLong(),
+                        MediaMetadataRetriever.OPTION_CLOSEST,
+                        max(2, width),
+                        max(2, height),
+                    ),
+            )
         } catch (_: Exception) {
             null
         }

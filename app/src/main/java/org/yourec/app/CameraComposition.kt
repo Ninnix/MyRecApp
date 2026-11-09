@@ -174,18 +174,18 @@ class CameraComposition(
             if (hdr)
                 """
             #version 300 es
-            in vec2 position; in vec2 uv; uniform mat4 transform; uniform vec2 frameTurn;
+            in vec2 position; in vec2 uv; uniform mat4 transform; uniform vec2 frameTurn; uniform vec2 frameFit;
             out vec2 v; out vec2 world; void main(){gl_Position=vec4(position,0.,1.);
             vec2 p=vec2(frameTurn.x*position.x+frameTurn.y*position.y,-frameTurn.y*position.x+frameTurn.x*position.y);
-            world=vec2(.5+.5*p.x,.5-.5*p.y);v=(transform*vec4(uv,0.,1.)).xy;}
+            world=vec2(.5+.5*p.x/frameFit.x,.5-.5*p.y/frameFit.y);v=(transform*vec4(uv,0.,1.)).xy;}
         """
                     .trimIndent()
             else
                 """
-            attribute vec2 position; attribute vec2 uv; uniform mat4 transform; uniform vec2 frameTurn;
+            attribute vec2 position; attribute vec2 uv; uniform mat4 transform; uniform vec2 frameTurn; uniform vec2 frameFit;
             varying vec2 v; varying vec2 world; void main(){gl_Position=vec4(position,0.,1.);
             vec2 p=vec2(frameTurn.x*position.x+frameTurn.y*position.y,-frameTurn.y*position.x+frameTurn.x*position.y);
-            world=vec2(.5+.5*p.x,.5-.5*p.y);v=(transform*vec4(uv,0.,1.)).xy;}
+            world=vec2(.5+.5*p.x/frameFit.x,.5-.5*p.y/frameFit.y);v=(transform*vec4(uv,0.,1.)).xy;}
         """
                     .trimIndent()
         val fragment =
@@ -363,6 +363,16 @@ class CameraComposition(
 
     fun insetContains(x: Float, y: Float): Boolean = call { layout == 0 && pip.contains(x, y) }
 
+    fun insetBounds(): RectF? = call { if (layout == 0) RectF(pip) else null }
+
+    fun resizePip(edges: Int, dx: Float, dy: Float) = call {
+        if (edges and 1 != 0) pip.left = (pip.left + dx).coerceIn(0f, pip.right - .12f)
+        if (edges and 2 != 0) pip.top = (pip.top + dy).coerceIn(0f, pip.bottom - .12f)
+        if (edges and 4 != 0) pip.right = (pip.right + dx).coerceIn(pip.left + .12f, 1f)
+        if (edges and 8 != 0) pip.bottom = (pip.bottom + dy).coerceIn(pip.top + .12f, 1f)
+        render()
+    }
+
     fun movePip(dx: Float, dy: Float) = call {
         val x = (pip.left + dx).coerceIn(0f, 1f - pip.width())
         val y = (pip.top + dy).coerceIn(0f, 1f - pip.height())
@@ -428,7 +438,11 @@ class CameraComposition(
             GLES20.glGetUniformLocation(program, "tone"),
             if (snapshot >= 0) -1f else if (hdr && target !== encoder) 1f else 0f,
         )
-        val worldAspect = if (hint % 180 == 0) w.toFloat() / h else h.toFloat() / w
+        val canvasAspect = if (hint % 180 == 0) w.toFloat() / h else h.toFloat() / w
+        val worldAspect = if (target === encoder) width.toFloat() / height else canvasAspect
+        val fitX = min(1f, worldAspect / canvasAspect)
+        val fitY = min(1f, canvasAspect / worldAspect)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "frameFit"), fitX, fitY)
         val radians = hint * PI.toFloat() / 180
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "frameTurn"),
@@ -464,11 +478,11 @@ class CameraComposition(
             for (i in 0..3) {
                 val right = i % 2 != 0
                 val top = i >= 2
-                val x = (if (right) rect.right else rect.left) * 2 - 1
-                val y = 1 - (if (top) rect.top else rect.bottom) * 2
+                val x = ((if (right) rect.right else rect.left) * 2 - 1) * fitX
+                val y = (1 - (if (top) rect.top else rect.bottom) * 2) * fitY
                 values[i * 4] = x * cos(radians) - y * sin(radians)
                 values[i * 4 + 1] = x * sin(radians) + y * cos(radians)
-                values[i * 4 + 2] = cx + (if (right) .5f else -.5f) * cropX
+                values[i * 4 + 2] = cx + (if (right != source.front) .5f else -.5f) * cropX
                 values[i * 4 + 3] = cy + (if (top) .5f else -.5f) * cropY
             }
             vertices.clear()

@@ -9,6 +9,7 @@ import android.graphics.*
 import android.hardware.camera2.*
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.display.DisplayManager
 import android.media.*
 import android.os.*
 import android.util.Range
@@ -29,6 +30,22 @@ class Capture(
     private val texture = TextureView(activity)
     private val overlay = CaptureOverlay()
     private val manager = activity.getSystemService(CameraManager::class.java)
+    private val displays = activity.getSystemService(DisplayManager::class.java)
+    private var displayRotation = activity.windowManager.defaultDisplay.rotation
+    private val displayListener =
+        object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(id: Int) {}
+
+            override fun onDisplayRemoved(id: Int) {}
+
+            override fun onDisplayChanged(id: Int) {
+                val display = activity.windowManager.defaultDisplay
+                if (id == display.displayId && display.rotation != displayRotation) {
+                    displayRotation = display.rotation
+                    if (!closed) transform()
+                }
+            }
+        }
     private val audioManager = activity.getSystemService(AudioManager::class.java)
     private val handlerThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(handlerThread.looper)
@@ -52,6 +69,7 @@ class Capture(
     private var dualSwapped = false
     private var dualReady = false
     private var recordingOrientation = 0
+    private var recordingDisplayRotation = 0
     private var recordingFile: File? = null
     private var pendingStart = false
     private var previewSurface: Surface? = null
@@ -62,7 +80,9 @@ class Capture(
     private var closed = false
     private var videoSize = Size(1920, 1080)
     private var captureSize = videoSize
-    private var front = false
+    internal var front = false
+        private set
+
     var recording = false
         private set
 
@@ -89,6 +109,9 @@ class Capture(
 
     private var focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
     private var torch = false
+    private var screenLight = false
+    private var lightWidth = prefs.getFloat("lightWidth", .06f).coerceIn(.015f, .35f)
+    private var previousBrightness: Float? = null
     private var zoom = 1f
     private var zoomRange = Range(1f, 8f)
     private var zoomSeconds = prefs.getFloat("zoomSeconds", 1f)
@@ -184,6 +207,7 @@ class Capture(
             }
         audioManager.registerAudioDeviceCallback(audioDevices, ui)
         audioManager.registerAudioRecordingCallback(recordingCallback, ui)
+        displays.registerDisplayListener(displayListener, ui)
         choosePriority()
         ui.post(ticker)
     }
@@ -203,6 +227,7 @@ class Capture(
 
     fun resumeCamera() {
         closed = false
+        updateLight()
         selectedMicrophone()?.let { routeMicrophone(it) }
         if (texture.isAvailable) openDefault()
         ui.removeCallbacks(ticker)
@@ -245,6 +270,7 @@ class Capture(
                 chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: Range(1f, 8f)
             else Range(1f, chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f)
         zoom = zoom.coerceIn(zoomRange.lower, zoomRange.upper)
+        updateLight()
     }
 
     private fun open(id: String) {
@@ -361,6 +387,9 @@ class Capture(
                         unmirror = front,
                         sensorOrientation =
                             chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
+                        mirror = front,
+                        outputRotation = recordingOrientation,
+                        fitFrame = recordingTurned(),
                     )
                 )
             }
@@ -463,7 +492,7 @@ class Capture(
 
     private fun updateRequest() {
         dualCamera?.let {
-            it.update(zoom, focusLocked, torch, if (front) 1 else 0)
+            it.update(zoom, focusLocked, torch && !front, if (front) 1 else 0)
             return
         }
         if (Looper.myLooper() != cameraHandler.looper) {
@@ -485,7 +514,15 @@ class Capture(
             r.set(CaptureRequest.CONTROL_AE_LOCK, false)
             r.set(
                 CaptureRequest.FLASH_MODE,
-                if (torch) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF,
+                if (
+                    torch &&
+                        !front &&
+                        manager
+                            .getCameraCharacteristics(cameraId)
+                            .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                )
+                    CaptureRequest.FLASH_MODE_TORCH
+                else CaptureRequest.FLASH_MODE_OFF,
             )
             r.set(
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
@@ -559,6 +596,10 @@ class Capture(
                 return
             }
         val sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        recordingSurface?.rotate(
+            CameraOrientation.correction(recordingOrientation, cameraOrientation()),
+            recordingTurned(),
+        )
         val rotated = (sensor - rotation * 90 + 360) % 180 != 0
         val bufferW = if (rotated) captureSize.height.toFloat() else captureSize.width.toFloat()
         val bufferH = if (rotated) captureSize.width.toFloat() else captureSize.height.toFloat()
@@ -631,6 +672,43 @@ class Capture(
     internal fun inputDataSpaces() = composition?.inputDataSpaces().orEmpty()
 
     internal fun controlBounds(id: String) = overlay.bounds(id)
+
+    internal fun setTorch(enabled: Boolean) {
+        torch = enabled
+        updateLight()
+        updateRequest()
+        overlay.invalidate()
+    }
+
+    private fun updateLight(enabled: Boolean = torch && !closed && (front || dualLayout < 4)) {
+        screenLight = enabled
+        val window = activity.window
+        val attributes = window.attributes
+        if (screenLight) {
+            if (previousBrightness == null) previousBrightness = attributes.screenBrightness
+            attributes.screenBrightness = 1f
+        } else {
+            attributes.screenBrightness = previousBrightness ?: return
+            previousBrightness = null
+        }
+        window.attributes = attributes
+        overlay.invalidate()
+    }
+
+    internal fun insetBounds(): RectF? =
+        composition?.insetBounds()?.let {
+            RectF(
+                texture.left + it.left * texture.width,
+                texture.top + it.top * texture.height,
+                texture.left + it.right * texture.width,
+                texture.top + it.bottom * texture.height,
+            )
+        }
+
+    private fun swapCameras() {
+        val pair = DualCamera.pair(manager) ?: return
+        switchCamera(pair[if (dualSwapped) 0 else 1])
+    }
 
     internal val focusIsLocked
         get() = focusLocked
@@ -817,6 +895,7 @@ class Capture(
             r.setAudioSamplingRate(48000)
             r.setAudioChannels(if (bluetooth(microphone)) 1 else 2)
             r.setAudioEncodingBitRate(192000)
+            recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
             recordingOrientation = cameraOrientation()
             r.setOrientationHint(recordingOrientation)
             check(r.setPreferredDevice(microphone)) { "The selected microphone is unavailable" }
@@ -861,10 +940,6 @@ class Capture(
                 pendingStart = true
                 createSession()
             }
-            activity.requestedOrientation =
-                if (width > height)
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         } catch (e: Exception) {
             closeRecordingSurface()
             r.release()
@@ -881,6 +956,7 @@ class Capture(
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
         try {
             val renderer = composition ?: error("Waiting for HDR camera")
+            recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
             recordingOrientation = cameraOrientation()
             val r =
                 HdrRecorder(
@@ -916,10 +992,6 @@ class Capture(
             effectHistory.clear()
             effectSince = 0.0
             since = SystemClock.elapsedRealtime()
-            activity.requestedOrientation =
-                if (width > height)
-                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         } catch (e: Exception) {
             composition?.record(null)
             hdrRecorder?.close()
@@ -955,7 +1027,7 @@ class Capture(
                 ids.indices.map { index ->
                     try {
                         if (composition != null) composition?.snapshot(index, w, h)
-                        else texture.getBitmap(w, h)
+                        else cameraFrame(w, h)
                     } catch (_: Exception) {
                         null
                     }
@@ -1058,6 +1130,9 @@ class Capture(
     fun elapsedSeconds(): Double =
         (duration + if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
 
+    private fun recordingTurned() =
+        (activity.windowManager.defaultDisplay.rotation - recordingDisplayRotation) % 2 != 0
+
     private fun cameraOrientation(): Int {
         val sensor =
             manager.getCameraCharacteristics(cameraId).get(CameraCharacteristics.SENSOR_ORIENTATION)
@@ -1119,6 +1194,8 @@ class Capture(
         recording = false
         paused = false
         var success = true
+        // Stop feeding the encoder before MediaRecorder disconnects its surface.
+        runCatching { composition?.record(null) }
         try {
             r?.stop()
             hr?.stop()
@@ -1143,8 +1220,7 @@ class Capture(
             file?.delete()
             activity.message("Recording was too short to save")
         }
-        activity.requestedOrientation =
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         if (dualLayout == 4 && dualCamera != null) {
             closeCamera()
             openDefault()
@@ -1231,6 +1307,7 @@ class Capture(
                 {
                     ui.post {
                         dualReady = true
+                        updateRequest()
                         startMeter()
                         overlay.invalidate()
                     }
@@ -1270,6 +1347,7 @@ class Capture(
             dualLayout = mode
             transform()
         }
+        updateLight()
         overlay.invalidate()
     }
 
@@ -1382,16 +1460,28 @@ class Capture(
                     updateRequest()
                 }
                 3 -> priority(microphoneDevices())
-                4 -> {
-                    torch = !torch
-                    updateRequest()
-                }
+                4 -> setTorch(!torch)
             }
         }
     }
 
+    internal fun cameraFrame(width: Int, height: Int): Bitmap? {
+        val raw = texture.getBitmap(width, height) ?: return null
+        val transform = texture.getTransform(Matrix())
+        if (transform.isIdentity) return raw
+        // Bitmap copies omit the view transform used to display the camera.
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.scale(width.toFloat() / texture.width, height.toFloat() / texture.height)
+        canvas.concat(transform)
+        canvas.scale(texture.width.toFloat() / width, texture.height.toFloat() / height)
+        canvas.drawBitmap(raw, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+        raw.recycle()
+        return output
+    }
+
     private fun updateLiveFrame() {
-        val raw = texture.getBitmap(640, if (width > height) 360 else 1138) ?: return
+        val raw = cameraFrame(640, if (width > height) 360 else 1138) ?: return
         rendering = true
         val generation = effectGeneration
         val effects = liveEffects.filter { it.enabled }.map { it.copyEffect() }
@@ -1436,7 +1526,7 @@ class Capture(
     }
 
     internal fun drawCamera(canvas: Canvas) {
-        texture.bitmap?.let {
+        cameraFrame(texture.width, texture.height)?.let {
             canvas.drawBitmap(
                 it,
                 null,
@@ -1478,6 +1568,7 @@ class Capture(
     }
 
     private fun closeCamera() {
+        updateLight(false)
         colorGeneration++
         matchingColor = false
         effectGeneration++
@@ -1511,6 +1602,7 @@ class Capture(
         closeCamera()
         audioManager.unregisterAudioDeviceCallback(audioDevices)
         audioManager.unregisterAudioRecordingCallback(recordingCallback)
+        displays.unregisterDisplayListener(displayListener)
         ui.removeCallbacks(ticker)
         handlerThread.quitSafely()
         meterWorker.shutdown()
@@ -1520,6 +1612,7 @@ class Capture(
 
     private inner class CaptureOverlay : View(activity) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val lightPath = Path()
         private val hits = mutableListOf<Pair<RectF, String>>()
         private var s = 1f
         private var w = 640f
@@ -1567,6 +1660,7 @@ class Capture(
                     "effects" -> "Sparkles"
                     "settings" -> "Edit"
                     "flip" -> "Camera flip"
+                    "pipSwap" -> "Camera flip"
                     "projects" -> "Stack"
                     "pause" -> if (paused) "Play" else "Pause"
                     "edit" -> "Scissors"
@@ -1645,6 +1739,41 @@ class Capture(
                     ),
                     paint,
                 )
+            }
+            if (screenLight) {
+                val border = min(width, height) * lightWidth
+                paint.color = Color.WHITE
+                c.drawRect(0f, 0f, width.toFloat(), texture.top.toFloat(), paint)
+                c.drawRect(0f, texture.bottom.toFloat(), width.toFloat(), height.toFloat(), paint)
+                c.drawRect(
+                    0f,
+                    texture.top.toFloat(),
+                    texture.left.toFloat(),
+                    texture.bottom.toFloat(),
+                    paint,
+                )
+                c.drawRect(
+                    texture.right.toFloat(),
+                    texture.top.toFloat(),
+                    width.toFloat(),
+                    texture.bottom.toFloat(),
+                    paint,
+                )
+                lightPath.rewind()
+                lightPath.fillType = Path.FillType.EVEN_ODD
+                lightPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+                val radius = 24 * resources.displayMetrics.density
+                lightPath.addRoundRect(
+                    max(border, texture.left.toFloat()),
+                    max(border, texture.top.toFloat()),
+                    min(width - border, texture.right.toFloat()),
+                    min(height - border, texture.bottom.toFloat()),
+                    radius,
+                    radius,
+                    Path.Direction.CW,
+                )
+                paint.color = Color.argb(200, 255, 255, 255)
+                c.drawPath(lightPath, paint)
             }
             c.save()
             c.scale(s, s)
@@ -1750,13 +1879,41 @@ class Capture(
                     }
                 text(
                     c,
-                    "Tap divider to flip · Two fingers to pan or zoom",
+                    if (dualLayout == 0) "Swap views · Drag inset or edges to resize"
+                    else "Tap divider to flip · Two fingers to pan or zoom",
                     w / 2,
                     y + 54,
                     8f,
                     Color.WHITE,
                     Paint.Align.CENTER,
                 )
+            }
+            if (dualCamera != null && dualLayout == 0) {
+                insetBounds()?.let { bounds ->
+                    val r =
+                        RectF(bounds.left / s, bounds.top / s, bounds.right / s, bounds.bottom / s)
+                    paint.color = Color.WHITE
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = 1f
+                    c.drawRect(r, paint)
+                    paint.strokeWidth = 2.5f
+                    for (x in listOf(r.left, r.right)) for (y in listOf(r.top, r.bottom)) {
+                        c.drawLine(x, y, x + if (x == r.left) 7f else -7f, y, paint)
+                        c.drawLine(x, y, x, y + if (y == r.top) 7f else -7f, paint)
+                    }
+                    paint.style = Paint.Style.FILL
+                    pill(
+                        c,
+                        RectF(
+                            r.centerX() - 13,
+                            r.centerY() - 13,
+                            r.centerX() + 13,
+                            r.centerY() + 13,
+                        ),
+                        "",
+                        "pipSwap",
+                    )
+                }
             }
             val cx = if (portrait) w / 2 else 549f
             val cy = if (portrait) texture.bottom / s - 12f else 139f
@@ -1773,9 +1930,9 @@ class Capture(
                 c,
                 RectF(
                     if (portrait) cx - 100 else cx - 14,
-                    if (portrait) cy - 16 else cy - 86,
+                    if (portrait) cy - 16 else cy + 52,
                     if (portrait) cx - 64 else cx + 14,
-                    if (portrait) cy + 16 else cy - 50,
+                    if (portrait) cy + 16 else cy + 88,
                 ),
                 if (recording) if (paused) "▶" else "Ⅱ" else "",
                 if (recording) "pause" else "projects",
@@ -1784,9 +1941,9 @@ class Capture(
                 c,
                 RectF(
                     if (portrait) cx + 64 else cx - 18,
-                    if (portrait) cy - 16 else cy + 55,
+                    if (portrait) cy - 16 else cy - 83,
                     if (portrait) cx + 100 else cx + 18,
-                    if (portrait) cy + 16 else cy + 85,
+                    if (portrait) cy + 16 else cy - 53,
                 ),
                 "✂",
                 "edit",
@@ -1946,25 +2103,88 @@ class Capture(
         private var moved = false
         private var composing = false
         private var draggingInset = false
+        private var resizingInset = 0
+        private var resizingLight = false
+        private var downX = 0f
+        private var downY = 0f
+        private val slop = ViewConfiguration.get(activity).scaledTouchSlop
+
+        private fun edgeDistance(x: Float, y: Float) = min(min(x, width - x), min(y, height - y))
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 touchX = e.x
                 touchY = e.y
+                downX = e.x
+                downY = e.y
                 moved = false
+                val free = hits.none { it.first.contains(e.x / s, e.y / s) }
+                val margin = 14 * resources.displayMetrics.density
+                val inset = insetBounds()?.apply { inset(-margin, -margin) }
+                resizingLight =
+                    screenLight &&
+                        free &&
+                        inset?.contains(e.x, e.y) != true &&
+                        (edgeDistance(e.x, e.y) <= min(width, height) * lightWidth + margin ||
+                            e.x <= texture.left + margin ||
+                            e.x >= texture.right - margin ||
+                            e.y <= texture.top + margin ||
+                            e.y >= texture.bottom - margin)
                 composing =
-                    dualCamera != null &&
+                    !resizingLight &&
+                        dualCamera != null &&
                         e.x >= texture.left &&
                         e.x < texture.right &&
                         e.y >= texture.top &&
                         e.y < texture.bottom &&
-                        hits.none { it.first.contains(e.x / s, e.y / s) }
+                        free
+                resizingInset = 0
+                if (composing)
+                    insetBounds()?.let { r ->
+                        if (
+                            e.x >= r.left - margin &&
+                                e.x <= r.right + margin &&
+                                e.y >= r.top - margin &&
+                                e.y <= r.bottom + margin
+                        ) {
+                            if (abs(e.x - r.left) < margin) resizingInset = resizingInset or 1
+                            else if (abs(e.x - r.right) < margin) resizingInset = resizingInset or 4
+                            if (abs(e.y - r.top) < margin) resizingInset = resizingInset or 2
+                            else if (abs(e.y - r.bottom) < margin)
+                                resizingInset = resizingInset or 8
+                        }
+                    }
                 draggingInset =
                     composing &&
                         composition?.insetContains(
                             (e.x - texture.left) / texture.width,
                             (e.y - texture.top) / texture.height,
                         ) == true
+            }
+            if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+                resizingLight = false
+                resizingInset = 0
+                draggingInset = false
+                moved = true
+            }
+            if (e.actionMasked == MotionEvent.ACTION_CANCEL) {
+                if (resizingLight) prefs.edit().putFloat("lightWidth", lightWidth).apply()
+                resizingLight = false
+                composing = false
+                return true
+            }
+            if (e.actionMasked == MotionEvent.ACTION_MOVE && hypot(e.x - downX, e.y - downY) > slop)
+                moved = true
+            if (resizingLight) {
+                if (e.actionMasked == MotionEvent.ACTION_MOVE && moved) {
+                    lightWidth = (edgeDistance(e.x, e.y) / min(width, height)).coerceIn(.015f, .35f)
+                    invalidate()
+                }
+                if (e.actionMasked == MotionEvent.ACTION_UP) {
+                    prefs.edit().putFloat("lightWidth", lightWidth).apply()
+                    resizingLight = false
+                }
+                return true
             }
             if (e.actionMasked == MotionEvent.ACTION_MOVE && composing) {
                 val dx = (e.x - touchX) / texture.width
@@ -1978,10 +2198,12 @@ class Capture(
                             dy,
                             1f,
                         )
+                    else if (resizingInset != 0) composition?.resizePip(resizingInset, dx, dy)
                     else if (draggingInset) composition?.movePip(dx, dy)
                     moved = true
                     touchX = e.x
                     touchY = e.y
+                    invalidate()
                 }
             }
             scale.onTouchEvent(e)
@@ -1994,12 +2216,12 @@ class Capture(
                     val px = (e.x - texture.left) / texture.width
                     val py = (e.y - texture.top) / texture.height
                     if (
-                        (dualLayout == 1 && abs(px - .5f) < .07f) ||
+                        (dualLayout == 0 && draggingInset) ||
+                            (dualLayout == 1 && abs(px - .5f) < .07f) ||
                             (dualLayout == 2 && abs(py - .5f) < .07f) ||
                             (dualLayout == 3 && abs(px + py - 1f) < .07f)
                     ) {
-                        dualSwapped = !dualSwapped
-                        transform()
+                        swapCameras()
                     }
                 }
                 return true
@@ -2062,10 +2284,7 @@ class Capture(
                             onEdit()
                             activity.panels.projects()
                         }
-                        "torch" -> {
-                            torch = !torch
-                            updateRequest()
-                        }
+                        "pipSwap" -> swapCameras()
                         "settings" -> settings()
                         "hdr" -> setHdr(!hdr)
                         "dual" -> {

@@ -44,11 +44,14 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
                         for (i in 0 until 12) {
                             val image =
                                 decoder?.frame(duration * i / 12, 144, 81)
-                                    ?: reader.getScaledFrameAtTime(
-                                        (duration * i / 12 * 1_000_000).toLong(),
-                                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                                        144,
-                                        81,
+                                    ?: SourceMirror.frame(
+                                        clip.path,
+                                        reader.getScaledFrameAtTime(
+                                            (duration * i / 12 * 1_000_000).toLong(),
+                                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                            144,
+                                            81,
+                                        ),
                                     )
                             if (image != null) images.add(image)
                             if (i == 0 || i == 11) {
