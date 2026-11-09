@@ -29,8 +29,9 @@ and independent quarter turns. Original restores the source video shape.
 
 Kaleidoscope starts with a two-way mirror that keeps more of a centered subject.
 Four segments use a mirrored 2×2 layout; larger counts use angular sections.
-Zoom, Rotation and Center adjust the framing. RGB Offset separates green and
-magenta edges and can be combined with Kaleidoscope in either order.
+Zoom and Rotation adjust the framing. Center X/Y place the junction where the
+mirrored sections meet. RGB Offset separates green and magenta edges and can be
+combined with Kaleidoscope in either order.
 
 Audio containers show filter order and strength. Select a container for its
 parameters or to move it in the chain. Neural restoration and speech detail prepare audio before

@@ -46,7 +46,7 @@ object Effects {
                     effect.number("rotation"),
                     effect.number("zoom", .75f),
                     effect.number("centerX", .5f),
-                    effect.number("centerY", .75f),
+                    effect.number("centerY", .5f),
                 )
             "RGB Offset" ->
                 Native.rgbOffset(

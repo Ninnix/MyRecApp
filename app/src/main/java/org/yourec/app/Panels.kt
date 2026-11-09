@@ -2449,7 +2449,7 @@ class Panels(private val a: MainActivity) {
                     listOf("Center X" to "centerX", "Center Y" to "centerY")) slider(
                     parent,
                     name,
-                    fx.number(key, if (key == "centerY") .75f else .5f),
+                    fx.number(key, .5f),
                     0f,
                     1f,
                     color = orange,

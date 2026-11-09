@@ -47,9 +47,12 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_kaleidoscope(
      * the center, where a centered subject is, rather than at the right edge. */
     float sector = 4 * pi / clamp((float)segments, 2, 24);
     float angle = rotation * pi / 180 - pi / 2 - sector / 4;
-    float cx = (info.width - 1) * clamp(center_x, 0, 1);
-    float cy = (info.height - 1) * clamp(center_y, 0, 1);
-    float ox = (info.width - 1) * .5f, oy = (info.height - 1) * .5f;
+    /* Center locates the mirror junction; source framing stays fixed so moving
+     * the junction does not pan the subject inside each mirrored section. */
+    float half_w = (info.width - 1) * .5f, half_h = (info.height - 1) * .5f;
+    float cx = half_w, cy = half_h * 1.5f;
+    float ox = (info.width - 1) * clamp(center_x, 0, 1);
+    float oy = (info.height - 1) * clamp(center_y, 0, 1);
     float turn = rotation * pi / 180, cs = cosf(turn), sn = sinf(turn);
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
         float dx = x - ox, dy = y - oy;
@@ -57,8 +60,8 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_kaleidoscope(
         if (segments == 4) {
             /* Four-way mirroring keeps complete subjects in a 2x2 layout. */
             float tile_scale = scale * (5.f / 3);
-            sx = cx + (ox - 2 * fabsf(dx * cs + dy * sn)) / tile_scale;
-            sy = cy + (oy * .5f - 2 * fabsf(dy * cs - dx * sn)) / tile_scale;
+            sx = cx + (half_w - 2 * fabsf(dx * cs + dy * sn)) / tile_scale;
+            sy = cy + (half_h * .5f - 2 * fabsf(dy * cs - dx * sn)) / tile_scale;
         } else {
             float radius = hypotf(dx, dy) / scale;
             float theta = fmodf(atan2f(dy, dx) - angle + 8 * pi, sector);

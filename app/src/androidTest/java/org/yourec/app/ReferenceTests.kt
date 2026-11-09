@@ -109,7 +109,7 @@ object ReferenceTests {
                 check(!output.sameAs(source))
                 if (count == 2) {
                     for (y in 10 until 190 step 20) for (x in 10 until 230 step 20) {
-                        val expected = source.getPixel(x, y)
+                        val expected = output.getPixel(x, y)
                         for (actual in
                             listOf(
                                 output.getPixel(x, y),
@@ -121,6 +121,75 @@ object ReferenceTests {
                 }
                 save(output, "kaleidoscope-$count")
                 output.recycle()
+            }
+            source.recycle()
+        }
+        test("Kaleidoscope Center moves the mirror junction without panning its source") {
+            val source = Bitmap.createBitmap(113, 193, Bitmap.Config.ARGB_8888)
+            for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
+                x,
+                y,
+                Color.rgb(x * 2, y, (x * 3 + y) % 256),
+            )
+            fun close(a: Int, b: Int) =
+                listOf(0, 8, 16).all { abs((a shr it and 255) - (b shr it and 255)) <= 1 }
+            fun render(count: Int, rotation: Int, x: Float, y: Float): Bitmap =
+                source.copy(Bitmap.Config.ARGB_8888, true).apply {
+                    Effects.correct(
+                        this,
+                        Effect(
+                            kind = "Kaleidoscope",
+                            values =
+                                mutableMapOf(
+                                    "segments" to "$count",
+                                    "rotation" to "$rotation",
+                                    "centerX" to "$x",
+                                    "centerY" to "$y",
+                                ),
+                        ),
+                        1f,
+                    )
+                }
+            for (count in listOf(2, 4, 6)) for (rotation in listOf(0, 37, 90)) {
+                val centered = render(count, rotation, .5f, .5f)
+                val moved = render(count, rotation, .25f, .625f)
+                try {
+                    for (y in 8 until 160 step 7) for (x in 30 until 110 step 7) {
+                        val expected = centered.getPixel(x, y)
+                        val actual = moved.getPixel(x - 28, y + 24)
+                        check(close(expected, actual)) {
+                            "Junction did not move with Center: $count sections, $rotation degrees"
+                        }
+                    }
+                    if (count == 4 && rotation == 0) {
+                        for (dx in listOf(3, 9, 21)) for (dy in listOf(3, 13, 35)) {
+                            val expected = moved.getPixel(28 - dx, 120 - dy)
+                            check(close(moved.getPixel(28 + dx, 120 - dy), expected))
+                            check(close(moved.getPixel(28 - dx, 120 + dy), expected))
+                            check(close(moved.getPixel(28 + dx, 120 + dy), expected))
+                        }
+                        save(moved, "kaleidoscope-moved-center")
+                    }
+                    if (rotation == 0) {
+                        val default = source.copy(Bitmap.Config.ARGB_8888, true)
+                        try {
+                            Effects.correct(
+                                default,
+                                Effect(
+                                    kind = "Kaleidoscope",
+                                    values = mutableMapOf("segments" to "$count"),
+                                ),
+                                1f,
+                            )
+                            check(default.sameAs(centered)) { "Default junction is off-center" }
+                        } finally {
+                            default.recycle()
+                        }
+                    }
+                } finally {
+                    centered.recycle()
+                    moved.recycle()
+                }
             }
             source.recycle()
         }

@@ -1,8 +1,8 @@
 {
-  "date": "2026-11-08T21:35:20.775910+00:00",
+  "date": "2026-11-09T10:21:28.908806+00:00",
   "apk": "artifacts/yourec-debug.apk",
-  "sha256": "bee95b3abc8388db9ea1643452523f9e78029cf5a5b38e5ef37971767f9c33ee",
-  "bytes": 45580283,
+  "sha256": "065e9f32882820af2953d1fd684c134819fb7b0fdd6489fd2496755e380d2171",
+  "bytes": 45580263,
   "device": "OnePlus 15, Android 16, arm64-v8a",
   "suites": {
     "editor": {
@@ -61,13 +61,13 @@
       "run_time": "2026-11-08T17:24:59.640897+00:00"
     },
     "references": {
-      "checks": 4,
+      "checks": 5,
       "log": "artifacts/references-test.txt",
-      "run_time": "2026-11-08T21:35:20.775910+00:00"
+      "run_time": "2026-11-09T10:21:28.908806+00:00"
     }
   },
-  "total_checks": 163,
-  "scope": "Fresh verification: 38 editor checks and four Android reference checks covering project recovery, shared-media preservation, mirror geometry, RGB channel offsets and portrait/landscape project controls. Other suites retain their earlier evidence. The effect implementation is inferred from screenshots; exact iOS shader parity is not established.",
+  "total_checks": 164,
+  "scope": "Fresh verification: five Android reference checks, including movable kaleidoscope junctions across two, four and six sections at 0, 37 and 90 degrees. Default two/four-section RGB Offset combinations have zero channel difference from the preceding build. Other suites retain their earlier evidence.",
   "manual_build": {
     "apk": ".build/manual/yourec-debug.apk",
     "sha256": "aa38f4c2f4afd96f449783abf49569cbe998776fff98dff6c963c81ad0f3e7d0",
@@ -92,10 +92,9 @@
   "build": {
     "tasks": [
       "assembleDebug",
-      "assembleDebugAndroidTest",
-      "testEditor"
+      "assembleDebugAndroidTest"
     ],
-    "log": "artifacts/reference-build-test.txt"
+    "log": "artifacts/kaleidoscope-center-build.txt"
   },
   "camera_pixel_comparison": {
     "reference": "Raw ImageReader sensor pixels rotated once using sensor/display orientation. Crop and optical-center alignment are allowed; no original footage is published.",
@@ -387,5 +386,36 @@
     "effects": "Two-way mirror default, four-way mirrored grid, denser angular patterns, reflected edges and RGB Offset.",
     "editor": "Larger effect/transition buttons with horizontal scrolling; manually verified that the transition panel opens after scrolling.",
     "screenshots": "Synthetic media and subject-pattern checks; user projects were not edited."
+  },
+  "kaleidoscope_center": {
+    "before": "Regression reproduced: Center changed source sampling while the mirror junction stayed at the viewport center.",
+    "after": "Center X/Y position the output junction. Default position is 50% / 50%, with the preceding source framing retained.",
+    "rotation_degrees": [
+      0,
+      37,
+      90
+    ],
+    "section_counts": [
+      2,
+      4,
+      6
+    ],
+    "default_render_comparison": {
+      "2": {
+        "default_max_channel_error": 0,
+        "size": [
+          200,
+          300
+        ]
+      },
+      "4": {
+        "default_max_channel_error": 0,
+        "size": [
+          200,
+          300
+        ]
+      }
+    },
+    "scope": "Synthetic subject and coordinate-pattern checks on Android; exact iOS shader parity is not established."
   }
 }
