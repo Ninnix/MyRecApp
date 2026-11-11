@@ -56,6 +56,7 @@ data class Clip(
     var gainDb: Float = 0f,
     val effects: MutableList<Effect> = mutableListOf(),
     var group: String = id,
+    val marks: MutableList<Double> = mutableListOf(),
 ) {
     val effectiveRate
         get() =
@@ -82,6 +83,7 @@ data class Clip(
             id = next,
             group = if (newId && !keepGroup) next else group,
             effects = effects.map { it.copyEffect(newId) }.toMutableList(),
+            marks = marks.toMutableList(),
         )
     }
 }
@@ -204,7 +206,7 @@ data class Project(
     }
 
     fun events(): List<Double> =
-        (listOf(0.0, duration) +
+        (listOf(0.0, duration) + markers() +
                 clips.flatMap { c ->
                     listOf(c.start, c.end) +
                         c.effects.flatMap {
@@ -215,6 +217,11 @@ data class Project(
             .map { it.coerceIn(0.0, duration) }
             .distinct()
             .sorted()
+
+    fun markers(): List<Double> = clips.flatMap { clip ->
+        clip.marks.filter { it >= clip.sourceIn && it < clip.sourceOut }
+            .map { clip.start + (it - clip.sourceIn) / clip.effectiveRate }
+    }.distinct().sorted()
 }
 
 class Editor(var project: Project = Project()) {
@@ -334,6 +341,7 @@ class Editor(var project: Project = Project()) {
                         it.start == c.start &&
                             it.duration == c.duration &&
                             it.path == c.path &&
+                            (it.group == c.group || it.track == c.track) &&
                             it.linked
                     }
                     .forEach { selected.add(it.id) }
@@ -833,6 +841,7 @@ class Editor(var project: Project = Project()) {
                     project.clips
                         .filter { other ->
                             other.path == c.path &&
+                                (other.group == c.group || other.track == c.track) &&
                                 abs(other.start - c.start) < .001 &&
                                 abs(other.sourceIn - c.sourceIn) < .001 &&
                                 abs(other.sourceOut - c.sourceOut) < .001 &&
@@ -895,6 +904,19 @@ class Editor(var project: Project = Project()) {
             clearSelection()
             selected.add(clip.id)
             cursor = clip.end
+        }
+    }
+
+    fun addLayer(clip: Clip, at: Double = cursor) {
+        change {
+            clip.start = max(0.0, at)
+            clip.track = (project.clips.filter {
+                clip.video && it.video || clip.audio && it.audio
+            }.maxOfOrNull { it.track } ?: -1) + 1
+            project.clips.add(clip)
+            clearSelection()
+            selected.add(clip.id)
+            cursor = clip.start
         }
     }
 

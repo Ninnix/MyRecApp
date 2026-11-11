@@ -48,6 +48,10 @@ class EditorView(
     private var moved = false
     private var downTime = 0L
     private var downCursor = 0.0
+    private var downLanes = listOf<TimelineLane>()
+    private var downMoveStart = 0.0
+    private var downMoveTrack = 0
+    private var downClipTrack = 0
     private var chipScroll = 0f
     private var chipLimit = 0f
     private var downChipScroll = 0f
@@ -121,6 +125,11 @@ class EditorView(
 
     private fun hit(r: RectF, id: String) {
         hits.add(r to id)
+    }
+
+    internal fun controlBounds(id: String): RectF? = hits.lastOrNull { it.second == id }?.first?.let {
+        RectF((it.left + ox) * unit, (it.top + oy) * unit,
+            (it.right + ox) * unit, (it.bottom + oy) * unit)
     }
 
     private fun button(
@@ -318,12 +327,11 @@ class EditorView(
                 c.drawRoundRect(x - s * 0.1f, y - s * 0.7f, x + s * 1.2f, y + s * 0.7f, 2f, 2f, p)
                 c.restore()
             }
-            "move",
             "add" -> {
                 line(-1f, 0f, 1f, 0f)
                 line(0f, -1f, 0f, 1f)
             }
-            "scale" -> {
+            "move", "scale" -> {
                 line(-1f, 0f, 1f, 0f)
                 path(-0.5f, -0.5f, -1f, 0f, -0.5f, 0.5f)
                 path(0.5f, -0.5f, 1f, 0f, 0.5f, 0.5f)
@@ -412,7 +420,7 @@ class EditorView(
         p.strokeWidth = .8f
         canvas.drawCircle(addX, addY, 9f, p)
         icon(canvas, "add", addX, addY, 5f)
-        hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addVideo")
+        hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addMedia")
         drawTimeline(canvas)
         val fxY = timeline.bottom + 22f
         val hasChips = drawSelection(canvas, fxY)
@@ -508,7 +516,7 @@ class EditorView(
         val gap = r.width() * 0.12f
         val names =
             listOf("bookmark", "previous", if (playing) "pause" else "play", "next", "bookmark")
-        val ids = listOf("backPoint", "previous", "play", "next", "forwardPoint")
+        val ids = listOf("previousMark", "previous", "play", "next", "forwardPoint")
         for (i in names.indices) {
             icon(c, names[i], x + i * gap, r.centerY(), if (i == 2) 12f else 9f)
             hit(RectF(x + i * gap - 13, r.top, x + i * gap + 13, r.bottom), ids[i])
@@ -659,7 +667,8 @@ class EditorView(
                 val bottom = timeline.top + lane.bottom
                 val clipR = RectF(left, top, right, bottom)
                 c.save()
-                c.clipRect(clipR)
+                c.clipPath(Path().apply { addRoundRect(clipR, 3f, 3f, Path.Direction.CW) })
+                rect(c, clipR, Color.rgb(28, 28, 30))
                 if (!lane.audio) {
                     val list = index.thumbnails[clip.path]
                     if (!list.isNullOrEmpty()) {
@@ -718,7 +727,11 @@ class EditorView(
                         c.drawLine(x, mid - amplitude, x, mid + amplitude, p)
                         x += 1f
                     }
-                    text(c, "♪${n+1}", max(left, timeline.left) + 3, clipR.bottom - 3, 7f)
+                    val labelLeft = max(left, timeline.left)
+                    rect(c, RectF(labelLeft + 1, max(top, bottom - 13),
+                        min(labelLeft + 31, right), bottom - 1), Color.argb(125, 0, 0, 0), 2f)
+                    text(c, "♪${n+1}", labelLeft + 3, clipR.bottom - 3, 7f)
+                    if (clip.linked) icon(c, "link", labelLeft + 23, bottom - 7, 4f)
                 }
                 p.color = Color.rgb(80, 80, 83)
                 p.strokeWidth = 0.7f
@@ -743,6 +756,13 @@ class EditorView(
                 }
                 c.restore()
             }
+        }
+        for (time in editor.project.markers()) {
+            val x = xFor(time)
+            p.color = yellow
+            p.strokeWidth = .7f
+            c.drawLine(x, timeline.top + 15, x, timeline.bottom, p)
+            icon(c, "bookmark", x, timeline.top + 10, 4f, yellow)
         }
         editor.range?.let { r ->
             val rr = RectF(xFor(r.start), timeline.top + 16, xFor(r.endInclusive), timeline.bottom)
@@ -820,7 +840,7 @@ class EditorView(
             val offset = (editor.targets().minOfOrNull { it.start } ?: movingOrigin) - movingOrigin
             text(
                 c,
-                "Moving Video + audio · %+.2f s".format(java.util.Locale.US, offset),
+                "Moving · Track ${(editor.targets().minOfOrNull { it.track } ?: 0) + 1} · %+.2f s".format(java.util.Locale.US, offset),
                 x,
                 y,
                 7f,
@@ -847,6 +867,7 @@ class EditorView(
             return true
         }
         if (editor.selected.isNotEmpty() || editor.range != null) {
+            val targets = editor.targets()
             text(
                 c,
                 if (editor.range != null)
@@ -854,10 +875,14 @@ class EditorView(
                 else
                     "${editor.targets().joinToString(" + "){(if(it.video)"V"else"♪") + (editor.project.clips.indexOf(it)+1)}}",
                 x,
-                y,
+                y - 4,
                 7f,
                 red,
             )
+            val video = targets.count { it.video }
+            val audio = targets.count { it.audio }
+            text(c, "$video video + $audio audio part${if (targets.size == 1) "" else "s"}",
+                x, y + 5, 6f, Color.rgb(125, 47, 53))
             x += if (landscape) 95f else 100f
             for ((symbol, id) in
                 listOf("copy" to "copy", "delete" to "delete", "close" to "clear")) {
@@ -905,6 +930,9 @@ class EditorView(
                     }
                 chip(title.take(24), Effects.color(fx.kind), "effect:${fx.id}")
             }
+            val overlapping = editor.project.active(editor.cursor).size > 1
+            if (overlapping && active.none { it.kind == "Placement" })
+                chip("Placement · default", Effects.color("Placement"), "placement")
             val gain =
                 editor.project.clips.firstOrNull {
                     it.audio && it.contains(editor.cursor) && it.gainDb != 0f
@@ -935,6 +963,7 @@ class EditorView(
             }
             if (x + chipScroll > left) chipBounds.set(left, y - 17, right, y + 17)
             return active.isNotEmpty() ||
+                overlapping ||
                 gain != null ||
                 tr != null ||
                 boundary ||
@@ -958,6 +987,10 @@ class EditorView(
                 gainChanged = false
                 gestureClip = clipAt(x, y)
                 audioGesture = lanes.any { it.audio && y - timeline.top in it.top..it.bottom }
+                downLanes = lanes
+                downMoveStart = editor.targets().minOfOrNull { it.start } ?: 0.0
+                downMoveTrack = editor.targets().minOfOrNull { it.track } ?: 0
+                downClipTrack = gestureClip?.track ?: 0
                 downGain = gestureClip?.gainDb ?: 0f
                 rangeHandle = 0
                 editor.range?.let { r ->
@@ -990,13 +1023,11 @@ class EditorView(
                             else range.start..max(t, range.start + 0.01)
                         seek(t)
                         invalidate()
-                    } else if (moving && gestureClip != null) {
-                        seek(
-                            (downCursor + dx / timeline.width() * span).coerceIn(
-                                0.0,
-                                editor.project.duration,
-                            )
-                        )
+                    } else if (moving && gestureClip?.id in editor.selected) {
+                        val track = TimelineLayout.moveTrack(downLanes, downClipTrack,
+                            audioGesture, y - timeline.top)
+                        editor.moveSelection(max(0.0, downMoveStart + dx / timeline.width() * span),
+                            max(0, downMoveTrack + track - downClipTrack))
                     } else if (
                         abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
                     ) {
@@ -1022,15 +1053,7 @@ class EditorView(
                     editor.setGain(value)
                     return true
                 }
-                if (moved && moving && gestureClip != null) {
-                    val target =
-                        (gestureClip!!.start + (x - downX) / timeline.width() * span).coerceAtLeast(
-                            0.0
-                        )
-                    val targetTrack = max(0, gestureClip!!.track + ((y - downY) / 35).roundToInt())
-                    editor.moveSelection(target, targetTrack)
-                    return true
-                }
+                if (moved && moving) return true
                 if (moved) return true
                 val hit = hits.lastOrNull { it.first.contains(x, y) }?.second
                 if (hit != null) {

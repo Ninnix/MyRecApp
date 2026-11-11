@@ -153,6 +153,25 @@ fun main() {
         check(c.track == 1)
         check(e.project.active(2.0).size == 2)
     }
+    test("stacked copies of the same source select and relink independently") {
+        val e = fixture()
+        val original = e.project.clips.single()
+        val copy = original.duplicate(true)
+        e.addLayer(copy, 0.0)
+        e.clearSelection()
+        e.select(copy)
+        check(e.targets() == listOf(copy))
+        e.unlink()
+        val audio = e.project.clips.last()
+        e.clearSelection()
+        e.select(copy)
+        e.unlink()
+        check(e.targets().toSet() == setOf(copy, audio))
+        check(original.audio && original.video)
+        e.clearSelection()
+        e.select(copy)
+        check(e.targets().toSet() == setOf(copy, audio))
+    }
     test("move batch cancels and commits as one undo step") {
         val e = fixture()
         val c = e.project.clips.single()
@@ -220,12 +239,66 @@ fun main() {
         val lanes = TimelineLayout.lanes(e.project, 109f)
         check(
             lanes.map { it.track to it.audio } ==
-                listOf(0 to false, 2 to false, 0 to true, 2 to true)
+                listOf(2 to false, 0 to false, 0 to true, 2 to true)
         )
         check(lanes.zipWithNext().all { (a, b) -> a.bottom < b.top })
         e.select(e.project.clips.first())
         e.unlink()
         check(e.project.clips.last().track == 0)
+    }
+    test("layer imports keep existing clips and transitions in place") {
+        val e = fixture()
+        e.cursor = 5.0
+        e.split()
+        e.putTransition(Transition(at = 5.0, duration = 1.0))
+        val before = e.project.duplicate()
+        val video = Clip(path = "layer.mp4", sourceOut = 3.0)
+        e.addLayer(video, 2.0)
+        val audio = Clip(path = "music.wav", sourceOut = 20.0, video = false, linked = false)
+        e.addLayer(audio, 2.0)
+        check(video.track == 1 && audio.track == 2)
+        near(video.start, 2.0)
+        near(audio.start, 2.0)
+        check(e.project.clips.take(2) == before.clips)
+        check(e.project.transitions == before.transitions)
+        check(e.project.active(3.0).map { it.path } == listOf("fixture.mp4", "layer.mp4"))
+        e.undo()
+        check(e.project.clips.none { it.path == "music.wav" })
+        e.redo()
+        check(e.project.clips.last().path == "music.wav")
+    }
+    test("vertical moves follow visible lanes and create higher layers above video") {
+        val e = fixture()
+        e.addLayer(Clip(path = "top.mp4", sourceOut = 5.0, track = 2))
+        val rows = TimelineLayout.lanes(e.project, 109f)
+        val top = rows.first()
+        val base = rows.first { !it.audio && it.track == 0 }
+        check(TimelineLayout.moveTrack(rows, 0, false, top.top + 2) == 1)
+        check(TimelineLayout.moveTrack(rows, 1, false, base.top + 2) == 0)
+        check(TimelineLayout.moveTrack(rows, 1, false, top.top - 2) == 2)
+        check(TimelineLayout.moveTrack(rows, 0, true, rows.last().bottom + 2) == 2)
+    }
+    test("recording markers follow trims, splits, speed, copy and undo") {
+        val e = fixture()
+        e.project.clips.single().marks.addAll(listOf(1.0, 4.0, 8.0))
+        e.cursor = 4.0
+        e.split()
+        check(e.project.markers() == listOf(1.0, 4.0, 8.0))
+        check(4.0 in e.project.events())
+        e.range = 3.0..6.0
+        e.copySelection()
+        e.cursor = 10.0
+        e.paste()
+        check(e.project.markers() == listOf(1.0, 4.0, 8.0, 11.0))
+        e.undo()
+        check(e.project.markers() == listOf(1.0, 4.0, 8.0))
+        val clone = e.project.duplicate()
+        clone.clips.first().marks.clear()
+        check(e.project.clips.first().marks.size == 3)
+        e.clearSelection()
+        e.select(e.project.clips.last())
+        e.setRate(2.0)
+        check(e.project.markers() == listOf(1.0, 4.0, 6.0))
     }
     test("moving a group preserves relative tracks and offsets") {
         val e = fixture()

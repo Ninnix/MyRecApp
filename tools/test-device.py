@@ -3,6 +3,7 @@ import argparse, os, pathlib, subprocess, sys
 root=pathlib.Path(__file__).resolve().parent.parent
 parser=argparse.ArgumentParser()
 suite=parser.add_mutually_exclusive_group()
+suite.add_argument('--media-editing',action='store_true')
 suite.add_argument('--capture-controls',action='store_true')
 suite.add_argument('--hdr-scene',action='store_true')
 suite.add_argument('--hdr-color',action='store_true')
@@ -33,6 +34,7 @@ for permission in ['android.permission.CAMERA','android.permission.RECORD_AUDIO'
  subprocess.run([adb,'shell','pm','grant','org.yourec.app',permission],check=True)
 subprocess.run([adb,'shell','cmd','statusbar','collapse'],check=True)
 command=[adb,'shell','am','instrument','-w']
+if args.media_editing:command+=['-e','suite','media-editing']
 if args.capture_controls:command+=['-e','suite','capture-controls']
 if args.hdr_scene:command+=['-e','suite','hdr-scene']
 if args.hdr_color:command+=['-e','suite','hdr-color']
@@ -55,11 +57,11 @@ command+=['org.yourec.app.test/org.yourec.app.DeviceTests']
 result=subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
 subprocess.run([adb,'shell','am','start','-S','-W','-f','0x10008000','-n','org.yourec.app/.MainActivity'],stdout=subprocess.DEVNULL,check=True)
 print(result.stdout)
-name='capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
+name='media-editing-test.txt' if args.media_editing else 'capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
 (root/'artifacts'/name).write_text(result.stdout)
 if result.returncode or any(text in result.stdout for text in ['FAIL ', 'Process crashed', 'INSTRUMENTATION_FAILED']) or 'PASS ' not in result.stdout:sys.exit(1)
 if args.parity:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.yourec.app/files/parity-screens/.',str(root/'artifacts/parity/android')],check=True)
-elif not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
+elif not args.media_editing and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.yourec.app/files/test-screens/.',str(root/'artifacts/screens')],check=True)
  subprocess.run([adb,'pull','/sdcard/Android/data/org.yourec.app/files/test-export.mp4',str(root/'artifacts/test-export.mp4')],check=True)

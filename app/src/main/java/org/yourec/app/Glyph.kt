@@ -24,6 +24,12 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "Bookmark" -> path(-5f, 8f, -5f, -8f, 5f, -8f, 5f, 8f, 0f, 4f, -5f, 8f)
+            "Folder" -> path(-8f, 6f, -8f, -6f, -2f, -6f, 0f, -3f, 8f, -3f, 8f, 6f, -8f, 6f)
+            "Round picture in picture" -> {
+                c.drawRoundRect(-8f, -6f, 8f, 6f, 1.5f, 1.5f, p)
+                c.drawCircle(-3f, 1f, 4f, p)
+            }
             "More" -> {
                 p.style = Paint.Style.FILL
                 for (x in -5..5 step 5) c.drawCircle(x.toFloat(), 0f, .8f, p)

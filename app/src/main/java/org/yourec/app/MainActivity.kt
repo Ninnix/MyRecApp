@@ -43,7 +43,10 @@ class MainActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private var capture: Capture? = null
     private var captureMode = false
-    private var importKind = "video/*"
+    private data class MediaImport(
+        val project: String, val at: Double, val layer: Boolean, val audio: Boolean,
+    )
+    private var pendingImport: MediaImport? = null
     private var imageCallback: ((String) -> Unit)? = null
     private var importAsProject = false
     private var exporting: Export? = null
@@ -134,6 +137,16 @@ class MainActivity : Activity() {
                 }
             "projects" -> projects()
             "addVideo" -> importVideo()
+            "addMedia" -> {
+                playback.pause()
+                choose("Add media", listOf("Insert video", "Add video layer", "Add audio")) {
+                    when (it) {
+                        0 -> importVideo()
+                        1 -> importVideo(layer = true)
+                        2 -> panels.addAudio()
+                    }
+                }
+            }
             "play" -> playback.toggle()
             "audition" -> playback.audition()
             "previous" -> {
@@ -148,14 +161,17 @@ class MainActivity : Activity() {
                 editor.jump(true)
                 playback.refresh()
             }
-            "backPoint" -> {
-                val t = editorView.previousPosition ?: 0.0
+            "backPoint", "previousMark" -> {
+                val t = (if (id == "previousMark")
+                    editor.project.markers().lastOrNull { it < editor.cursor - .01 } else null)
+                    ?: editorView.previousPosition ?: 0.0
                 editorView.previousPosition = editor.cursor
                 playback.seek(t)
             }
             "forwardPoint" -> {
                 editorView.previousPosition = editor.cursor
-                playback.seek(editor.project.duration)
+                playback.seek(editor.project.markers().firstOrNull { it > editor.cursor + .01 }
+                    ?: editor.project.duration)
             }
             "split" -> {
                 playback.pause()
@@ -210,6 +226,7 @@ class MainActivity : Activity() {
                 editorView.invalidate()
             }
             "volume" -> panels.volume()
+            "placement" -> panels.effect("Placement")
             "scale" ->
                 choose(
                     "Timeline scale",
@@ -236,14 +253,18 @@ class MainActivity : Activity() {
                 editorView.invalidate()
             }
             "copy" -> {
+                playback.pause()
                 editor.copySelection()
                 editor.clearSelection()
                 editorView.showPaste = true
                 editorView.invalidate()
             }
             "paste" -> {
+                playback.pause()
                 editor.paste()
-                editorView.showPaste = false
+                editor.clearSelection()
+                editorView.showPaste = true
+                editorView.invalidate()
             }
             "dismissPaste" -> {
                 editorView.showPaste = false
@@ -534,8 +555,8 @@ class MainActivity : Activity() {
         Toast.makeText(this, text, Toast.LENGTH_LONG).show()
     }
 
-    fun importVideo() {
-        importKind = "video/*"
+    fun importVideo(layer: Boolean = false) {
+        pendingImport = MediaImport(editor.project.id, editor.cursor, layer, false)
         startActivityForResult(
             Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 type = "video/*"
@@ -546,6 +567,17 @@ class MainActivity : Activity() {
         )
     }
 
+    fun importAudio(at: Double) {
+        pendingImport = MediaImport(editor.project.id, at, true, true)
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                type = "audio/*"
+                addCategory(Intent.CATEGORY_OPENABLE)
+            },
+            22,
+        )
+    }
+
     fun importProject() {
         importAsProject = true
         importVideo()
@@ -553,7 +585,6 @@ class MainActivity : Activity() {
 
     fun importImage(callback: (String) -> Unit) {
         imageCallback = callback
-        importKind = "image/*"
         startActivityForResult(
             Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 type = "image/*"
@@ -567,44 +598,68 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK || data == null) {
             if (requestCode == 20) importAsProject = false
+            if (requestCode == 20 || requestCode == 22) pendingImport = null
             return
         }
         if (requestCode == 20) {
             if (importAsProject) {
                 newProject()
                 importAsProject = false
+                pendingImport = pendingImport?.copy(project = editor.project.id, at = 0.0)
             }
+            val target = pendingImport
+            pendingImport = null
             val clip = data.clipData
             if (clip != null)
-                for (i in 0 until clip.itemCount) importUri(clip.getItemAt(i).uri, false)
-            else data.data?.let { importUri(it, false) }
+                for (i in 0 until clip.itemCount) importUri(clip.getItemAt(i).uri, false, target)
+            else data.data?.let { importUri(it, false, target) }
+        }
+        if (requestCode == 22) {
+            val target = pendingImport
+            pendingImport = null
+            data.data?.let { importUri(it, false, target) }
         }
         if (requestCode == 21) data.data?.let { importUri(it, true) }
     }
 
-    private fun importUri(uri: Uri, image: Boolean) {
+    private fun importUri(uri: Uri, image: Boolean, target: MediaImport? = null) {
         panels.progress("Importing…", 0f, null)
         worker.execute {
+            var file: File? = null
             try {
-                val ext = if (image) "png" else "mp4"
-                val file = File(store.media, "import-${uid()}.$ext")
+                val ext = android.webkit.MimeTypeMap.getSingleton()
+                    .getExtensionFromMimeType(contentResolver.getType(uri)) ?: "media"
+                val imported = File(store.media, "import-${uid()}.$ext")
+                file = imported
                 contentResolver.openInputStream(uri)!!.use { input ->
-                    file.outputStream().use { input.copyTo(it) }
+                    imported.outputStream().use { input.copyTo(it) }
                 }
-                val clip = if (!image) ProjectStore.inspect(file) else null
+                val clip = if (!image) ProjectStore.inspect(imported) else null
+                if (target?.audio == true) {
+                    require(clip?.audio == true) { "This file has no playable audio" }
+                    clip.video = false
+                    clip.linked = false
+                }
                 ui.post {
                     panels.close()
                     if (image) {
-                        imageCallback?.invoke(file.absolutePath)
+                        imageCallback?.invoke(imported.absolutePath)
                         imageCallback = null
                     } else if (clip != null) {
-                        if (editor.project.clips.isEmpty()) setProjectFormat(clip)
-                        editor.insert(clip)
+                        if (target != null && target.project != editor.project.id) {
+                            imported.delete()
+                            message("Import cancelled because the project changed")
+                            return@post
+                        }
+                        if (clip.video && editor.project.clips.none { it.video }) setProjectFormat(clip)
+                        if (target?.layer == true) editor.addLayer(clip, target.at)
+                        else editor.insert(clip)
                         editor.scale = if (editor.project.duration < 10) 10.0 else editor.scale
                         playback.refresh()
                     }
                 }
             } catch (e: Exception) {
+                file?.delete()
                 ui.post {
                     panels.close()
                     message(e.message ?: "Cannot import this file")

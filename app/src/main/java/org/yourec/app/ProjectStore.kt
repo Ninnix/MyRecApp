@@ -91,6 +91,7 @@ class ProjectStore(private val root: File) {
                                 put("audio", c.audio)
                                 put("linked", c.linked)
                                 put("gain", c.gainDb)
+                                put("marks", JSONArray(c.marks))
                                 put(
                                     "effects",
                                     JSONArray().apply {
@@ -167,6 +168,9 @@ class ProjectStore(private val root: File) {
                 )
             val effects = c.getJSONArray("effects")
             clip.group = c.optString("group", clip.id)
+            c.optJSONArray("marks")?.let { marks ->
+                for (j in 0 until marks.length()) clip.marks.add(marks.getDouble(j))
+            }
             for (j in 0 until effects.length()) {
                 val e = effects.getJSONObject(j)
                 val values = e.getJSONObject("values")

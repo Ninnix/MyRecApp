@@ -587,6 +587,10 @@ class Panels(private val a: MainActivity) {
 
     fun relayout() {
         if (panel == null) return
+        if (title == "Add audio") {
+            addAudio(draftOrigin)
+            return
+        }
         if (title == "Projects" || title == "Recently deleted") {
             projects(title == "Recently deleted")
             return
@@ -1310,6 +1314,11 @@ class Panels(private val a: MainActivity) {
             close()
             a.importVideo()
         }
+        toolRow(content, "Add video layer", "Add video", Effects.color("Placement")) {
+            close()
+            a.importVideo(layer = true)
+        }
+        toolRow(content, "Add audio", "Volume", TEAL) { addAudio() }
         toolRow(content, "Transition", "Transition", Effects.color("Transition")) { transition() }
         hint(content, "Select a clip boundary, the start, or the end.")
         if (editor.clipboard.isNotEmpty())
@@ -1400,6 +1409,63 @@ class Panels(private val a: MainActivity) {
             LinearLayout.LayoutParams(0, px(72f), 1f),
         )
         add(content, settings)
+    }
+
+    fun addAudio(at: Double = editor.cursor) {
+        a.playback.pause()
+        val content = setup("Add audio")
+        val root = panel ?: return
+        root.background = shape(Color.rgb(32, 32, 34), 26f).apply {
+            setStroke(max(1, px(.5f)), Color.rgb(65, 65, 67))
+        }
+        root.clipToOutline = true
+        root.layoutParams = FrameLayout.LayoutParams(
+            a.root.width - px(12f),
+            min(a.root.height - px(45f), px(if (landscape) 245f else 330f)),
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL,
+        ).apply { bottomMargin = px(6f) }
+        content.removeAllViews()
+        val handle = View(a).apply { background = shape(Color.rgb(105, 105, 108), 2f) }
+        content.addView(handle, LinearLayout.LayoutParams(px(42f), px(3f)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = px(5f)
+        })
+        val header = FrameLayout(a)
+        header.addView(text("Add audio", 10f, Color.WHITE, true).apply { gravity = Gravity.CENTER },
+            FrameLayout.LayoutParams(-1, -1))
+        val cancel = text("Cancel", 10f, RED).apply {
+            gravity = Gravity.CENTER
+            background = shape(Color.rgb(55, 55, 58), 16f)
+            setOnClickListener { close() }
+        }
+        header.addView(cancel, FrameLayout.LayoutParams(px(60f), px(30f), Gravity.CENTER_VERTICAL)
+            .apply { leftMargin = px(10f) })
+        add(content, header, 42f)
+        val scroll = ScrollView(a)
+        val controls = column().apply { setPadding(px(14f), px(10f), px(14f), px(14f)) }
+        scroll.addView(controls)
+        content.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        add(controls, text("At ${timeLabel(at)}", 10f, Color.WHITE, true), 28f)
+        space(controls, 8f)
+        add(controls, text("Adds a separate sound layer. Your existing video and audio stay in place.",
+            10f, MUTED), 44f)
+        space(controls, 8f)
+        val choose = row().apply {
+            gravity = Gravity.CENTER
+            background = shape(Color.rgb(0, 207, 185), 24f)
+            contentDescription = "Choose audio from Files"
+            setOnClickListener {
+                close()
+                a.importAudio(at)
+            }
+        }
+        choose.addView(Glyph(a, "Folder", Color.BLACK), LinearLayout.LayoutParams(px(18f), px(20f)))
+        choose.addView(text("Choose audio from Files", 10f, Color.BLACK),
+            LinearLayout.LayoutParams(-2, -1).apply { leftMargin = px(8f) })
+        add(controls, choose, 44f)
+        space(controls, 12f)
+        add(controls, text("WAV, AIFF, M4A, MP3 and other supported audio files. Use Move and Volume to arrange the sound after importing.",
+            8f, MUTED))
     }
 
     private fun rangeLabel() =

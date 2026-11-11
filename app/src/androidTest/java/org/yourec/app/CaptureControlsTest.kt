@@ -145,6 +145,33 @@ object CaptureControlsTest {
                 Thread.sleep(700)
                 onMain { capture.switchCamera(front) }
                 Thread.sleep(1100)
+                test("$name recording marks remain opposite pause and survive saving") {
+                    onMain { a.editor.load(Project(name = "Recording marks check")) }
+                    tap("record")
+                    Thread.sleep(900)
+                    check(capture.recording)
+                    val mark = capture.controlBounds("mark") ?: error("No Mark button")
+                    val pause = capture.controlBounds("pause") ?: error("No Pause button")
+                    if (name == "portrait") check(mark.centerX() > pause.centerX())
+                    else check(mark.centerY() < pause.centerY())
+                    tap("mark")
+                    tap("pause")
+                    val at = capture.elapsedSeconds()
+                    Thread.sleep(500)
+                    check(abs(capture.elapsedSeconds() - at) < .05)
+                    tap("mark")
+                    tap("pause")
+                    Thread.sleep(500)
+                    tap("record")
+                    val clip = a.editor.project.clips.single()
+                    check(clip.marks.size == 2)
+                    check(clip.marks.all { it > .3 && it < clip.duration })
+                    val restored = a.store.decode(a.store.encode(a.editor.project))
+                    check(restored.markers() == a.editor.project.markers())
+                }
+                onMain { a.requestedOrientation = orientation }
+                Thread.sleep(700)
+                check((capture.width > capture.height) == (name == "landscape"))
                 test("$name front screen torch resizes by touch and restores brightness") {
                     onMain {
                         a.window.attributes = a.window.attributes.apply { screenBrightness = .42f }
@@ -274,6 +301,23 @@ object CaptureControlsTest {
                     check(capture.front)
                     tap("flip")
                     check(!capture.front)
+                    onMain { capture.setDualLayout(5) }
+                    Thread.sleep(250)
+                    val circle = bounds()
+                    check(abs(circle.width() - circle.height()) < 2) { "Round inset is oval" }
+                    check((capture.width > capture.height) == (name == "landscape"))
+                    render("$name-round-inset").recycle()
+                    val circleX = circle.left + circle.width() * .25f
+                    val circleY = circle.centerY()
+                    drag(circleX, circleY, circleX + texture.width * .1f,
+                        circleY - texture.height * .05f)
+                    check(bounds().left > circle.left + texture.width * .07f)
+                    val movedCircle = bounds()
+                    drag(movedCircle.right, movedCircle.centerY(),
+                        movedCircle.right + texture.width * .05f, movedCircle.centerY())
+                    check(bounds().width() > movedCircle.width() + texture.width * .03f)
+                    check(abs(bounds().width() - bounds().height()) < 2)
+                    onMain { capture.setDualLayout(0) }
                     check(capture.recording && !capture.paused)
                     check(a.window.attributes.screenBrightness == 1f)
                     tap("torch")

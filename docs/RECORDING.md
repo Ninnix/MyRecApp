@@ -4,10 +4,12 @@ Open Projects, then Record or Continue recording. A new recording appends to the
 current project unless you choose Start new project. The red button starts and
 stops capture. Pause keeps the recording session and project together.
 
-In portrait, scissors sit to the right of Record. They open the editor, stopping
-an active recording first. The stacked icon opens Projects while idle; that
-position to the left holds Pause during recording. In landscape, scissors sit
-above Record and Projects below it; the lower position holds Pause during recording.
+In portrait, scissors sit to the right of Record while idle and open the editor.
+During recording that position holds a vertical bookmark icon and Mark label;
+Pause/Resume stays on the left. In landscape, Mark sits above Record and
+Pause/Resume below it. Mark saves a point in the take without stopping capture,
+including while paused. Marks are retained in the editor and project storage.
+The stacked icon opens Projects while idle.
 
 YouRec follows Android’s auto-rotate setting during recording. Turning the phone
 updates the controls and live view without stopping the take. A take keeps its
@@ -47,7 +49,7 @@ camera transform. This distinction follows Android's
 
 ## Split view and HDR
 
-The overlapping-camera button opens Picture in picture, side-by-side,
+The overlapping-camera button opens Picture in picture, round Picture in picture, side-by-side,
 top/bottom and diagonal layouts. Two cameras run simultaneously when Android reports a
 supported concurrent front/rear pair. Layout changes are recorded in the same
 video. Tap the divider to swap views; use two fingers to pan or zoom either
@@ -55,7 +57,10 @@ composition region. In Picture in picture (the first layout), tap the inset's
 camera-arrow button to exchange the large and small views. Drag inside the
 inset to move it, drag an edge to change width or height independently, or drag
 a corner to change both. Swapping, moving and resizing also work while recording
-and affect the saved composition. The circular arrow
+and affect the saved composition.
+The round inset uses the same move, resize and swap controls, preserving a circle
+in portrait and landscape. Its mask is applied to both preview and saved frames.
+The circular arrow
 restores normal single-camera framing. Turning two-camera capture on requires
 stopping recording; returning to normal framing works during a dual recording.
 Concurrent streams use up to

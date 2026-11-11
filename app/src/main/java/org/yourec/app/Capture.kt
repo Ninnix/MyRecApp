@@ -90,6 +90,8 @@ class Capture(
         private set
 
     private var duration = 0L
+    private val recordingMarks = mutableListOf<Double>()
+    private var markedUntil = 0L
     private var since = 0L
     private var amplitude = 0f
     private var meter: AudioRecord? = null
@@ -680,7 +682,7 @@ class Capture(
         overlay.invalidate()
     }
 
-    private fun updateLight(enabled: Boolean = torch && !closed && (front || dualLayout < 4)) {
+    private fun updateLight(enabled: Boolean = torch && !closed && (front || dualLayout != 4)) {
         screenLight = enabled
         val window = activity.window
         val attributes = window.attributes
@@ -928,6 +930,7 @@ class Capture(
             recorder = r
             recordingFile = file
             recording = true
+            recordingMarks.clear()
             effectHistory.clear()
             effectSince = 0.0
             paused = false
@@ -987,6 +990,7 @@ class Capture(
             r.start()
             recordingFile = file
             recording = true
+            recordingMarks.clear()
             paused = false
             duration = 0
             effectHistory.clear()
@@ -1130,6 +1134,14 @@ class Capture(
     fun elapsedSeconds(): Double =
         (duration + if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
 
+    internal fun addMark() {
+        if (!recording || pendingStart) return
+        val at = elapsedSeconds()
+        if (recordingMarks.none { abs(it - at) < .1 }) recordingMarks.add(at)
+        markedUntil = SystemClock.elapsedRealtime() + 800
+        overlay.invalidate()
+    }
+
     private fun recordingTurned() =
         (activity.windowManager.defaultDisplay.rotation - recordingDisplayRotation) % 2 != 0
 
@@ -1211,6 +1223,7 @@ class Capture(
         if (success && file != null)
             try {
                 val clip = ProjectStore.inspect(file)
+                clip.marks.addAll(recordingMarks.filter { it < clip.sourceOut })
                 effectHistory.forEach { clip.effects.add(it.copyEffect(true)) }
                 onClip(clip)
             } catch (e: Exception) {
@@ -1326,7 +1339,8 @@ class Capture(
 
     internal fun setDualLayout(mode: Int) {
         if (mode == dualLayout) return
-        if (mode < 4) lastDualLayout = mode
+        require(mode in 0..5)
+        if (mode != 4) lastDualLayout = mode
         if (mode != 4 && DualCamera.pair(manager) == null) {
             activity.message("This phone does not support simultaneous front and rear cameras")
             return
@@ -1653,6 +1667,7 @@ class Capture(
                 when (id) {
                     "dual" -> "Dual camera"
                     "pip" -> "Picture in picture"
+                    "roundPip" -> "Round picture in picture"
                     "splitVertical" -> "Split vertical"
                     "splitHorizontal" -> "Split horizontal"
                     "splitDiagonal" -> "Split diagonal"
@@ -1664,6 +1679,7 @@ class Capture(
                     "projects" -> "Stack"
                     "pause" -> if (paused) "Play" else "Pause"
                     "edit" -> "Scissors"
+                    "mark" -> "Bookmark"
                     else -> null
                 }
             if (id == "mic") {
@@ -1715,9 +1731,12 @@ class Capture(
                         Glyph(activity, kind, color).apply { layout(0, 0, 18, 18) }
                     }
                 c.save()
-                c.translate(r.centerX() - 9, r.centerY() - 9)
+                c.translate(r.centerX() - 9, r.centerY() - if (id == "mark") 14 else 9)
                 glyph.draw(c)
                 c.restore()
+                if (id == "mark") text(c,
+                    if (SystemClock.elapsedRealtime() < markedUntil) "Marked" else "Mark",
+                    r.centerX(), r.bottom - 2, 7f, color, Paint.Align.CENTER)
             }
             hits.add(r to id)
         }
@@ -1855,12 +1874,13 @@ class Capture(
                 "settings",
             )
             if (dualMenu) {
-                val left = if (portrait) 26f else 175f
+                val left = if (portrait) 9f else 155f
                 val y = top + 34
                 paint.color = Color.argb(180, 53, 53, 49)
-                c.drawRoundRect(left, y, left + 242, y + 40, 12f, 12f, paint)
+                c.drawRoundRect(left, y, left + 275, y + 40, 12f, 12f, paint)
                 listOf(
                         "pip",
+                        "roundPip",
                         "splitVertical",
                         "splitHorizontal",
                         "splitDiagonal",
@@ -1868,7 +1888,14 @@ class Capture(
                         "dualDone",
                     )
                     .forEachIndexed { i, id ->
-                        val active = i < 4 && i == dualLayout
+                        val active = when (id) {
+                            "pip" -> dualLayout == 0
+                            "roundPip" -> dualLayout == 5
+                            "splitVertical" -> dualLayout == 1
+                            "splitHorizontal" -> dualLayout == 2
+                            "splitDiagonal" -> dualLayout == 3
+                            else -> false
+                        }
                         pill(
                             c,
                             RectF(left + 3 + i * 39, y + 3, left + 39 + i * 39, y + 37),
@@ -1879,7 +1906,7 @@ class Capture(
                     }
                 text(
                     c,
-                    if (dualLayout == 0) "Swap views · Drag inset or edges to resize"
+                    if (dualLayout == 0 || dualLayout == 5) "Swap views · Drag inset or edges to resize"
                     else "Tap divider to flip · Two fingers to pan or zoom",
                     w / 2,
                     y + 54,
@@ -1888,16 +1915,16 @@ class Capture(
                     Paint.Align.CENTER,
                 )
             }
-            if (dualCamera != null && dualLayout == 0) {
+            if (dualCamera != null && (dualLayout == 0 || dualLayout == 5)) {
                 insetBounds()?.let { bounds ->
                     val r =
                         RectF(bounds.left / s, bounds.top / s, bounds.right / s, bounds.bottom / s)
                     paint.color = Color.WHITE
                     paint.style = Paint.Style.STROKE
                     paint.strokeWidth = 1f
-                    c.drawRect(r, paint)
+                    if (dualLayout == 5) c.drawOval(r, paint) else c.drawRect(r, paint)
                     paint.strokeWidth = 2.5f
-                    for (x in listOf(r.left, r.right)) for (y in listOf(r.top, r.bottom)) {
+                    if (dualLayout == 0) for (x in listOf(r.left, r.right)) for (y in listOf(r.top, r.bottom)) {
                         c.drawLine(x, y, x + if (x == r.left) 7f else -7f, y, paint)
                         c.drawLine(x, y, x, y + if (y == r.top) 7f else -7f, paint)
                     }
@@ -1945,8 +1972,8 @@ class Capture(
                     if (portrait) cx + 100 else cx + 18,
                     if (portrait) cy + 16 else cy - 53,
                 ),
-                "✂",
-                "edit",
+                if (recording) "Mark" else "✂",
+                if (recording) "mark" else "edit",
             )
             val bottom = if (portrait) texture.bottom / s - 94f else 242f
             if (portrait) {
@@ -2216,7 +2243,7 @@ class Capture(
                     val px = (e.x - texture.left) / texture.width
                     val py = (e.y - texture.top) / texture.height
                     if (
-                        (dualLayout == 0 && draggingInset) ||
+                        ((dualLayout == 0 || dualLayout == 5) && draggingInset) ||
                             (dualLayout == 1 && abs(px - .5f) < .07f) ||
                             (dualLayout == 2 && abs(py - .5f) < .07f) ||
                             (dualLayout == 3 && abs(px + py - 1f) < .07f)
@@ -2238,6 +2265,7 @@ class Capture(
                     when (id) {
                         "record" -> if (recording) stop() else start()
                         "pause" -> pause()
+                        "mark" -> addMark()
                         "edit" -> {
                             if (recording) stop()
                             suspendCamera()
@@ -2292,6 +2320,7 @@ class Capture(
                             if (dualMenu && dualLayout == 4) setDualLayout(lastDualLayout)
                         }
                         "pip" -> setDualLayout(0)
+                        "roundPip" -> setDualLayout(5)
                         "splitVertical" -> setDualLayout(1)
                         "splitHorizontal" -> setDualLayout(2)
                         "splitDiagonal" -> setDualLayout(3)

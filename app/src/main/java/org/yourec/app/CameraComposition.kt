@@ -62,6 +62,7 @@ class CameraComposition(
     private var panX = floatArrayOf(0f, 0f)
     private var panY = floatArrayOf(0f, 0f)
     private var pip = RectF(.63f, .06f, .95f, .38f)
+    private var roundPip = RectF(.04f, .34f, .38f, .94f)
 
     private class Input(
         val texture: Int,
@@ -195,12 +196,13 @@ class CameraComposition(
             #extension GL_OES_EGL_image_external_essl3 : require
             #extension GL_EXT_YUV_target : require
             precision highp float;
-            in vec2 v; in vec2 world; out vec4 color; uniform float side;
+            in vec2 v; in vec2 world; out vec4 color; uniform float side; uniform vec4 circle;
             uniform __samplerExternal2DY2YEXT image; uniform float tone; uniform float fullRange; uniform float primaries;
             vec3 linearHLG(vec3 x){return mix(x*x/3.,(exp((x-.55991073)/.17883277)+.28466892)/12.,step(vec3(.5),x));}
             vec3 encodeHLG(vec3 x){return mix(sqrt(3.*max(x,vec3(0.))),.17883277*log(max(12.*x-.28466892,vec3(.000001)))+.55991073,step(vec3(1./12.),x));}
             vec3 srgb(vec3 x){return mix(12.92*x,1.055*pow(max(x,vec3(0.)),vec3(1./2.4))-.055,step(vec3(.0031308),x));}
             void main(){
+                if(circle.z>0. && length((world-circle.xy)/circle.zw)>1.)discard;
                 if(side<-.5 && world.x+world.y>1.)discard;
                 if(side>.5 && world.x+world.y<=1.)discard;
                 vec3 yuv=texture(image,v).xyz-vec3(fullRange>.5 ? 0. : .0625,.5,.5);
@@ -231,8 +233,9 @@ class CameraComposition(
             else
                 """
             #extension GL_OES_EGL_image_external : require
-            precision highp float; varying vec2 v; varying vec2 world; uniform samplerExternalOES image; uniform float side;
-            void main(){if(side<-.5 && world.x+world.y>1.)discard;
+            precision highp float; varying vec2 v; varying vec2 world; uniform samplerExternalOES image; uniform float side; uniform vec4 circle;
+            void main(){if(circle.z>0. && length((world-circle.xy)/circle.zw)>1.)discard;
+                if(side<-.5 && world.x+world.y>1.)discard;
                 if(side>.5 && world.x+world.y<=1.)discard;gl_FragColor=texture2D(image,v);}
         """
                     .trimIndent()
@@ -296,6 +299,7 @@ class CameraComposition(
         panX.fill(0f)
         panY.fill(0f)
         pip = RectF(.63f, .06f, .95f, .38f)
+        roundPip = RectF(.04f, .34f, .38f, .94f)
         render()
     }
 
@@ -338,7 +342,8 @@ class CameraComposition(
         val area =
             if (layout == 3 && inputs.size == 2) {
                 if (x + y > 1) 1 else 0
-            } else regions().indexOfLast { it.contains(x, y) }.coerceAtLeast(0)
+            } else if (layout == 5 && inputs.size == 2) { if (containsInset(x, y)) 1 else 0 }
+            else regions().indexOfLast { it.contains(x, y) }.coerceAtLeast(0)
         val index = if (swapped) 1 - area else area
         zoom[index] = (zoom[index] * scale).coerceIn(1f, 8f)
         val rect = regions()[area]
@@ -361,11 +366,47 @@ class CameraComposition(
         render()
     }
 
-    fun insetContains(x: Float, y: Float): Boolean = call { layout == 0 && pip.contains(x, y) }
+    private fun insetRect(): RectF {
+        if (layout != 5) return RectF(pip)
+        val aspect = width.toFloat() / height
+        val diameter = roundPip.width().coerceIn(.12f, min(1f, 1f / aspect))
+        val halfWidth = diameter / 2
+        val halfHeight = halfWidth * aspect
+        val x = roundPip.centerX().coerceIn(halfWidth, 1f - halfWidth)
+        val y = roundPip.centerY().coerceIn(halfHeight, 1f - halfHeight)
+        return RectF(x - halfWidth, y - halfHeight, x + halfWidth, y + halfHeight)
+    }
 
-    fun insetBounds(): RectF? = call { if (layout == 0) RectF(pip) else null }
+    private fun containsInset(x: Float, y: Float): Boolean {
+        val rect = insetRect()
+        return when (layout) {
+            0 -> rect.contains(x, y)
+            5 -> ((x - rect.centerX()) / (rect.width() / 2)).pow(2) +
+                ((y - rect.centerY()) / (rect.height() / 2)).pow(2) <= 1f
+            else -> false
+        }
+    }
+
+    fun insetContains(x: Float, y: Float): Boolean = call { containsInset(x, y) }
+
+    fun insetBounds(): RectF? = call { if (layout == 0 || layout == 5) insetRect() else null }
 
     fun resizePip(edges: Int, dx: Float, dy: Float) = call {
+        if (layout == 5) {
+            val rect = insetRect()
+            val aspect = width.toFloat() / height
+            val delta = when {
+                edges and 1 != 0 -> -dx
+                edges and 4 != 0 -> dx
+                edges and 2 != 0 -> -dy / aspect
+                else -> dy / aspect
+            }
+            val diameter = (rect.width() + delta).coerceIn(.12f, min(1f, 1f / aspect))
+            roundPip = RectF(rect.centerX() - diameter / 2, rect.top,
+                rect.centerX() + diameter / 2, rect.bottom)
+            render()
+            return@call
+        }
         if (edges and 1 != 0) pip.left = (pip.left + dx).coerceIn(0f, pip.right - .12f)
         if (edges and 2 != 0) pip.top = (pip.top + dy).coerceIn(0f, pip.bottom - .12f)
         if (edges and 4 != 0) pip.right = (pip.right + dx).coerceIn(pip.left + .12f, 1f)
@@ -374,6 +415,14 @@ class CameraComposition(
     }
 
     fun movePip(dx: Float, dy: Float) = call {
+        if (layout == 5) {
+            val rect = insetRect()
+            rect.offsetTo((rect.left + dx).coerceIn(0f, 1f - rect.width()),
+                (rect.top + dy).coerceIn(0f, 1f - rect.height()))
+            roundPip = rect
+            render()
+            return@call
+        }
         val x = (pip.left + dx).coerceIn(0f, 1f - pip.width())
         val y = (pip.top + dy).coerceIn(0f, 1f - pip.height())
         pip.offsetTo(x, y)
@@ -417,7 +466,7 @@ class CameraComposition(
                 when (layout) {
                     4 -> listOf(RectF(0f, 0f, 1f, 1f))
                     3 -> listOf(RectF(0f, 0f, 1f, 1f), RectF(0f, 0f, 1f, 1f))
-                    0 -> listOf(RectF(0f, 0f, 1f, 1f), RectF(pip))
+                    0, 5 -> listOf(RectF(0f, 0f, 1f, 1f), insetRect())
                     1 -> listOf(RectF(0f, 0f, .5f, 1f), RectF(.5f, 0f, 1f, 1f))
                     else -> listOf(RectF(0f, 0f, 1f, .5f), RectF(0f, .5f, 1f, 1f))
                 }
@@ -460,6 +509,10 @@ class CameraComposition(
                 if (snapshot < 0 && layout == 3 && inputs.size == 2) if (region == 0) -1f else 1f
                 else 0f,
             )
+            val circle = snapshot < 0 && layout == 5 && region == 1
+            GLES20.glUniform4f(GLES20.glGetUniformLocation(program, "circle"),
+                rect.centerX(), rect.centerY(),
+                if (circle) rect.width() / 2 else 0f, if (circle) rect.height() / 2 else 0f)
             val source = inputs[index]
             GLES20.glUniform1f(
                 GLES20.glGetUniformLocation(program, "primaries"),

@@ -30,6 +30,7 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py --composition
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --camera-gaps
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --live-rotation
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --capture-controls
+ANDROID_SERIAL=SERIAL python3 tools/test-device.py --media-editing
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --playback
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --camera-preview
 ANDROID_SERIAL=SERIAL python3 tools/test-device.py --references
@@ -47,7 +48,12 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
 
 * `--live-rotation`: changes display rotation during SDR, HDR and split-view
   recordings, checks UI reflow and compares saved frames with the live view.
-* `--capture-controls`: toggles the torch through Recording settings and resizes its border,
+* `--media-editing`: copy and repeated paste, live multitrack dragging with
+  Cancel/Done, overlapping-layer Placement controls and audio import through
+  the file-picker result in portrait and landscape. Checks source timing,
+  independent tracks, saved project data and decoded audio, and saves UI captures.
+* `--capture-controls`: recording marks and pause/resume positions, saved marks,
+  round inset movement and aspect, and toggles the torch through Recording settings and resizes its border,
   checks rounded translucent edges and opaque bars outside the video,
   verifies rear hardware torch and brightness restoration, and moves, resizes
   and swaps Picture in picture while recording in both orientations. A synthetic
@@ -90,8 +96,9 @@ fixture recordings. Keep the phone unlocked and YouRec in the foreground.
   for all three neural effects, ordered multi-model processing, camera capability
   inventory, and native Kaleidoscope/Widescreen pixel checks. Install the
   separate audio models first with `tools/prepare-audio.py --install`.
-* `--composition`: synthetic sources verify the recorded pixels of all four
-  dual layouts, normal framing, swapped views and all four metadata orientations.
+* `--composition`: synthetic sources verify the recorded pixels of all five
+  dual layouts (including the circle's masked corners), normal framing, swapped
+  views and all four metadata orientations.
 * `--camera-gaps`: actual concurrent front/rear recording, layout changes,
   pause/resume, audio/video timing and HEVC Main10 BT.2020/HLG metadata. Also
   decodes and exports the HDR file through the editor, and verifies capture

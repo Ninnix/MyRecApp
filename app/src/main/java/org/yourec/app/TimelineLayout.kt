@@ -8,6 +8,14 @@ import kotlin.math.min
 data class TimelineLane(val track: Int, val audio: Boolean, val top: Float, val bottom: Float)
 
 object TimelineLayout {
+    fun moveTrack(lanes: List<TimelineLane>, track: Int, audio: Boolean, y: Float): Int {
+        val rows = lanes.filter { it.audio == audio }
+        if (rows.isEmpty()) return track
+        if ((!audio && y < rows.first().top) || (audio && y > rows.last().bottom))
+            return rows.maxOf { it.track } + 1
+        return rows.minBy { abs((it.top + it.bottom) / 2 - y) }.track
+    }
+
     fun thumbnailStart(clipLeft: Float, viewportLeft: Float, width: Float): Float =
         clipLeft + floor(max(0f, viewportLeft - clipLeft) / width) * width
 
@@ -37,7 +45,7 @@ object TimelineLayout {
         if (wholeProject) 0.0 else cursor - span / 2
 
     fun lanes(project: Project, height: Float): List<TimelineLane> {
-        val video = project.clips.filter { it.video }.map { it.track }.distinct().sorted()
+        val video = project.clips.filter { it.video }.map { it.track }.distinct().sortedDescending()
         val audio = project.clips.filter { it.audio }.map { it.track }.distinct().sorted()
         val result = mutableListOf<TimelineLane>()
         val available = max(0f, height - 16f)

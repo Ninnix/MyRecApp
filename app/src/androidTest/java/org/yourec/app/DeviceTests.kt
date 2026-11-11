@@ -82,6 +82,7 @@ class DeviceTests : Instrumentation() {
                 suite == "camera-preview" ||
                 suite == "playback" ||
                 suite == "capture-controls" ||
+                suite == "media-editing" ||
                 suite == "live-rotation"
         ) {
             references()
@@ -2418,6 +2419,7 @@ class DeviceTests : Instrumentation() {
                     as MainActivity
             activity = a
             if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
+            else if (suite == "media-editing") MediaEditingTest.run(this, a, ::onMain, ::test)
             else if (suite == "live-rotation") RecordingRotationTest.run(this, a, ::onMain, ::test)
             else if (suite == "playback")
                 PlaybackTest.run(this, a, currentProject, ::onMain, ::test)
@@ -2642,7 +2644,7 @@ class DeviceTests : Instrumentation() {
                     recorder.start()
                     started = true
                     val begin = android.os.SystemClock.elapsedRealtimeNanos()
-                    for (flip in listOf(false, true)) for (mode in 0..4) {
+                    for (flip in listOf(false, true)) for (mode in 0..5) {
                         renderer.configure(mode, flip, 0, reader.width, reader.height)
                         centers.add(
                             Triple(
@@ -2692,6 +2694,8 @@ class DeviceTests : Instrumentation() {
                                         1 -> listOf(Triple(.2f, .5f, 0), Triple(.8f, .5f, 1))
                                         2 -> listOf(Triple(.5f, .2f, 0), Triple(.5f, .8f, 1))
                                         3 -> listOf(Triple(.15f, .15f, 0), Triple(.85f, .85f, 1))
+                                        5 -> listOf(Triple(.21f, .64f, 1), Triple(.045f, .35f, 0),
+                                            Triple(.37f, .93f, 0), Triple(.8f, .2f, 0))
                                         else -> listOf(Triple(.2f, .5f, 0), Triple(.8f, .5f, 0))
                                     }
                                 for ((x, y, index) in points) {
