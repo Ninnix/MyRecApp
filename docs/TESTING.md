@@ -64,7 +64,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--camera-gaps` | Real concurrent capture, layout changes, pause/resume, timing, Main10 HLG metadata, HDR decode/SDR export, live effect ranges |
 | `--live-rotation` | Display rotation during one SDR, HDR, or dual take; UI reflow and saved-frame comparison |
 | `--capture-controls` | Mark/Pause positions, saved marks, torch, border transparency/resize, brightness restoration, PiP movement/resize/swaps |
-| `--media-editing` | Copy/paste, multitrack drag, Cancel/Done, overlapping Placement, audio picker import, persistence and decoded sound |
+| `--media-editing` | Portrait/landscape copy/paste, horizontal overlaps and lower-card selection, release-position snapping, neighbor modes, long-press selection, stable Move rows, exact boundary picking, Cancel/Done, Placement, audio import, persistence, foreground pixels in preview/export and decoded sound |
 | `--playback` | Moving frames in a fifth take after seeking earlier takes |
 | `--camera-preview` | Mirrored front preview/recording in portrait/landscape and Kaleidoscope orientation |
 | `--references` | Project delete/restore, shared-media safety, project controls, mirror geometry, RGB offsets |

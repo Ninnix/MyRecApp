@@ -3792,35 +3792,6 @@ class Panels(private val a: MainActivity) {
         renderDraft()
     }
 
-    fun move() {
-        val targets = editor.targets()
-        var at = targets.minOfOrNull { it.start } ?: return
-        var track = targets.first().track
-        val body =
-            setup(
-                "Move",
-                {
-                    editor.moveSelection(at, track)
-                    a.editorView.moving = false
-                    close()
-                },
-            )
-        val controls = contentWithPreview(body)
-        slider(
-            controls,
-            "Position",
-            at.toFloat(),
-            0f,
-            (editor.project.duration + 10).toFloat(),
-            format = { timeLabel(it.toDouble()) },
-        ) {
-            at = it.toDouble()
-        }
-        label(controls, "Track")
-        choices(controls, listOf("1", "2", "3", "4"), "${track+1}") { track = it }
-        hint(controls, "Overlapping clips on separate tracks can be arranged with Placement.")
-    }
-
     fun freezeFrame(existing: Effect? = null) {
         val original = editor.project.duplicate()
         val held = existing?.let { fx -> original.clips.firstOrNull { c -> c.frozen != null && c.effects.any { it.id == fx.id } } }

@@ -208,6 +208,7 @@ class MainActivity : Activity() {
             }
             "snap" -> {
                 editor.snap = !editor.snap
+                editor.move?.snap = null
                 editorView.invalidate()
             }
             "link" -> {
@@ -218,27 +219,31 @@ class MainActivity : Activity() {
                 }
             }
             "move" -> {
-                if (editor.targets().isNotEmpty()) {
-                    if (editor.selected.isEmpty())
-                        editor.targets().forEach { editor.selected.add(it.id) }
-                    editorView.moving = !editorView.moving
-                    if (editorView.moving) {
-                        editorView.movingOrigin =
-                            editor.targets().minOfOrNull { it.start } ?: editor.cursor
-                        editor.beginBatch()
-                    } else editor.endBatch(false)
-                    editorView.invalidate()
+                playback.pause()
+                editor.beginMove()
+            }
+            "moveDone" -> editor.finishMove(false)
+            "moveCancel" -> editor.finishMove(true)
+            "moveSelected" -> editor.changeMoveScope(MoveScope.SELECTED)
+            "moveLeft" -> editor.changeMoveScope(MoveScope.LEFT)
+            "moveRight" -> editor.changeMoveScope(MoveScope.RIGHT)
+            "moveBoth" -> editor.changeMoveScope(MoveScope.BOTH)
+            "movePrevious" -> editor.move?.let { draft ->
+                draft.boundaries.lastOrNull { it < draft.position }?.let(editor::placeMove)
+            }
+            "moveNext" -> editor.move?.let { draft ->
+                draft.boundaries.firstOrNull { it > draft.position }?.let(editor::placeMove)
+            }
+            "moveChoose" -> editor.move?.let { draft ->
+                choose("Move to a boundary", draft.boundaries.map { timeLabel(it) }) {
+                    editor.placeMove(draft.boundaries[it])
                 }
             }
-            "moveDone" -> {
-                editorView.moving = false
-                editor.endBatch(false)
-                editorView.invalidate()
-            }
-            "moveCancel" -> {
-                editorView.moving = false
-                editor.endBatch(true)
-                editorView.invalidate()
+            "movePick" -> {
+                val choices = editorView.boundaryChoices
+                choose("Move to a boundary", choices.map { "%.4f s".format(java.util.Locale.US, it) }) {
+                    editor.placeMove(choices[it])
+                }
             }
             "volume" -> panels.volume()
             "placement" -> panels.effect("Placement")
@@ -414,6 +419,7 @@ class MainActivity : Activity() {
     }
 
     private fun projects() {
+        if (editor.move != null) editor.finishMove(true)
         playback.pause()
         panels.projects()
     }
@@ -1153,6 +1159,7 @@ class MainActivity : Activity() {
         when {
             choices?.isShowing == true -> choices?.dismiss()
             panels.isOpen -> panels.close()
+            editor.move != null -> editor.finishMove(true)
             editorView.fullscreen -> {
                 editorView.fullscreen = false
                 editorView.invalidate()

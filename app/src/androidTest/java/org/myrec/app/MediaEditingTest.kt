@@ -65,6 +65,31 @@ object MediaEditingTest {
             val r = bounds(id)
             gesture(PointF(r.centerX(), r.centerY()))
         }
+        fun card(id: String, audio: Boolean = false): RectF {
+            var result: RectF? = null
+            onMain { result = a.editorView.clipBounds(id, audio) }
+            return result ?: error("Clip $id is not accessible on the timeline")
+        }
+        fun boundary(time: Double): Float {
+            var result = 0f
+            onMain { result = a.editorView.boundaryPosition(time) }
+            return result
+        }
+        fun center(r: RectF) = PointF(r.centerX(), r.centerY())
+        fun hold(r: RectF) {
+            val p = center(r)
+            val now = SystemClock.uptimeMillis()
+            onMain {
+                val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, p.x, p.y, 0)
+                a.editorView.dispatchTouchEvent(event); event.recycle()
+            }
+            Thread.sleep(ViewConfiguration.getLongPressTimeout().toLong() + 100)
+            onMain {
+                val event = MotionEvent.obtain(now, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, p.x, p.y, 0)
+                a.editorView.dispatchTouchEvent(event); event.recycle()
+            }
+            Thread.sleep(150)
+        }
         fun point(x: Float, y: Float): PointF {
             val v = a.editorView
             val landscape = v.width > v.height
@@ -153,6 +178,68 @@ object MediaEditingTest {
                     a.panels.close()
                 }
             }
+            test("$name horizontal overlap keeps both cards visible and the moved picture in front") {
+                val before = Project(name = "Overlap rows", clips = mutableListOf(
+                    Clip(path = source.path, sourceOut = 1.0),
+                    Clip(path = source.path, sourceOut = 1.0, start = 1.0)))
+                val first = before.clips[0].id
+                val second = before.clips[1].id
+                onMain {
+                    a.editor.load(before.duplicate()); a.editor.cursor = 1.0; a.editor.scale = 5.0
+                    a.editor.snap = true
+                }
+                Thread.sleep(250)
+                gesture(center(card(first)))
+                tap("move")
+                val from = center(card(first))
+                gesture(from, PointF(from.x + boundary(1.0) - boundary(0.0), from.y))
+                check(abs(a.editor.project.clips.first { it.id == first }.start - 1.0) < .00001)
+                check(a.editor.project.active(1.5).last().id == first)
+                tap("moveDone")
+                val top = card(first)
+                val bottom = card(second)
+                check(top.bottom < bottom.top)
+                gesture(center(bottom))
+                check(a.editor.selected == setOf(second))
+                gesture(center(card(first)))
+                check(a.editor.selected == setOf(first))
+                snapshot("$name-overlap-rows")
+                val saved = a.store.currentSession()
+                val restored = Editor(saved.project).apply { load(saved.project, saved) }
+                check(restored.project.active(1.5).last().id == first)
+                restored.undo(); check(restored.project == before)
+            }
+            test("$name Move exposes neighbor modes, stable rows and exact boundary placement") {
+                val before = Project(name = "Neighbor moves", clips = (0..2).map {
+                    Clip(path = source.path, sourceOut = 1.0, start = it.toDouble())
+                }.toMutableList())
+                onMain {
+                    a.editor.load(before.duplicate()); a.editor.cursor = 1.0; a.editor.scale = 5.0
+                }
+                Thread.sleep(250)
+                gesture(center(card(before.clips[1].id)))
+                hold(card(before.clips[0].id))
+                check(a.editor.selected == setOf(before.clips[0].id, before.clips[1].id))
+                hold(card(before.clips[0].id))
+                check(a.editor.selected == setOf(before.clips[1].id))
+                tap("move")
+                tap("moveRight")
+                check(a.editor.targets().map { it.id }.toSet() == before.clips.drop(1).map { it.id }.toSet())
+                val prior = card(before.clips[1].id)
+                tap("moveNext")
+                check(abs(a.editor.project.clips[1].start - 3.0) < .00001)
+                check(abs(card(before.clips[1].id).top - prior.top) < 1)
+                tap("movePrevious")
+                check(abs(a.editor.project.clips[1].start - 1.0) < .00001)
+                tap("moveSelected")
+                tap("moveChoose")
+                val r = card(before.clips[1].id)
+                gesture(PointF(boundary(0.0), r.centerY()))
+                check(abs(a.editor.project.clips[1].start) < .00001)
+                snapshot("$name-neighbor-move")
+                tap("moveCancel")
+                check(a.editor.project == before && !a.editor.canUndo)
+            }
             test("$name audio picker adds an independent waveform at the requested cursor") {
                 val before = a.editor.project.duplicate()
                 onMain { a.playback.seek(.75); a.panels.addAudio() }
@@ -185,6 +272,47 @@ object MediaEditingTest {
                     instrumentation.removeMonitor(monitor)
                 }
             }
+        }
+        test("Move and Placement keep foreground colors consistent in preview, persistence and export") {
+            fun colored(name: String, color: Int): Clip {
+                val image = File(folder, "$name.png")
+                val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
+                image.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                bitmap.recycle()
+                return Clip(path = source.path, sourceOut = 1.0, audio = false, effects = mutableListOf(
+                    Effect(kind = "Image", to = 1.0, values = mutableMapOf("path" to image.path,
+                        "x" to "0", "y" to "0", "size" to "1"))))
+            }
+            val red = colored("red", Color.RED)
+            val blue = colored("blue", Color.BLUE).apply { start = 1.0 }
+            val edit = Editor(Project(clips = mutableListOf(red, blue)))
+            edit.select(red); edit.beginMove(); edit.updateMove(1.0, 60.0, false); edit.finishMove(false)
+            val store = ProjectStore(File(a.cacheDir, "overlap-export-store"))
+            store.save(edit.project)
+            val restored = store.current()
+            fun checkColor(bitmap: Bitmap, red: Boolean) {
+                val c = bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+                check(if (red) Color.red(c) > 200 && Color.blue(c) < 50
+                    else Color.blue(c) > 200 && Color.red(c) < 50) { "Wrong foreground: $c" }
+            }
+            Frames().use { frames ->
+                val image = frames.render(restored, 1.5, 320, 180)
+                try { checkColor(image, true) } finally { image.recycle() }
+            }
+            val output = File(folder, "overlap-export.mp4")
+            Export(a.audioCache).run(restored, output, 320, 180) {}
+            VideoDecoder(output.path).use { decoder ->
+                val image = decoder.frame(1.5, 320, 180) ?: error("Missing exported overlap")
+                try { checkColor(image, true) } finally { image.recycle() }
+            }
+            edit.clearSelection(); edit.select(edit.project.clips.first { it.id == red.id })
+            edit.applyPlacements(mapOf(red.id to Effect(kind = "Placement")), mapOf(red.id to 0, blue.id to 1))
+            Frames().use { frames ->
+                val image = frames.render(edit.project, 1.5, 320, 180)
+                try { checkColor(image, false) } finally { image.recycle() }
+            }
+            edit.undo()
+            check(edit.project.active(1.5).last().id == red.id)
         }
         onMain { a.panels.close(); a.playback.pause() }
     }

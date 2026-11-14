@@ -368,6 +368,10 @@ class Editor(var project: Project = Project()) {
     var scale = 10.0
     var wholeProject = false
     var playbackRate = 1f
+    var move: TimelineMove? = null
+        private set
+    private var moveSelectionBefore = setOf<String>()
+    private var moveRangeBefore: ClosedFloatingPointRange<Double>? = null
 
     fun load(project: Project, saved: EditSession? = null) {
         this.project = project
@@ -383,6 +387,7 @@ class Editor(var project: Project = Project()) {
             this.project = materialize(project)
         }
         batch = null
+        move = null
         clearSelection()
         cursor = 0.0
         wholeProject = false
@@ -474,17 +479,84 @@ class Editor(var project: Project = Project()) {
         else {
             clearSelection()
             selected.add(c.id)
-            if (linked && c.linked)
-                project.clips
-                    .filter {
-                        it.start == c.start &&
-                            it.duration == c.duration &&
-                            it.path == c.path &&
-                            (it.group == c.group || it.track == c.track) &&
-                            it.linked
-                    }
-                    .forEach { selected.add(it.id) }
+            if (linked) selected.addAll(TimelineMove.linked(project, setOf(c.id)))
         }
+        onChange()
+    }
+
+    fun toggleSelection(c: Clip) {
+        val members = if (linked) TimelineMove.linked(project, setOf(c.id)) else setOf(c.id)
+        if (c.id in selected) selected.removeAll(members) else selected.addAll(members)
+        range = null
+        mark = null
+        onChange()
+    }
+
+    fun beginMove() {
+        if (move != null || targets().isEmpty()) return
+        moveSelectionBefore = selected.toSet()
+        moveRangeBefore = range
+        val position = cursor
+        beginBatch()
+        range?.let { r ->
+            splitAt(r.endInclusive)
+            splitAt(r.start)
+            splitTransitions(r.endInclusive)
+            splitTransitions(r.start)
+        }
+        val picked = targets().map { it.id }.toSet()
+        if (picked.isEmpty()) { endBatch(true); return }
+        move = TimelineMove(project.duplicate(), picked, position, scale)
+        selected.clear()
+        selected.addAll(move!!.members)
+        range = null
+        mark = null
+        onChange()
+    }
+
+    fun changeMoveScope(scope: MoveScope) {
+        val draft = move ?: return
+        if (!draft.available(scope) || draft.scope == scope) return
+        draft.scope = scope
+        updateMove(draft.requested, 1.0, snapping = false, changingScope = true)
+    }
+
+    fun updateMove(offset: Double, pointsPerSecond: Double, snapping: Boolean = snap,
+                   changingScope: Boolean = false) {
+        val draft = move ?: return
+        val result = draft.resolve(offset, pointsPerSecond, snapping)
+        draft.offset = result.offset
+        draft.snap = result.snap
+        if (!changingScope) draft.requested = result.offset
+        project = draft.base.duplicate()
+        selected.clear()
+        selected.addAll(draft.members)
+        range = null
+        if (result.offset == 0.0) onChange()
+        else moveSelection(project.clips.filter { it.id in draft.members }.minOf { it.start } + result.offset)
+    }
+
+    fun placeMove(at: Double) {
+        val draft = move ?: return
+        val target = TimelineMove.time(at)
+        if (target !in draft.boundaries) return
+        updateMove(target - draft.anchor, 1.0, snapping = false)
+        draft.snap = MoveSnap(target, draft.anchor)
+        cursor = target.coerceIn(0.0, project.duration)
+        onChange()
+    }
+
+    fun finishMove(cancel: Boolean) {
+        val draft = move ?: return
+        move = null
+        endBatch(cancel || draft.offset == 0.0)
+        clearSelection()
+        if (cancel || draft.offset == 0.0) {
+            selected.addAll(moveSelectionBefore)
+            range = moveRangeBefore
+            scale = draft.scale
+        }
+        cursor = draft.cursor.coerceIn(0.0, project.duration)
         onChange()
     }
 
@@ -530,6 +602,7 @@ class Editor(var project: Project = Project()) {
             project.clips.filter {
                 (ids == null || it.id in ids) && t > it.start + 0.001 && t < it.end - 0.001
             }
+        val splitGroups = mutableMapOf<String, String>()
         for (clip in clips) {
             val oldDuration = clip.duration
             val local = t - clip.start
@@ -541,6 +614,7 @@ class Editor(var project: Project = Project()) {
                     }
                 }
             val right = clip.duplicate(true, keepGroup = connected)
+            if (!connected) right.group = splitGroups.getOrPut(clip.group) { right.group }
             right.start = t
             if (clip.frozen == null) right.sourceIn = clip.sourceTime(t)
             right.effects.clear()
@@ -998,23 +1072,53 @@ class Editor(var project: Project = Project()) {
         }
     }
 
-    fun moveSelection(to: Double, track: Int) {
+    fun moveSelection(to: Double, track: Int? = null) {
         val items = targets()
         if (items.isEmpty()) return
         val originTrack = items.minOf { it.track }
+        val delta = TimelineMove.time(max(0.0, to) - items.minOf { it.start })
+        if (delta == 0.0 && (track == null || track == originTrack)) return
         change {
             val ids = items.map { it.id }.toSet()
             val attached = project.transitions.filter { it.leftId in ids || it.rightId in ids }
-            for (transition in attached) if (
-                transition.leftId != null && transition.leftId !in ids ||
-                    transition.rightId != null && transition.rightId !in ids
-            )
-                detachTransition(transition)
-            val origin = items.minOf { it.start }
-            attached.filter { it in project.transitions }.forEach { it.at += to - origin }
+            val previous = project.duplicate()
             for (c in items) {
-                c.start = max(0.0, c.start + to - origin)
-                c.track = max(0, c.track + track - originTrack)
+                c.start = TimelineMove.time(c.start + delta)
+                if (track != null) c.track = max(0, c.track + track - originTrack)
+            }
+            for (transition in attached) {
+                val participants = setOfNotNull(transition.leftId, transition.rightId)
+                if (participants.all { it in ids }) transition.at += delta
+                else {
+                    val left = project.clips.firstOrNull { it.id == transition.leftId }
+                    val right = project.clips.firstOrNull { it.id == transition.rightId }
+                    val overlap = if (left != null && right != null) TimelineMove.time(left.end - right.start) else 0.0
+                    if (overlap <= 0 || overlap > transition.overlap + .00001) project.transitions.remove(transition)
+                    else {
+                        val ratio = overlap / transition.overlap
+                        transition.duration *= ratio
+                        transition.hold *= ratio
+                        transition.overlap = overlap
+                        transition.at = (left!!.end + right!!.start) / 2
+                    }
+                }
+            }
+            if (track == null && delta != 0.0) {
+                val old = previous.clips.associateBy { it.id }
+                val stationary = project.clips.filter { it.video && it.id !in ids }
+                fun overlap(a: Clip, b: Clip) = TimelineMove.time(a.start) < TimelineMove.time(b.end) &&
+                    TimelineMove.time(b.start) < TimelineMove.time(a.end)
+                if (items.any { c -> c.video && stationary.any { other ->
+                    overlap(c, other) && !overlap(old.getValue(c.id), old.getValue(other.id))
+                } }) {
+                    val front = (project.clips.filter { it.video }.maxOfOrNull { it.track } ?: 0) + 1
+                    val pictures = items.filter { it.video }.sortedBy { old.getValue(it.id).track }
+                    for ((rank, picture) in pictures.withIndex()) {
+                        picture.track = front + rank
+                        for (sound in items.filter { !it.video && it.linked && it.group == picture.group })
+                            sound.track = picture.track
+                    }
+                }
             }
         }
     }
@@ -1028,7 +1132,7 @@ class Editor(var project: Project = Project()) {
                     project.clips
                         .filter { other ->
                             other.path == c.path &&
-                                (other.group == c.group || other.track == c.track) &&
+                                other.group == c.group &&
                                 abs(other.start - c.start) < .001 &&
                                 abs(other.sourceIn - c.sourceIn) < .001 &&
                                 abs(other.sourceOut - c.sourceOut) < .001 &&

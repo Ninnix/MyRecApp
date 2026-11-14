@@ -21,6 +21,7 @@ fun main() {
     VideoEffectsTests.run(::test)
     AudioEditTests.run(::test)
     PreviewModelTests.run(::test)
+    TimelineMoveTests.run(::test)
     test("new recordings remain through undo redo and restored editing sessions") {
         val e = Editor()
         val first = Clip(path = "first.mp4", sourceOut = 5.0)
@@ -293,14 +294,13 @@ fun main() {
             check(first <= maxOf(left, 46f) && first + 83.25f > 46f)
         }
     }
-    test("video lanes precede audio lanes and skip empty tracks") {
+    test("video lanes precede audio lanes and separate overlapping clips") {
         val e = fixture()
-        e.project.clips.add(Clip(path = "other.mp4", sourceOut = 5.0, track = 2))
+        val overlay = Clip(path = "other.mp4", sourceOut = 5.0, track = 2)
+        e.project.clips.add(overlay)
         val lanes = TimelineLayout.lanes(e.project, 109f)
-        check(
-            lanes.map { it.track to it.audio } ==
-                listOf(2 to false, 0 to false, 0 to true, 2 to true)
-        )
+        check(lanes.map { it.audio } == listOf(false, false, true, true))
+        check(lanes.first().ids == setOf(overlay.id))
         check(lanes.zipWithNext().all { (a, b) -> a.bottom < b.top })
         e.select(e.project.clips.first())
         e.unlink()
@@ -326,17 +326,6 @@ fun main() {
         check(e.project.clips.none { it.path == "music.wav" })
         e.redo()
         check(e.project.clips.last().path == "music.wav")
-    }
-    test("vertical moves follow visible lanes and create higher layers above video") {
-        val e = fixture()
-        e.addLayer(Clip(path = "top.mp4", sourceOut = 5.0, track = 2))
-        val rows = TimelineLayout.lanes(e.project, 109f)
-        val top = rows.first()
-        val base = rows.first { !it.audio && it.track == 0 }
-        check(TimelineLayout.moveTrack(rows, 0, false, top.top + 2) == 1)
-        check(TimelineLayout.moveTrack(rows, 1, false, base.top + 2) == 0)
-        check(TimelineLayout.moveTrack(rows, 1, false, top.top - 2) == 2)
-        check(TimelineLayout.moveTrack(rows, 0, true, rows.last().bottom + 2) == 2)
     }
     test("recording markers follow trims, splits, speed, copy and undo") {
         val e = fixture()
@@ -567,7 +556,7 @@ fun main() {
         near(right.endInclusive, 9.0)
         e.select(e.project.clips.last())
         e.unlink()
-        near(TimelineLayout.interval(e.project, e.project.clips.last()).start, 4.5)
+        near(TimelineLayout.interval(e.project, e.project.clips.last()).start, 4.0)
     }
     fun blend(): Editor =
         fixture().apply {

@@ -42,8 +42,22 @@ class EditorView(
         moved = true
         invalidate()
     }
-    var moving = false
-    var movingOrigin = 0.0
+    val moving get() = editor.move != null
+    private var pickingMoveBoundary = false
+    var boundaryChoices = listOf<Double>()
+        private set
+    private var laneScroll = 0f
+    private var laneScrollMax = 0f
+    private var downLaneScroll = 0f
+    private var longPressed = false
+    private val longPress = Runnable {
+        val clip = gestureClip
+        if (!moved && !moving && clip != null && editor.range == null && editor.mark == null) {
+            longPressed = true
+            editor.toggleSelection(clip)
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
     var showPaste = false
     var previousPosition: Double? = null
     var previewBounds = RectF()
@@ -57,10 +71,7 @@ class EditorView(
     private var downY = 0f
     private var moved = false
     private var downCursor = 0.0
-    private var downLanes = listOf<TimelineLane>()
-    private var downMoveStart = 0.0
-    private var downMoveTrack = 0
-    private var downClipTrack = 0
+    private var downMoveOffset = 0.0
     private var chipScroll = 0f
     private var chipLimit = 0f
     private var downChipScroll = 0f
@@ -131,6 +142,19 @@ class EditorView(
         RectF((it.left + ox) * unit, (it.top + oy) * unit,
             (it.right + ox) * unit, (it.bottom + oy) * unit)
     }
+
+    internal fun clipBounds(id: String, audio: Boolean = false): RectF? {
+        val lane = lanes.firstOrNull { it.audio == audio && id in it.ids } ?: return null
+        val clip = editor.project.clips.firstOrNull { it.id == id } ?: return null
+        val interval = TimelineLayout.interval(editor.project, clip, !moving)
+        val rect = RectF(max(timeline.left, xFor(interval.start)), max(timeline.top + 16, timeline.top + lane.top),
+            min(timeline.right, xFor(interval.endInclusive)), min(timeline.bottom, timeline.top + lane.bottom))
+        if (rect.isEmpty) return null
+        return RectF((rect.left + ox) * unit, (rect.top + oy) * unit,
+            (rect.right + ox) * unit, (rect.bottom + oy) * unit)
+    }
+
+    internal fun boundaryPosition(time: Double): Float = (xFor(time) + ox) * unit
 
     private fun button(
         c: Canvas,
@@ -420,7 +444,7 @@ class EditorView(
         p.strokeWidth = .8f
         canvas.drawCircle(addX, addY, 9f, p)
         icon(canvas, "add", addX, addY, 5f)
-        hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addMedia")
+        if (!moving) hit(RectF(addX - 14, addY - 18, addX + 14, addY + 18), "addMedia")
         drawTimeline(canvas)
         val fxY = timeline.bottom + 22f
         val hasChips = drawSelection(canvas, fxY)
@@ -543,46 +567,54 @@ class EditorView(
         val gap = 5f
         val cell = (w - gap * 3) / 4
         val first = if (landscape) 31f else 41f
-        button(
-            c,
-            RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
-            "split",
-            "Split",
-            "split",
-            editor.project.duration > 0 && !moving,
-        )
-        button(
-            c,
-            RectF(x + cell + gap, y, x + 2 * cell + gap, y + first),
-            "mark",
-            if (editor.mark != null) "${if(landscape)"End" else "Mark end"}"
-            else if (landscape) "Start" else "Mark start",
-            "mark",
-            editor.project.duration > 0 && !moving,
-        )
-        button(
-            c,
-            RectF(x + 3 * (cell + gap), y, x + w, y + first),
-            "tools",
-            "Tools",
-            "tools",
-            !moving,
-        )
-        button(
-            c,
-            RectF(x, y, x + cell, y + first),
-            "export",
-            "Export",
-            "export",
-            editor.project.duration > 0 && !moving,
-        )
+        if (moving) {
+            val draft = editor.move!!
+            val ids = listOf("moveSelected", "moveLeft", "moveRight", "moveBoth")
+            for ((i, scope) in MoveScope.entries.withIndex())
+                button(c, RectF(x + i * (cell + gap), y, x + i * (cell + gap) + cell, y + first),
+                    ids[i], scope.title, "move", draft.available(scope), draft.scope == scope)
+        } else {
+            button(
+                c,
+                RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
+                "split",
+                "Split",
+                "split",
+                editor.project.duration > 0 && !moving,
+            )
+            button(
+                c,
+                RectF(x + cell + gap, y, x + 2 * cell + gap, y + first),
+                "mark",
+                if (editor.mark != null) "${if(landscape)"End" else "Mark end"}"
+                else if (landscape) "Start" else "Mark start",
+                "mark",
+                editor.project.duration > 0 && !moving,
+            )
+            button(
+                c,
+                RectF(x + 3 * (cell + gap), y, x + w, y + first),
+                "tools",
+                "Tools",
+                "tools",
+                !moving,
+            )
+            button(
+                c,
+                RectF(x, y, x + cell, y + first),
+                "export",
+                "Export",
+                "export",
+                editor.project.duration > 0 && !moving,
+            )
+        }
         val sy = y + first + 6f
         val h = if (landscape) 32f else 35f
         val u = w * 0.11f
         var left = x
-        for ((name, enabled) in listOf("undo" to editor.canUndo, "redo" to editor.canRedo)) {
+        for ((name, enabled) in listOf("undo" to (editor.canUndo && !moving), "redo" to (editor.canRedo && !moving))) {
             icon(c, name, left + u / 2, sy + h / 2, 11f, if (enabled) Color.WHITE else grey)
-            hit(RectF(left, sy, left + u, sy + h), name)
+            if (enabled) hit(RectF(left, sy, left + u, sy + h), name)
             left += u
         }
         val snapW = w * 0.12f
@@ -615,7 +647,7 @@ class EditorView(
             "move",
             "Move",
             "move",
-            editor.selected.isNotEmpty() || editor.range != null,
+            !moving && (editor.selected.isNotEmpty() || editor.range != null),
             moving,
         )
         left += rest + 4
@@ -630,9 +662,14 @@ class EditorView(
     }
 
     private fun drawTimeline(c: Canvas) {
-        span = max(1.0, if (editor.wholeProject) editor.project.duration else editor.scale)
+        span = max(1.0, if (editor.wholeProject) editor.move?.base?.duration ?: editor.project.duration else editor.scale)
         start = TimelineLayout.start(editor.cursor, span, editor.wholeProject)
-        lanes = TimelineLayout.lanes(editor.project, timeline.height())
+        val draft = editor.move
+        if (draft == null) pickingMoveBoundary = false
+        val rows = TimelineLayout.lanes(draft?.base ?: editor.project, timeline.height(), draft?.members ?: emptySet())
+        laneScrollMax = max(0f, (rows.lastOrNull()?.bottom ?: 0f) + 1 - timeline.height())
+        laneScroll = laneScroll.coerceIn(0f, laneScrollMax)
+        lanes = rows.map { it.copy(top = it.top - laneScroll, bottom = it.bottom - laneScroll) }
         rect(c, timeline, Color.rgb(13, 13, 14))
         c.save()
         c.clipRect(timeline)
@@ -660,7 +697,7 @@ class EditorView(
             t += tick
         }
         for ((n, clip) in editor.project.clips.withIndex()) {
-            val interval = TimelineLayout.interval(editor.project, clip)
+            val interval = TimelineLayout.interval(editor.project, clip, !moving)
             if (interval.endInclusive - interval.start < .000001) continue
             if (interval.endInclusive < start || interval.start > start + span) continue
             index.request(clip)
@@ -668,7 +705,7 @@ class EditorView(
             val right = xFor(interval.endInclusive)
             for (lane in
                 lanes.filter {
-                    it.track == clip.track && if (it.audio) clip.audio else clip.video
+                    clip.id in it.ids && if (it.audio) clip.audio else clip.video
                 }) {
                 val top = timeline.top + lane.top
                 val bottom = timeline.top + lane.bottom
@@ -762,6 +799,21 @@ class EditorView(
                 c.restore()
             }
         }
+        if (pickingMoveBoundary && draft != null) {
+            p.color = cyan
+            p.strokeWidth = 1f
+            p.pathEffect = DashPathEffect(floatArrayOf(3f, 3f), 0f)
+            for (time in draft.boundaries) {
+                val x = xFor(time)
+                c.drawLine(x, timeline.top + 16, x, timeline.bottom, p)
+            }
+            p.pathEffect = null
+        }
+        draft?.snap?.let {
+            p.color = cyan
+            p.strokeWidth = 1f
+            c.drawLine(xFor(it.target), timeline.top, xFor(it.target), timeline.bottom, p)
+        }
         for (time in editor.project.markers()) {
             val x = xFor(time)
             p.color = yellow
@@ -789,6 +841,11 @@ class EditorView(
             val y = timeline.top + 49
             rect(c, RectF(x - 8.5f, y - 8.5f, x + 8.5f, y + 8.5f), Color.argb(220, 18, 18, 20), 3f)
             icon(c, "transition", x, y, 17f, Color.rgb(255, 149, 32))
+        }
+        if (laneScrollMax > 0) {
+            val barHeight = max(10f, timeline.height() * timeline.height() / (timeline.height() + laneScrollMax))
+            val barTop = timeline.top + (timeline.height() - barHeight) * laneScroll / laneScrollMax
+            rect(c, RectF(timeline.right - 2, barTop, timeline.right, barTop + barHeight), grey, 1f)
         }
         val cursor = xFor(editor.cursor)
         p.color = Color.WHITE
@@ -838,23 +895,31 @@ class EditorView(
 
     private fun xFor(t: Double) = timeline.left + ((t - start) / span * timeline.width()).toFloat()
 
+    private data class MoveControl(val id: String, val label: String, val left: Float,
+                                   val width: Float, val enabled: Boolean)
+
     private fun drawSelection(c: Canvas, y: Float): Boolean {
         var x = timeline.left + 4
         chipBounds.setEmpty()
         if (moving) {
-            val offset = (editor.targets().minOfOrNull { it.start } ?: movingOrigin) - movingOrigin
-            text(
-                c,
-                "Moving · Track ${(editor.targets().minOfOrNull { it.track } ?: 0) + 1} · %+.2f s".format(java.util.Locale.US, offset),
-                x,
-                y,
-                7f,
-                grey,
-            )
-            text(c, "Cancel", timeline.right - 60, y, 8f, red)
-            hit(RectF(timeline.right - 70, y - 13, timeline.right - 27, y + 10), "moveCancel")
-            text(c, "Done", timeline.right - 22, y, 8f, red)
-            hit(RectF(timeline.right - 28, y - 13, timeline.right, y + 10), "moveDone")
+            val draft = editor.move!!
+            if (pickingMoveBoundary) {
+                text(c, "Tap a dashed cyan line", x, y, 8f, cyan)
+                text(c, "Back", timeline.right - 35, y, 8f, red)
+                hit(RectF(timeline.right - 45, y - 13, timeline.right, y + 10), "moveBack")
+                return true
+            }
+            text(c, timeLabel(draft.position), x, y, 8f)
+            val right = timeline.right
+            for ((id, label, left, width, enabled) in listOf(
+                MoveControl("movePrevious", "‹|", right - 192, 25f, draft.boundaries.any { it < draft.position }),
+                MoveControl("moveNext", "|›", right - 165, 25f, draft.boundaries.any { it > draft.position }),
+                MoveControl("moveChoose", "Choose", right - 136, 45f, draft.boundaries.size > 1),
+                MoveControl("moveCancel", "Cancel", right - 85, 43f, true),
+                MoveControl("moveDone", "Done", right - 38, 38f, true))) {
+                text(c, label, left + width / 2, y, 8f, if (enabled) red else grey, Paint.Align.CENTER)
+                if (enabled) hit(RectF(left, y - 15, left + width, y + 12), id)
+            }
             return true
         }
         if (
@@ -999,10 +1064,11 @@ class EditorView(
                 gainChanged = false
                 gestureClip = clipAt(x, y)
                 audioGesture = lanes.any { it.audio && y - timeline.top in it.top..it.bottom }
-                downLanes = lanes
-                downMoveStart = editor.targets().minOfOrNull { it.start } ?: 0.0
-                downMoveTrack = editor.targets().minOfOrNull { it.track } ?: 0
-                downClipTrack = gestureClip?.track ?: 0
+                downMoveOffset = editor.move?.offset ?: 0.0
+                downLaneScroll = laneScroll
+                longPressed = false
+                removeCallbacks(longPress)
+                if (timeline.contains(x, y) && !moving) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 downGain = gestureClip?.gainDb ?: 0f
                 rangeHandle = 0
                 editor.range?.let { r ->
@@ -1024,7 +1090,8 @@ class EditorView(
                 }
                 val dx = x - downX
                 val dy = y - downY
-                if (abs(dx) + abs(dy) > 3) moved = true
+                if (abs(dx) + abs(dy) > 3) { moved = true; removeCallbacks(longPress) }
+                if (longPressed) return true
                 if (chipBounds.contains(downX, downY) && moved) {
                     chipScroll = (downChipScroll - dx).coerceIn(0f, chipLimit)
                     invalidate()
@@ -1042,13 +1109,17 @@ class EditorView(
                             else range.start..max(t, range.start + 0.01)
                         seek(t)
                         invalidate()
-                    } else if (moving && gestureClip?.id in editor.selected) {
-                        val track = TimelineLayout.moveTrack(downLanes, downClipTrack,
-                            audioGesture, y - timeline.top)
-                        editor.moveSelection(max(0.0, downMoveStart + dx / timeline.width() * span),
-                            max(0, downMoveTrack + track - downClipTrack))
+                    } else if (moving && !pickingMoveBoundary && gestureClip?.id in editor.selected) {
+                        val before = editor.move?.snap
+                        editor.updateMove(downMoveOffset + dx / timeline.width() * span, timeline.width() / span)
+                        if (editor.move?.snap != null && editor.move?.snap != before)
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    } else if (abs(dy) > abs(dx) * 1.4f && laneScrollMax > 0 &&
+                        (gestureClip == null || !audioGesture || moving)) {
+                        laneScroll = (downLaneScroll - dy).coerceIn(0f, laneScrollMax)
+                        invalidate()
                     } else if (
-                        abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
+                        !moving && abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
                     ) {
                         if (!gainChanged) {
                             if (gestureClip!!.id !in editor.selected) editor.select(gestureClip!!)
@@ -1064,6 +1135,8 @@ class EditorView(
                 }
             }
             MotionEvent.ACTION_UP -> {
+                removeCallbacks(longPress)
+                if (longPressed) return true
                 if (pinch.isInProgress) return true
                 if (gainChanged) {
                     val value = gestureClip!!.gainDb
@@ -1072,7 +1145,11 @@ class EditorView(
                     editor.setGain(value)
                     return true
                 }
-                if (moved && moving) return true
+                if (moved && moving) {
+                    if (!pickingMoveBoundary && gestureClip?.id in editor.selected)
+                        editor.updateMove(downMoveOffset + (x - downX) / timeline.width() * span, timeline.width() / span)
+                    return true
+                }
                 if (moved) return true
                 val hit = hits.lastOrNull { it.first.contains(x, y) }?.second
                 if (hit != null) {
@@ -1086,8 +1163,19 @@ class EditorView(
                             action("play")
                             lastPlayTap = event.eventTime
                         }
-                    } else action(hit)
+                    } else if (hit == "moveChoose") { pickingMoveBoundary = true; invalidate() }
+                    else if (hit == "moveBack") { pickingMoveBoundary = false; invalidate() }
+                    else action(hit)
                 } else if (timeline.contains(x, y)) {
+                    if (pickingMoveBoundary) {
+                        boundaryChoices = editor.move?.boundaries?.filter { abs(xFor(it) - x) <= 14 } ?: emptyList()
+                        if (boundaryChoices.size == 1) editor.placeMove(boundaryChoices.single())
+                        else if (boundaryChoices.isNotEmpty()) action("movePick")
+                        if (boundaryChoices.isNotEmpty()) pickingMoveBoundary = false
+                        invalidate()
+                        return true
+                    }
+                    if (moving) return true
                     val clip = clipAt(x, y)
                     previousPosition = editor.cursor
                     val marking = editor.mark != null || editor.range != null
@@ -1105,8 +1193,14 @@ class EditorView(
                 performClick()
             }
             MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                removeCallbacks(longPress)
                 moved = true
                 panAnchored = false
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(longPress)
+                if (moving && moved && gestureClip?.id in editor.selected)
+                    editor.updateMove(downMoveOffset, timeline.width() / span, snapping = false)
             }
         }
         return true
@@ -1117,7 +1211,7 @@ class EditorView(
         val t = start + (x - timeline.left) / timeline.width() * span
         val lane = lanes.firstOrNull { y - timeline.top in it.top..it.bottom } ?: return null
         return editor.project.clips.lastOrNull {
-            it.track == lane.track &&
+            it.id in lane.ids &&
                 (if (lane.audio) it.audio else it.video) &&
                 TimelineLayout.interval(editor.project, it).let { r ->
                     t >= r.start && t < r.endInclusive

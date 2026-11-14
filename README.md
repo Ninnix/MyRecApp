@@ -21,6 +21,11 @@ views together or capture 10-bit HLG video.
 
 The editor has separate video and audio tracks. Split, trim, copy, paste, move,
 and arrange clips; add text, images, transitions, color effects, and stabilization.
+Timeline rows adjust automatically: sequential clips share a row, while overlaps
+stay separately selectable. Move offers Selected only, With left, With right,
+and Both sides; connected neighbors stop at gaps. Drag with edge snapping or
+choose an exact cut, then Done or Cancel. Use Placement to arrange overlapping
+pictures and change their front/back order. Long-press clips to extend a selection.
 Audio filters run in order. Clip speed preserves pitch; Volume offers separate
 edge fades, and Censor audio replaces selected sound with a generated tone.
 Captions and neural audio restoration work offline after their models have been
