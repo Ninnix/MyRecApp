@@ -6,23 +6,21 @@ import java.nio.*
 import java.security.MessageDigest
 import kotlin.math.*
 
-class AudioCache(private val root: File) {
+class AudioCache(internal val root: File) {
     init {
         root.mkdirs()
     }
 
     @Synchronized
-    fun get(path: String): File {
+    fun get(path: String, cancelled: () -> Boolean = { false }): File {
+        if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
         val source = File(path)
-        val hash =
-            MessageDigest.getInstance("SHA-256")
-                .digest((path + source.length() + source.lastModified()).toByteArray())
-                .joinToString("") { "%02x".format(it) }
+        val hash = SourceAudio.hash(source, cancelled) + "-pcm-v6"
         val file = File(root, "$hash.f32")
         if (file.exists()) return file
         val temp = File(root, "$hash.partial")
         try {
-            decode(path, temp)
+            decode(path, temp, cancelled = cancelled)
             check(temp.renameTo(file))
         } catch (e: Exception) {
             temp.delete()
@@ -31,9 +29,58 @@ class AudioCache(private val root: File) {
         return file
     }
 
-    private fun decode(path: String, target: File) {
+    @Synchronized
+    fun stretched(path: String, speed: Double, cancelled: () -> Boolean, progress: (Float) -> Unit): File {
+        require(speed.isFinite() && speed in .1..128.0)
+        return stretchPcm(get(path, cancelled), speed, cancelled, progress)
+    }
+
+    @Synchronized
+    fun stretchPcm(source: File, speed: Double, cancelled: () -> Boolean, progress: (Float) -> Unit): File {
+        require(speed.isFinite() && speed in .1..128.0)
+        if (speed == 1.0 || source.length() == 0L) return source
+        val digest = MessageDigest.getInstance("SHA-256")
+        source.inputStream().use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        digest.update(":wsola-1:${speed.toBits()}".toByteArray())
+        val key = digest.digest().joinToString("") { "%02x".format(it) }
+        val result = File(root, "$key.stretch.f32")
+        val frames = (source.length() / 8 / speed).roundToLong()
+        if (result.isFile && result.length() == frames * 8) return result
+        val partial = File(root, "$key-${uid()}.partial")
+        try {
+            val written = Native.audioStretch(source.path, partial.path, speed) { done, total ->
+                progress(if (total > 0) done.toFloat() / total else 1f)
+                !cancelled()
+            }
+            if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
+            check(written == frames && partial.length() == frames * 8) { "Cannot prepare pitch-preserved audio" }
+            check(partial.renameTo(result)) { "Cannot save prepared audio" }
+            return result
+        } finally { partial.delete() }
+    }
+
+    fun head(path: String, frames: Int): FloatArray {
+        val temporary = File(root, "probe-${uid()}.partial")
+        try {
+            decode(path, temporary, frames.toLong())
+            val buffer = ByteBuffer.wrap(temporary.readBytes()).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+            return FloatArray(buffer.remaining()).also { buffer.get(it) }
+        } finally { temporary.delete() }
+    }
+
+    private fun decode(path: String, target: File, limit: Long = Long.MAX_VALUE, cancelled: () -> Boolean = { false }) {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
+        val presented = Mp4Audio.presentedDuration(File(path))?.let { (it * 48000).roundToLong() } ?: Long.MAX_VALUE
+        val outputLimit = min(limit, presented)
         try {
             extractor.setDataSource(path)
             val track =
@@ -49,6 +96,12 @@ class AudioCache(private val root: File) {
             }
             extractor.selectTrack(track)
             val format = extractor.getTrackFormat(track)
+            // Preroll is discarded on the presentation clock below. Decoder
+            // gapless trimming would remove it a second time on newer Android.
+            if (presented != Long.MAX_VALUE) {
+                format.setInteger(MediaFormat.KEY_ENCODER_DELAY, 0)
+                format.setInteger(MediaFormat.KEY_ENCODER_PADDING, 0)
+            }
             codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
             codec.configure(format, null, null, 0)
             codec.start()
@@ -65,6 +118,7 @@ class AudioCache(private val root: File) {
             val output = ByteBuffer.allocate(256 * 1024).order(ByteOrder.LITTLE_ENDIAN)
             FileOutputStream(target).buffered().use { stream ->
                 while (!outputDone) {
+                    if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
                     if (!inputDone) {
                         val index = codec.dequeueInputBuffer(10000)
                         if (index >= 0) {
@@ -116,10 +170,12 @@ class AudioCache(private val root: File) {
                                     samples[i * 2] = l
                                     samples[i * 2 + 1] = if (channels == 1) l else r
                                 }
+                                if (totalSource == 0L && info.presentationTimeUs < 0)
+                                    totalSource = (info.presentationTimeUs * rate / 1_000_000.0).roundToLong()
                                 val end = totalSource + frames
                                 while (frames > 0) {
                                     val pos = totalOutput * rate / 48000.0
-                                    if (pos >= end - 1) break
+                                    if (pos >= end - 1 || totalOutput >= outputLimit) break
                                     val i = floor(pos).toLong() - totalSource
                                     if (i < -1) {
                                         totalOutput++
@@ -148,10 +204,15 @@ class AudioCache(private val root: File) {
                                 }
                                 totalSource = end
                                 outputDone =
-                                    info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                                    info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0 || totalOutput >= outputLimit
                                 codec.releaseOutputBuffer(index, false)
                             }
                     }
+                }
+                val targetFrames = min(outputLimit, (totalSource * 48000.0 / rate).roundToLong())
+                while (totalOutput < targetFrames) {
+                    if (output.remaining() < 8) { stream.write(output.array(), 0, output.position()); output.clear() }
+                    output.putFloat(previousLeft); output.putFloat(previousRight); totalOutput++
                 }
                 if (output.position() > 0) stream.write(output.array(), 0, output.position())
             }
@@ -191,10 +252,12 @@ class AudioMixer(
     @Volatile private var project: Project,
     private val cache: AudioCache,
     @Volatile private var matchListening: Boolean = false,
+    private val finishing: Boolean = true,
 ) : Closeable {
     private val files = mutableMapOf<String, RandomAccessFile>()
     private val states = mutableMapOf<String, Long>()
-    private val studio = mutableMapOf<String, Pair<Studio.Prepared, RandomAccessFile>>()
+    private val stretched = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
+    private val studio = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
     private var framePosition = 0L
 
     fun seek(time: Double) {
@@ -208,10 +271,16 @@ class AudioMixer(
             .filter { it.audio }
             .map { it.path }
             .distinct()
-            .forEach { files[it] = RandomAccessFile(cache.get(it), "r") }
+            .forEach { files[it] = RandomAccessFile(cache.get(it, cancelled), "r") }
         for (clip in project.clips.filter { it.audio }) {
-            Studio.prepare(project, clip, cache, cancelled, progress)?.let {
-                studio[clip.id] = it to RandomAccessFile(it.file, "r")
+            val wet = Studio.prepare(clip, cache, cancelled, progress)
+            for (speed in clip.playbackPieces().map { it.effectiveRate }.distinct()) {
+                if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
+                if (speed != 1.0 && clip.path to speed !in stretched) {
+                    val dry = cache.stretched(clip.path, speed, cancelled, progress)
+                    stretched[clip.path to speed] = RandomAccessFile(dry, "r")
+                }
+                if (wet != null) studio[clip.id to speed] = RandomAccessFile(cache.stretchPcm(wet, speed, cancelled, progress), "r")
             }
         }
     }
@@ -224,11 +293,10 @@ class AudioMixer(
     private fun readSource(
         file: RandomAccessFile,
         startSource: Double,
-        rate: Double,
         frames: Int,
     ): FloatArray {
         val firstSource = floor(startSource).toLong()
-        val sourceFrames = ceil(frames * rate).toInt() + 2
+        val sourceFrames = frames + 2
         val bytes = ByteArray(sourceFrames * 8)
         file.seek(firstSource * 8)
         var count = 0
@@ -240,7 +308,7 @@ class AudioMixer(
         val source = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
         val pcm = FloatArray(frames * 2)
         for (i in 0 until frames) {
-            val pos = startSource - firstSource + i * rate
+            val pos = startSource - firstSource + i
             val a = floor(pos).toInt()
             val frac = (pos - a).toFloat()
             for (ch in 0..1) {
@@ -282,33 +350,31 @@ class AudioMixer(
         val mixed = FloatArray(frames * 2)
         val time = framePosition / 48000.0
         val end = (framePosition + frames) / 48000.0
-        for (clip in project.clips) {
+        for (original in project.clips) for (clip in original.playbackPieces()) {
             if (!clip.audio || clip.start >= end || clip.end <= time) continue
-            val prepared = studio[clip.id]
-            val file = prepared?.second ?: files[clip.path] ?: continue
+            val prepared = studio[clip.id to clip.effectiveRate]
+            val drySource = if (clip.effectiveRate == 1.0) files[clip.path]
+                else stretched[clip.path to clip.effectiveRate] ?: error("Pitch-preserved audio has not been prepared")
+            val file = prepared ?: drySource ?: continue
             val first = max(0, ceil((clip.start - time) * 48000).toInt())
             val last = min(frames, ceil((clip.end - time) * 48000).toInt())
             if (last <= first) continue
-            val rate = if (prepared == null) clip.effectiveRate else 1.0
-            val startSource =
-                if (prepared == null) clip.sourceTime(time + first / 48000.0) * 48000
-                else (time - clip.start) * 48000 + first
-            val pcm = readSource(file, max(0.0, startSource), rate, last - first)
+            val startSource = (if (clip.frozen == null) clip.sourceTime(time + first / 48000.0)
+                else clip.frozen!!.sourceTime + clip.frozen!!.offset + time + first / 48000.0 - clip.start) * 48000 / clip.effectiveRate
+            val pcm = readSource(file, max(0.0, startSource), last - first)
             val gain =
-                if (prepared != null) 1f
-                else if (clip.gainDb <= -60f) 0f else 10f.pow(clip.gainDb / 20)
+                if (clip.gainDb <= -60f) 0f else 10f.pow(clip.gainDb / 20)
             for (i in pcm.indices) pcm[i] *= gain
-            if (prepared == null) fade(project, clip, pcm, time, first)
+            fade(project, clip, pcm, time, first)
             val originalPower =
                 if (!matchListening) 0.0
                 else if (prepared == null) pcm.sumOf { it.toDouble() * it }
                 else {
-                    val raw = files[clip.path] ?: error("Missing source audio")
+                    val raw = drySource ?: error("Missing source audio")
                     val dry =
                         readSource(
                             raw,
-                            clip.sourceTime(time + first / 48000.0) * 48000,
-                            clip.effectiveRate,
+                            clip.sourceTime(time + first / 48000.0) * 48000 / clip.effectiveRate,
                             last - first,
                         )
                     val dryGain = if (clip.gainDb <= -60f) 0f else 10f.pow(clip.gainDb / 20)
@@ -317,50 +383,14 @@ class AudioMixer(
                     dry.sumOf { it.toDouble() * it }
                 }
             for (fx in
-                clip.effects.drop(prepared?.first?.index?.plus(1) ?: 0).filter {
+                (if (prepared != null) emptyList() else clip.effects).filter {
                     it.active((time - clip.start).coerceAtLeast(0.0))
                 }) {
                 if (fx.kind !in Effects.audio) continue
                 val strength = fx.strength(time - clip.start, clip.duration)
                 if (strength <= 0f) continue
-                var hp = 0f
-                var eq = 0f
-                var frequency = 1800f
-                var compressor = 0f
-                var gate = 0f
-                var denoise = 0f
-                var limiter = 0f
-                when (fx.kind) {
-                    "Low-cut filter" -> hp = fx.number("frequency", 80f)
-                    "Voice EQ" -> {
-                        eq = fx.number("gain", 3f) * strength
-                        frequency = fx.number("frequency", 1800f)
-                    }
-                    "Studio clarity",
-                    "Speech detail",
-                    "Studio restoration",
-                    "Noise reduction" -> {
-                        error("Studio audio has not been prepared")
-                    }
-                    "Compressor" -> compressor = strength
-                    "Noise gate" -> gate = fx.number("threshold", 0.015f) * strength
-                    "AI voice isolation" -> denoise = strength
-                    "Limiter" -> limiter = strength
-                }
                 val state = states.getOrPut(clip.id + ":" + fx.id) { Native.audioCreate(48000) }
-                Native.audioProcess(
-                    state,
-                    pcm,
-                    last - first,
-                    1f,
-                    hp,
-                    eq,
-                    frequency,
-                    compressor,
-                    gate,
-                    denoise,
-                    limiter,
-                )
+                AudioFilter.process(state, pcm, fx, strength)
             }
             if (matchListening && originalPower > 0.00001) {
                 val processedPower = pcm.sumOf { it.toDouble() * it }
@@ -370,6 +400,7 @@ class AudioMixer(
                     for (i in pcm.indices) pcm[i] *= compensation
                 }
             }
+            if (finishing) audioFinish(project, clip, pcm, time + first / 48000.0 - clip.start)
             for (i in first until last) for (ch in 0..1) mixed[i * 2 + ch] +=
                 pcm[(i - first) * 2 + ch]
         }
@@ -379,10 +410,12 @@ class AudioMixer(
     }
 
     override fun close() {
-        studio.values.forEach { it.second.close() }
+        studio.values.forEach { it.close() }
         studio.clear()
         states.values.forEach { Native.audioDestroy(it) }
         states.clear()
+        stretched.values.forEach { it.close() }
+        stretched.clear()
         files.values.forEach { it.close() }
         files.clear()
     }

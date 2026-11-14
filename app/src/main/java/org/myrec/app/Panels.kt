@@ -25,6 +25,14 @@ class Panels(private val a: MainActivity) {
     @Volatile private var panel: FrameLayout? = null
     private var preview: Preview? = null
     private var previewTick: (() -> Unit)? = null
+    private var controlsTick: (() -> Unit)? = null
+    private var rgbPads: RGBOffsetPads? = null
+    private var videoDraft: VideoEffectsDraft? = null
+    private var effectsClip: String? = null
+    private var rgbAnimating = false
+    private var correctionTab = 0
+    private var correctionAdvanced = false
+    private var kaleidoscopeFine = false
     private var settings: LinearLayout? = null
     private var settingsHeader: FrameLayout? = null
     private var progressBar: ProgressBar? = null
@@ -41,13 +49,16 @@ class Panels(private val a: MainActivity) {
     private var placementEditor: (() -> Unit)? = null
     private var draftTransition: Transition? = null
     private var previewTransition: Transition? = null
-    private var draftGain: Float? = null
+    private var audioDraft: AudioEditsDraft? = null
+    private var censorDraft: Project? = null
+    private var subtitlesDraft: SubtitlesDraft? = null
+    private var pausesDraft: PausesDraft? = null
+    private var freezeDraft: Project? = null
+    private var previewSpan: ClosedFloatingPointRange<Double>? = null
     private var draftRate: Double? = null
     private var captureDraft: MutableList<Effect>? = null
     private var captureDone: ((List<Effect>) -> Unit)? = null
     private var pendingEffects = mutableListOf<Effect>()
-    private var initialEffects = mutableListOf<Effect>()
-    private var beforeApply: (() -> Unit)? = null
     private var bitmap: Bitmap? = null
     private var title = ""
     private var factor = 1f
@@ -67,6 +78,20 @@ class Panels(private val a: MainActivity) {
         bitmap = frame
         preview?.invalidate()
         previewTick?.invoke()
+        controlsTick?.invoke()
+        rgbPads?.refresh()
+        val work = videoDraft
+        val clip = work?.clip(editor.cursor)?.id
+        if (work != null && title == "Video effects") {
+            val visible = work.visible(editor.cursor)
+            val inspected = draft
+            if (inspected != null && inspected.id !in visible) {
+                settings?.let { appliedVideo(it, work.chain) }
+            } else if (draft == null && clip != effectsClip) {
+                effectsClip = clip
+                reflowControls?.invoke()
+            }
+        }
     }
 
     fun invalidatePreview() {
@@ -258,6 +283,8 @@ class Panels(private val a: MainActivity) {
         inline: Boolean = false,
         showValue: Boolean = true,
         logarithmic: Boolean = false,
+        reset: (() -> Unit)? = null,
+        help: String? = null,
         changed: (Float) -> Unit,
     ): SeekBar {
         val r = row()
@@ -290,6 +317,7 @@ class Panels(private val a: MainActivity) {
             add(parent, bar, 25f)
         }
         v.setOnClickListener {
+            if (reset != null) { reset(); return@setOnClickListener }
             val input =
                 EditText(a).apply {
                     inputType =
@@ -311,6 +339,10 @@ class Panels(private val a: MainActivity) {
                     }
                 }
                 .show()
+        }
+        if (help != null) l.setOnLongClickListener {
+            android.app.AlertDialog.Builder(a).setTitle(name).setMessage(help).setPositiveButton("Got it", null).show()
+            true
         }
         bar.setOnSeekBarChangeListener(
             object : SeekBar.OnSeekBarChangeListener {
@@ -410,6 +442,14 @@ class Panels(private val a: MainActivity) {
         panel = null
         preview = null
         previewTick = null
+        controlsTick = null
+        rgbPads = null
+        rgbAnimating = false
+        videoDraft = null
+        effectsClip = null
+        correctionTab = 0
+        correctionAdvanced = false
+        kaleidoscopeFine = false
         settings = null
         settingsHeader = null
         body = null
@@ -423,10 +463,14 @@ class Panels(private val a: MainActivity) {
         placementEditor = null
         draftTransition = null
         previewTransition = null
-        draftGain = null
+        audioDraft = null
+        censorDraft = null
+        subtitlesDraft = null
+        pausesDraft = null
+        freezeDraft = null
+        previewSpan = null
         draftRate = null
         draftShape = null
-        beforeApply = null
         captureDraft = null
         captureDone = null
         progressBar = null
@@ -570,7 +614,6 @@ class Panels(private val a: MainActivity) {
         done.setOnClickListener {
             if (apply == null) close()
             else {
-                beforeApply?.invoke()
                 apply()
             }
         }
@@ -729,6 +772,7 @@ class Panels(private val a: MainActivity) {
                 override fun onProgressChanged(s: SeekBar, v: Int, user: Boolean) {
                     if (user) {
                         val current = previewRegion()
+                        videoDraft?.endEndpoint()
                         editor.cursor =
                             current.start + (current.endInclusive - current.start) * v / 1000
                         renderDraft()
@@ -804,6 +848,7 @@ class Panels(private val a: MainActivity) {
                     tabViews.add(tab)
                     tab.setOnClickListener {
                         cropFrame = name == "Frame"
+                        preview.resetInspection()
                         tabViews.forEachIndexed { i, view ->
                             view.background =
                                 if ((i == 0) == cropFrame) shape(Color.rgb(35, 35, 37), 15f)
@@ -880,8 +925,8 @@ class Panels(private val a: MainActivity) {
                     gravity = Gravity.CENTER
                     background = shape(Color.rgb(37, 37, 39), 18f)
                     setOnClickListener {
-                        editor.setGain(0f)
-                        close()
+                        try { audioDraft?.let { work -> work.gain(0f); work.commit(editor) }; close() }
+                        catch (e: IllegalStateException) { a.message(e.message ?: "Unable to reset volume") }
                     }
                 }
             footer.addView(remove, FrameLayout.LayoutParams(px(68f), px(34f), Gravity.CENTER))
@@ -913,6 +958,8 @@ class Panels(private val a: MainActivity) {
     }
 
     private fun previewRegion(): ClosedFloatingPointRange<Double> {
+        val duration = a.playback.previewProject?.duration ?: editor.project.duration
+        previewSpan?.let { return it.start.coerceIn(0.0, duration)..it.endInclusive.coerceIn(0.0, duration) }
         draftTransition?.let { value ->
             val current =
                 a.playback.previewProject?.transitions?.firstOrNull { it.id == value.id } ?: value
@@ -923,11 +970,11 @@ class Panels(private val a: MainActivity) {
                 )
         }
         editor.range?.let {
-            return it
+            return it.start.coerceAtMost(duration)..it.endInclusive.coerceAtMost(duration)
         }
         val targets = editor.targets()
-        val first = targets.minOfOrNull { it.start } ?: 0.0
-        val last = targets.maxOfOrNull { it.end } ?: editor.project.duration
+        val first = (targets.minOfOrNull { it.start } ?: 0.0).coerceAtMost(duration)
+        val last = (targets.maxOfOrNull { it.end } ?: duration).coerceAtMost(duration)
         val fx = draft
         if (fx != null && fx.kind in listOf("Text", "Image")) {
             val base = if (draftReplace == null && editor.selected.isEmpty()) draftOrigin else first
@@ -944,6 +991,58 @@ class Panels(private val a: MainActivity) {
             .setMessage(message)
             .setPositiveButton("Done", null)
             .show()
+    }
+
+    fun originals(project: Project) {
+        a.playback.pause()
+        val content = setup("Original recordings", tools = true)
+        val scroll = ScrollView(a)
+        val list = column()
+        pad(list, 16f)
+        scroll.addView(list)
+        content.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        try {
+            val sources = a.store.originals(project)
+            if (sources.isEmpty()) hint(list, "No original recordings in this project.")
+            for (source in sources) {
+                val file = java.io.File(source.path)
+                label(list, file.name)
+                hint(list, "${timeLabel(source.sourceOut)} · ${if (file.isFile) "Original source" else "Missing original"}")
+                if (file.isFile) {
+                    button(list, "Review original") { a.reviewOriginal(source) }
+                    button(list, "Save original to Files") {
+                        a.saveDocument(file, if (source.video) "video/mp4" else "audio/*")
+                    }
+                } else button(list, "Relink original") { a.relinkOriginal(project, source.path) }
+                if (file.isFile) button(list, "Insert at playhead") {
+                    a.openProject(project)
+                    if (editor.project.id != project.id) return@button
+                    editor.insert(source.duplicate(true))
+                    close()
+                }
+                space(list, 14f)
+            }
+            val saved = a.store.open(project.id)
+            val missingImages = ProjectAssets.paths(saved).filter { path ->
+                sources.none { it.path == path } && !java.io.File(path).isFile
+            }
+            for (path in missingImages) {
+                label(list, java.io.File(path).name)
+                button(list, "Relink missing image") { a.relinkOriginal(project, path) }
+            }
+            if (saved.project.clips.any { !java.io.File(it.path).isFile })
+                button(list, "Remove unavailable takes") {
+                    a.openProject(project)
+                    if (editor.project.id != project.id) return@button
+                    val ids = editor.project.clips.filter { !java.io.File(it.path).isFile }.map { it.id }.toSet()
+                    if (ids.isNotEmpty()) {
+                        editor.clearSelection()
+                        editor.selected.addAll(ids)
+                        editor.deleteSelection(false)
+                    }
+                    close()
+                }
+        } catch (e: Exception) { hint(list, e.message ?: "Cannot open originals") }
     }
 
     fun projects(deleted: Boolean = false) {
@@ -1062,8 +1161,13 @@ class Panels(private val a: MainActivity) {
             add(content, pill("‹ Projects", Color.TRANSPARENT, RED) { projects() }, 32f)
             space(content, 10f)
         }
+        val projects = if (deleted) a.store.recentlyDeleted() else a.store.list()
+        if (a.store.problems.isNotEmpty()) {
+            hint(content, a.store.problems.values.distinct().joinToString("\n"))
+            button(content, "Retry opening project", RED) { a.retryProjects() }
+        }
         val thumbnails = mutableListOf<() -> Unit>()
-        for (project in if (deleted) a.store.recentlyDeleted() else a.store.list()) {
+        for (project in projects) {
             val card =
                 column().apply {
                     background = shape(Color.rgb(27, 27, 31), 15f)
@@ -1112,10 +1216,12 @@ class Panels(private val a: MainActivity) {
                     .setPositiveButton("Save") { _, _ ->
                         val value = input.text.toString().trim()
                         if (value.isNotEmpty()) {
-                            project.name = value
-                            if (editor.project.id == project.id) editor.project.name = value
-                            a.store.save(project, editor.project.id == project.id)
-                            projects()
+                            try {
+                                if (!a.saveProject()) return@setPositiveButton
+                                a.store.rename(project, value)
+                                if (editor.project.id == project.id) editor.project.name = value
+                                projects()
+                            } catch (e: Exception) { a.message(e.message ?: "Cannot rename project") }
                         }
                     }
                     .show()
@@ -1158,22 +1264,20 @@ class Panels(private val a: MainActivity) {
                     }
                     return@setOnClickListener
                 }
-                a.choose(project.name, listOf("Rename", "Duplicate", "Delete")) { action ->
+                a.choose(project.name, listOf("Rename", "Duplicate", "Delete", "Original recordings", "Zip project")) { action ->
                     when (action) {
                         0 -> rename()
-                        1 -> {
-                            a.store.save(
-                                project.duplicate().copy(id = uid(), name = "${project.name} copy"),
-                                false,
-                            )
-                            projects()
-                        }
+                        1 -> a.duplicateProject(project)
+                        3 -> originals(project)
+                        4 -> a.exportProject(project)
                         2 ->
                             a.choose("Delete project?", listOf("Delete project", "Cancel")) {
                                 if (it == 0) {
                                     a.store.delete(project)
-                                    if (editor.project.id == project.id)
-                                        editor.load(a.store.list().firstOrNull() ?: Project())
+                                    if (editor.project.id == project.id) {
+                                        val saved = a.store.currentSession()
+                                        editor.load(saved.project, saved)
+                                    }
                                     projects()
                                 }
                             }
@@ -1319,6 +1423,7 @@ class Panels(private val a: MainActivity) {
             a.importVideo(layer = true)
         }
         toolRow(content, "Add audio", "Volume", TEAL) { addAudio() }
+        toolRow(content, "Censor audio", "Volume", TEAL) { censor() }
         toolRow(content, "Transition", "Transition", Effects.color("Transition")) { transition() }
         hint(content, "Select a clip boundary, the start, or the end.")
         if (editor.clipboard.isNotEmpty())
@@ -1348,6 +1453,7 @@ class Panels(private val a: MainActivity) {
                 "Mirror",
                 "Color LUTs",
                 "Speed",
+                "Freeze Frame",
                 "Pauses",
                 "Enhance audio",
                 "Placement",
@@ -1375,7 +1481,7 @@ class Panels(private val a: MainActivity) {
                 val suffix =
                     when (effect.kind) {
                         "Crop" -> " · %.1f×".format(java.util.Locale.US, effect.number("zoom", 1f))
-                        "Color LUTs" -> " · ${effect.values["lut"] ?: "Natural"}"
+                        "Color LUTs" -> " · ${effect.values["name"] ?: effect.values["lut"] ?: "Natural"}"
                         else -> ""
                     }
                 toolRow(
@@ -1477,6 +1583,7 @@ class Panels(private val a: MainActivity) {
     fun editExisting(id: String) {
         val fx = editor.project.clips.flatMap { it.effects }.firstOrNull { it.id == id } ?: return
         when {
+            fx.subtitle != null -> reviewSubtitles(SubtitlesDraft(editor))
             Effects.audio.contains(fx.kind) -> audio(fx)
             fx.kind in Effects.video -> videoEffects(fx)
             else -> effect(fx.kind, fx)
@@ -1510,14 +1617,16 @@ class Panels(private val a: MainActivity) {
                 val effects =
                     if (title == "Video effects" || title == "Enhance audio") pendingEffects
                     else draft?.let { listOf(it) } ?: emptyList()
-                draftGain?.let { temporary.setGain(it) }
                 draftRate?.let { temporary.setRate(it) }
                 when (title) {
-                    "Video effects" ->
-                        temporary.replaceChain(
-                            if (previewEffects) effects else emptyList(),
-                            Effects.video,
-                        )
+                    "Video effects" -> {
+                        temporary.project = checkNotNull(videoDraft).snapshot(bypass = !previewEffects)
+                    }
+                    "Volume" -> temporary.project = checkNotNull(audioDraft).snapshot()
+                    "Censor audio" -> temporary.project = checkNotNull(censorDraft).duplicate()
+                    "Subtitles" -> temporary.project = checkNotNull(subtitlesDraft).project.duplicate()
+                    "Pauses" -> temporary.project = checkNotNull(pausesDraft).snapshot()
+                    "Freeze Frame" -> temporary.project = checkNotNull(freezeDraft).duplicate()
                     "Enhance audio" -> temporary.replaceChain(effects, Effects.audio)
                     "Placement" -> temporary.applyPlacements(placements, placementTracks)
                     else ->
@@ -1565,6 +1674,7 @@ class Panels(private val a: MainActivity) {
     }
 
     fun effect(kind: String, existing: Effect? = null) {
+        if (kind == "Freeze Frame") { freezeFrame(existing); return }
         val fx = existing?.copyEffect() ?: Effect(kind = kind)
         val origin = editor.cursor
         val replace =
@@ -1817,12 +1927,11 @@ class Panels(private val a: MainActivity) {
                 angle.contentDescription = "Reset rotation"
                 angle.setOnClickListener {
                     fx.values["rotation"] = "0"
-                    rotation?.progress = 500
+                    rotation.progress = 500
                     angle.text = "0°"
                     renderDraft()
                 }
-                var zoom: SeekBar? = null
-                zoom =
+                val zoom =
                     slider(
                         controls,
                         "Zoom",
@@ -1840,8 +1949,8 @@ class Panels(private val a: MainActivity) {
                     text("Reset framing", 10f, RED).apply {
                         setOnClickListener {
                             fx.values.clear()
-                            rotation?.progress = 500
-                            zoom?.progress = 0
+                            rotation.progress = 500
+                            zoom.progress = 0
                             angle.text = "0°"
                             renderDraft()
                         }
@@ -1875,23 +1984,57 @@ class Panels(private val a: MainActivity) {
             }
             "Placement" -> placementControls(controls)
             "Color LUTs" -> {
-                choices(
-                    controls,
-                    listOf("Natural", "Warm", "Cool", "Cinema"),
-                    fx.values["lut"] ?: "Natural",
-                ) {
-                    fx.values["lut"] = listOf("Natural", "Warm", "Cool", "Cinema")[it]
-                    renderDraft()
+                val selected = text(fx.values["name"] ?: fx.values["lut"] ?: "Natural", 12f, Color.WHITE)
+                add(controls, selected, 34f)
+                lateinit var inputLabel: TextView
+                lateinit var sourceLabel: TextView
+                button(controls, "Choose look") {
+                    a.choose("Look", CubeLut.looks) { i ->
+                        fx.values.remove("path"); fx.values.remove("name"); fx.values.remove("input")
+                        fx.values["lut"] = CubeLut.looks[i]
+                        selected.text = CubeLut.looks[i]
+                        inputLabel.text = "LUT expects · Rec.709"; inputLabel.contentDescription = inputLabel.text
+                        inputLabel.isEnabled = false; inputLabel.alpha = .4f
+                        renderDraft()
+                    }
                 }
-                choices(controls, listOf("Mono"), fx.values["lut"] ?: "Natural") {
-                    fx.values["lut"] = "Mono"
-                    renderDraft()
+                button(controls, "Import .cube LUT") {
+                    a.importLut { path, name ->
+                        if (draft === fx) {
+                            fx.values["path"] = path; fx.values["name"] = name
+                            selected.text = name
+                            inputLabel.isEnabled = true; inputLabel.alpha = 1f
+                            renderDraft()
+                        }
+                    }
                 }
+                sourceLabel = button(controls, "Source interpretation · ${fx.values["source"] ?: "Recorded"}") {
+                    a.choose("Source interpretation", listOf("Recorded", "Apple Log", "Apple Log 2")) { i ->
+                        fx.values["source"] = listOf("Recorded", "Apple Log", "Apple Log 2")[i]
+                        sourceLabel.text = "Source interpretation · ${fx.values["source"]}"; sourceLabel.contentDescription = sourceLabel.text
+                        renderDraft()
+                    }
+                }
+                inputLabel = button(controls, "LUT expects · ${fx.values["input"] ?: "Rec.709"}") {
+                    a.choose("LUT expects", listOf("Rec.709", "Apple Log", "Apple Log 2")) { i ->
+                        fx.values["input"] = listOf("Rec.709", "Apple Log", "Apple Log 2")[i]
+                        inputLabel.text = "LUT expects · ${fx.values["input"]}"; inputLabel.contentDescription = inputLabel.text
+                        renderDraft()
+                    }
+                }
+                inputLabel.isEnabled = fx.values.containsKey("path")
+                inputLabel.alpha = if (inputLabel.isEnabled) 1f else .4f
                 slider(controls, "Strength", fx.number("strength", 1f), 0f, 1f) {
-                    fx.values["strength"] = it.toString()
-                    renderDraft()
+                    fx.values["strength"] = it.toString(); renderDraft()
                 }
-                hint(controls, "Creativity only: the transform does not change the source.")
+                slider(controls, "Exposure", fx.number("exposure"), -4f, 4f,
+                    format = { "%+.2f EV".format(it) }) {
+                    fx.values["exposure"] = it.toString(); renderDraft()
+                }
+                slider(controls, "Highlights", fx.number("highlights"), -1f, 1f) {
+                    fx.values["highlights"] = it.toString(); renderDraft()
+                }
+                hint(controls, "Strength controls the look. Exposure and highlights remain active at zero strength.")
                 if (existing != null)
                     button(controls, "Remove LUT") {
                         editor.removeEffect(existing.id)
@@ -2140,26 +2283,20 @@ class Panels(private val a: MainActivity) {
     }
 
     fun videoEffects(existing: Effect? = null) {
-        val current =
-            editor
-                .targets()
-                .flatMap { it.effects }
-                .filter { it.kind in Effects.video }
-                .distinctBy { it.kind }
-                .map { it.copyEffect() }
-                .toMutableList()
+        val work = VideoEffectsDraft(editor, Effects.video.toSet())
+        val current = work.chain
         if (existing != null && current.none { it.id == existing.id })
             current.add(existing.copyEffect())
         val body =
             setup(
                 "Video effects",
                 {
-                    applyChain(current, false)
-                    close()
+                    try { work.commit(editor); close() }
+                    catch (e: IllegalStateException) { a.message(e.message ?: "Unable to apply effects") }
                 },
             )
+        videoDraft = work
         pendingEffects = current
-        initialEffects = current.map { it.copyEffect() }.toMutableList()
         draft = null
         val controls = contentWithPreview(body)
         if (existing != null)
@@ -2174,13 +2311,19 @@ class Panels(private val a: MainActivity) {
     }
 
     private fun appliedVideo(parent: LinearLayout, chain: MutableList<Effect>) {
+        controlsTick = null
         parent.removeAllViews()
         reflowControls = { appliedVideo(parent, chain) }
         parent.setPadding(px(10f), px(if (landscape || captureSheet) 0f else 10f), px(10f), px(10f))
         draft = null
+        videoDraft?.flush()
+        effectsClip = videoDraft?.clip(editor.cursor)?.id
+        val visible = videoDraft?.visible(editor.cursor)
+        val active = chain.filter { visible == null || it.id in visible }
+        val ordered = EffectOrder.ordered(active)
         val heading = row()
         heading.addView(
-            text("Applied effects · ${chain.size}", 9f),
+            text("Applied effects · ${active.size}", 9f),
             LinearLayout.LayoutParams(0, px(25f), 1f),
         )
         heading.addView(
@@ -2192,7 +2335,8 @@ class Panels(private val a: MainActivity) {
         )
         videoNavigation(parent, heading)
         if (captureDraft == null) hint(parent, "At the playhead · tap an effect to adjust it.")
-        for (fx in chain.toList()) {
+        for (fx in ordered) {
+            videoDraft?.adopt(fx, editor.cursor)
             val card =
                 EffectCard(a, factor) {
                     chain.remove(fx)
@@ -2246,6 +2390,7 @@ class Panels(private val a: MainActivity) {
         }
 
     private fun categories(parent: LinearLayout, chain: MutableList<Effect>) {
+        controlsTick = null
         parent.removeAllViews()
         reflowControls = { categories(parent, chain) }
         videoNavigation(parent, null)
@@ -2253,7 +2398,7 @@ class Panels(private val a: MainActivity) {
         draft = null
         label(parent, "Add effects", size = 9f)
         if (chain.isNotEmpty())
-            button(parent, "‹ Applied · ${chain.size}") { appliedVideo(parent, chain) }
+            button(parent, "‹ Applied · ${videoDraft?.visible(editor.cursor)?.size ?: chain.size}") { appliedVideo(parent, chain) }
         for ((category, items) in Effects.categories) {
             val card =
                 row().apply {
@@ -2291,6 +2436,7 @@ class Panels(private val a: MainActivity) {
         category: String,
         items: List<String>,
     ) {
+        controlsTick = null
         parent.removeAllViews()
         parent.setPadding(px(10f), 0, px(10f), px(10f))
         reflowControls = { videoCategory(parent, chain, category, items) }
@@ -2331,8 +2477,7 @@ class Panels(private val a: MainActivity) {
                         "Balance exposure, contrast, white balance and color before your look."
                     "Silent Tint" -> "Tint the picture with a single film color."
                     "Three-Strip" -> "Rich colors, deeper reds and dense blacks."
-                    "RGB Offset" ->
-                        "Separate green and magenta edges without changing the colors of flat areas."
+                    "RGB Offset" -> "Slide the red, green and blue images out of alignment."
                     "Quantization" -> "Reduce colors with a scene or fixed palette."
                     "Day for Night" -> "Turn daylight into a cool, dark night look."
                     "Color Isolation" ->
@@ -2347,7 +2492,7 @@ class Panels(private val a: MainActivity) {
                 LinearLayout.LayoutParams(px(15f), px(20f)).apply { leftMargin = px(27f) },
             )
             parent.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(8f) })
-            if (captureDraft != null && kind == "Night fix") {
+            if (captureDraft != null && kind in listOf("Night fix", "Dolly Zoom", "Step Printing")) {
                 item.isEnabled = false
                 item.alpha = .45f
             }
@@ -2375,7 +2520,77 @@ class Panels(private val a: MainActivity) {
         }
     }
 
+    private fun correctionTiming(parent: LinearLayout, fx: Effect, chain: MutableList<Effect>) {
+        val work = videoDraft ?: return
+        val motion = work.effect(fx.id, editor.cursor)?.motion
+        if (motion == null) {
+            editor.cursor = work.selectEndpoint(fx, false, editor.cursor)
+        }
+        parent.removeAllViews()
+        reflowControls = { correctionTiming(parent, fx, chain) }
+        button(parent, "‹ Color Correction") { videoParameters(parent, fx, chain) }
+        val timing = work.effect(fx.id, editor.cursor)?.motion?.timing ?: return
+        fun update(next: EffectTiming, rebuild: Boolean = false) {
+            a.playback.pause()
+            editor.cursor = work.timing(fx, next, editor.cursor)
+            renderDraft()
+            if (rebuild) correctionTiming(parent, fx, chain)
+        }
+        add(parent, text("Animation timing", 11f, Color.WHITE, true), 28f)
+        button(parent, "Curve · ${timing.curve.title}") {
+            a.choose("Curve", EffectCurve.entries.map { it.title }) {
+                update(timing.copy(curve = EffectCurve.entries[it]), true)
+            }
+        }
+        if (timing.curve.hasRise) {
+            val duration = work.effect(fx.id, editor.cursor)?.motion?.duration?.toFloat() ?: 1f
+            slider(parent, "Rise", timing.rise.toFloat().coerceAtMost(duration), 0f, duration,
+                format = { "%.2f s".format(java.util.Locale.US, it) }) {
+                val current = work.effect(fx.id, editor.cursor)?.motion?.timing ?: timing
+                update(current.copy(rise = it.toDouble()))
+            }
+            if (timing.curve == EffectCurve.RiseHoldReturn) slider(parent, "Release", timing.release.toFloat().coerceAtMost(duration), 0f, duration,
+                format = { "%.2f s".format(java.util.Locale.US, it) }) {
+                val current = work.effect(fx.id, editor.cursor)?.motion?.timing ?: timing
+                update(current.copy(release = it.toDouble()))
+            }
+            button(parent, "Ramp · ${timing.ramp.title}") {
+                a.choose("Ramp", EffectCurve.entries.take(4).map { it.title }) {
+                    update(timing.copy(ramp = EffectCurve.entries[it]), true)
+                }
+            }
+        }
+        button(parent, "Done") { videoParameters(parent, fx, chain) }
+        renderDraft()
+    }
+
     private fun videoParameters(parent: LinearLayout, fx: Effect, chain: MutableList<Effect>) {
+        rgbPads = null
+        videoDraft?.flush()
+        videoDraft?.adopt(fx, editor.cursor)
+        fun sourceClip(): Clip? {
+            videoDraft?.let { return it.clip(editor.cursor) }
+            val targets = editor.targets().filter { it.video }
+            return targets.firstOrNull { it.contains(editor.cursor) } ?: targets.firstOrNull()
+        }
+        fun sourceTime(): Double {
+            if (captureDraft != null) return 0.0
+            return sourceClip()?.sourceTime(editor.cursor) ?: 0.0
+        }
+        fun readNumber(key: String, fallback: Float = 0f) =
+            videoDraft?.number(fx, key, editor.cursor, fallback) ?: fx.numberAt(key, sourceTime(), fallback)
+        fun editNumber(key: String, value: Float, animate: Boolean = rgbAnimating) {
+            val work = videoDraft
+            if (work != null) work.editNumber(fx, key, value, editor.cursor, animate)
+            else fx.editNumber(key, value, sourceTime(), sourceClip()?.sourceIn ?: 0.0, animate)
+        }
+        val ticks = mutableListOf<() -> Unit>()
+        controlsTick = { ticks.forEach { it() } }
+        fun bind(bar: SeekBar, key: String, low: Float, high: Float) {
+            ticks.add {
+                if (!bar.isPressed) bar.progress = ((readNumber(key) - low) / (high - low) * bar.max).roundToInt().coerceIn(0, bar.max)
+            }
+        }
         parent.removeAllViews()
         reflowControls = { videoParameters(parent, fx, chain) }
         parent.setPadding(
@@ -2386,7 +2601,7 @@ class Panels(private val a: MainActivity) {
         )
         draft = fx
         val nav = row()
-        val back = text("‹ Applied · ${chain.size}", 9f, RED)
+        val back = text("‹ Applied · ${videoDraft?.visible(editor.cursor)?.size ?: chain.size}", 9f, RED)
         back.setOnClickListener { appliedVideo(parent, chain) }
         nav.addView(back, LinearLayout.LayoutParams(0, px(25f), 1f))
         val add =
@@ -2397,7 +2612,20 @@ class Panels(private val a: MainActivity) {
         nav.translationY = if (landscape) -px(7f).toFloat() else 0f
         val heading = text(fx.kind, 11f, Color.WHITE, true)
         heading.translationY = if (landscape) -px(4f).toFloat() else 0f
-        add(parent, heading, 21f)
+        if (fx.kind == "RGB Offset") {
+            val line = row()
+            line.addView(heading, LinearLayout.LayoutParams(0, px(28f), 1f))
+            line.addView(Glyph(a, "Help", MUTED).apply {
+                contentDescription = "About RGB Offset"
+                setPadding(px(7f), px(7f), px(7f), px(7f))
+                setOnClickListener {
+                    android.app.AlertDialog.Builder(a).setTitle("RGB Offset")
+                        .setMessage("Drag each cross to shift its color layer. The center is the original registration. The outer ring moves a channel by 12% of the picture’s shorter side. Double-tap a pad to center that channel.\n\nFilm technique\nColor dye-transfer printing aligned three separate matrices to register the color image.")
+                        .setPositiveButton("Done", null).show()
+                }
+            }, LinearLayout.LayoutParams(px(28f), px(28f)))
+            add(parent, line, 28f)
+        } else add(parent, heading, 21f)
         val cinema = fx.kind in listOf("Kaleidoscope", "Widescreen 1953")
         val orange = if (cinema) Color.rgb(43, 199, 231) else Color.rgb(240, 137, 35)
         val actions = row()
@@ -2416,10 +2644,33 @@ class Panels(private val a: MainActivity) {
             LinearLayout.LayoutParams(-2, -1).apply { leftMargin = px(6f) },
         )
         animate.setOnClickListener {
-            a.choose("Animate", listOf("Off", "Fade in", "Fade out", "Fade in and out")) {
+            val work = videoDraft
+            if (fx.kind == "Color Correction" && work != null) {
+                a.choose("Correction animation", listOf("Edit A", "Edit B", "Timing", "Done editing endpoints", "Remove animation")) { option ->
+                    a.playback.pause()
+                    when (option) {
+                        0, 1 -> editor.cursor = work.selectEndpoint(fx, option == 1, editor.cursor)
+                        2 -> { correctionTiming(parent, fx, chain); return@choose }
+                        3 -> work.endEndpoint()
+                        4 -> work.removeMotion(fx, editor.cursor)
+                    }
+                    videoParameters(parent, fx, chain)
+                    renderDraft()
+                }
+            } else if (fx.parameters.isNotEmpty()) {
+                rgbAnimating = !rgbAnimating
+                videoParameters(parent, fx, chain)
+            } else a.choose("Animate", listOf("Off", "Fade in", "Fade out", "Fade in and out")) {
                 fx.values["animate"] = it.toString()
                 renderDraft()
             }
+        }
+        if (fx.parameters.isNotEmpty()) {
+            val animated = if (fx.kind == "Color Correction") videoDraft?.effect(fx.id, editor.cursor)?.motion != null else rgbAnimating
+            animate.isSelected = animated
+            animate.background = shape(if (animated) Color.rgb(78, 47, 22) else Color.rgb(32, 32, 32), 16f)
+            if (android.os.Build.VERSION.SDK_INT >= 30) animate.stateDescription = if (animated) "On" else "Off"
+            if (captureDraft != null) animate.visibility = View.GONE
         }
         actions.addView(animate, LinearLayout.LayoutParams(px(71f), px(32f)))
         val power =
@@ -2444,6 +2695,7 @@ class Panels(private val a: MainActivity) {
         power.contentDescription = "Effect enabled"
         power.setOnClickListener {
             fx.enabled = !fx.enabled
+            rgbPads?.enable(fx.enabled)
             power.invalidate()
             power.background = shape(if (fx.enabled) orange else Color.rgb(40, 40, 42), 18f)
             renderDraft()
@@ -2474,15 +2726,20 @@ class Panels(private val a: MainActivity) {
             actions.addView(View(a), 2, LinearLayout.LayoutParams(0, 1, 1f))
         }
         add(parent, actions, 41f)
-        slider(parent, "Intensity", fx.number("strength", 1f), 0f, 1f, color = orange) {
-            fx.values["strength"] = it.toString()
+        if (fx.parameters.isNotEmpty() && rgbAnimating)
+            hint(parent, "Animating · changes add keyframes at ${timeLabel(editor.cursor)}")
+        if (fx.kind !in setOf("Color Correction", "Step Printing"))
+        slider(parent, "Intensity", readNumber(if (fx.parameters.isEmpty()) "strength" else "intensity", 1f), 0f, 1f, color = orange) {
+            if (fx.parameters.isNotEmpty()) editNumber("intensity", it) else fx.setNumber("strength", it)
             renderDraft()
         }
-        fun pick(value: String, action: () -> Unit) {
+        fun pick(value: String, enabled: Boolean = true, action: () -> Unit): View {
             val line =
                 row().apply {
                     background = shape(Color.rgb(29, 29, 31), 7f)
                     setPadding(px(9f), 0, px(9f), 0)
+                    isEnabled = enabled
+                    alpha = if (enabled) 1f else .4f
                     setOnClickListener { action() }
                 }
             line.addView(text(value, 10f, orange), LinearLayout.LayoutParams(0, -1, 1f))
@@ -2491,40 +2748,141 @@ class Panels(private val a: MainActivity) {
                 line,
                 LinearLayout.LayoutParams(-1, px(32f)).apply { bottomMargin = px(8f) },
             )
+            return line
         }
-        when (fx.kind) {
+        if (fx.kind in TimeEffects.kinds) {
+            val titles = mapOf("frequency" to "Cycles per second", "timedBurst" to "Limit duration", "burstLength" to "Burst length (s)",
+                "step" to "Step frames", "smear" to "Smear", "speed" to "Speed")
+            for (p in fx.parameters.filter { it.id != "intensity" }) {
+                val title = titles.getValue(p.id)
+                when (val type = p.kind) {
+                    is ParameterKind.Stepper -> {
+                        label(parent, title)
+                        choices(parent, type.values.map { if (it % 1 == 0.0) it.toInt().toString() else it.toString() },
+                            readNumber(p.id).let { if (it % 1 == 0f) it.toInt().toString() else it.toString() }, orange) {
+                            editNumber(p.id, type.values[it].toFloat(), rgbAnimating); renderDraft()
+                        }
+                    }
+                    is ParameterKind.Slider -> {
+                        if (p.id == "burstLength" && (fx.parameter("timedBurst")?.value as? EffectValue.Toggle)?.value != true) continue
+                        val bar = slider(parent, title, readNumber(p.id), type.min.toFloat(), type.max.toFloat(), color = orange) {
+                            editNumber(p.id, ((it / type.step).roundToInt() * type.step).toFloat(), rgbAnimating && p.id != "burstLength")
+                            renderDraft()
+                        }
+                        bind(bar, p.id, type.min.toFloat(), type.max.toFloat())
+                    }
+                    ParameterKind.Toggle -> toggle(parent, title, (p.value as EffectValue.Toggle).value) { value ->
+                        videoDraft?.editValue(fx, p.id, EffectValue.Toggle(value), editor.cursor, false)
+                            ?: run { p.value = EffectValue.Toggle(value) }
+                        videoParameters(parent, fx, chain); renderDraft()
+                    }
+                    else -> error("Invalid time-effect control")
+                }
+            }
+            if (fx.kind == "Negative Strobe") {
+                hint(parent, "One cycle includes a positive and a negative image. Frequency is limited to half the output frame rate.")
+                if (captureDraft != null) button(parent, "Try strobe") {
+                    a.tryStrobe(if ((fx.parameter("timedBurst")?.value as? EffectValue.Toggle)?.value == true) fx.number("burstLength", 1f) else 2f)
+                }
+            } else hint(parent, "Repeat actual source frames and blend motion within each group. Speed applies to the selection.")
+        } else if (fx.kind in FilmColor.definitions) {
+            val definition = FilmColor.definitions.getValue(fx.kind)
+            fun current(id: String) = videoDraft?.value(fx, id, editor.cursor) ?: fx.parameter(id)?.at(sourceTime())
+            fun edit(id: String, value: EffectValue) {
+                val work = videoDraft
+                if (work != null) work.editValue(fx, id, value, editor.cursor, rgbAnimating)
+                else fx.parameter(id)?.let { p -> require(p.kind.accepts(value)); p.value = value }
+                videoParameters(parent, fx, chain)
+                renderDraft()
+            }
+            for (control in definition.controls) when (val kind = control.kind) {
+                is ParameterKind.Slider -> {
+                    fun reset() {
+                        editNumber(control.id, (control.initial as EffectValue.Number).value.toFloat())
+                        videoParameters(parent, fx, chain)
+                        renderDraft()
+                    }
+                    val bar = slider(parent, control.title, readNumber(control.id), kind.min.toFloat(), kind.max.toFloat(),
+                        color = orange, reset = ::reset) {
+                        editNumber(control.id, ((it / kind.step).roundToInt() * kind.step).toFloat().coerceIn(kind.min.toFloat(), kind.max.toFloat()))
+                        if (control.id == "vignette") parent.findViewWithTag<View>("film.iris")?.let { picker ->
+                            picker.isEnabled = it > 0f; picker.alpha = if (it > 0f) 1f else .4f
+                        }
+                        renderDraft()
+                    }
+                    bind(bar, control.id, kind.min.toFloat(), kind.max.toFloat())
+                }
+                is ParameterKind.Picker -> {
+                    val value = (current(control.id) as? EffectValue.Choice)?.value ?: (control.initial as EffectValue.Choice).value
+                    label(parent, control.title)
+                    pick(value, control.id != "iris" || readNumber("vignette") > 0f) {
+                        a.choose(control.title, kind.values, kind.values.indexOf(value)) {
+                            edit(control.id, EffectValue.Choice(kind.values[it]))
+                        }
+                    }.tag = "film.${control.id}"
+                }
+                ParameterKind.Toggle -> toggle(parent, control.title,
+                    (current(control.id) as? EffectValue.Toggle)?.value ?: false) {
+                    edit(control.id, EffectValue.Toggle(it))
+                }
+                else -> error("Invalid color control")
+            }
+            hint(parent, definition.help)
+        } else when (fx.kind) {
+            "Dolly Zoom" -> {
+                label(parent, "Direction")
+                choices(parent, listOf("Stretch", "Compress"), fx.values["direction"] ?: "Stretch", orange) {
+                    fx.values["direction"] = listOf("Stretch", "Compress")[it]; renderDraft()
+                }
+                slider(parent, "Strength", fx.number("amount", .3f), .1f, .5f, color = orange) {
+                    fx.values["amount"] = it.toString(); renderDraft()
+                }
+                slider(parent, "Duration", fx.number("duration", 2.5f), 1f, 5f, color = orange,
+                    format = { "%.1f s".format(it) }) { fx.values["duration"] = it.toString(); renderDraft() }
+                choices(parent, listOf("In-out cubic", "Linear"), fx.values["easing"] ?: "In-out cubic", orange) {
+                    fx.values["easing"] = listOf("In-out cubic", "Linear")[it]; renderDraft()
+                }
+                slider(parent, "Subject X", fx.number("targetX", .5f), 0f, 1f, color = orange) {
+                    fx.values["targetX"] = it.toString(); renderDraft()
+                }
+                slider(parent, "Subject Y", fx.number("targetY", .5f), 0f, 1f, color = orange) {
+                    fx.values["targetY"] = it.toString(); renderDraft()
+                }
+                hint(parent, "Keep the person still while stretching or compressing the background.")
+            }
             "Kaleidoscope" -> {
-                slider(
-                    parent,
-                    "Segments",
-                    fx.number("segments", 4f),
-                    2f,
-                    24f,
-                    format = { it.toInt().toString() },
-                    color = orange,
-                ) {
-                    fx.values["segments"] = it.toInt().toString()
+                label(parent, "Divisions")
+                choices(parent, (2..9).map { it.toString() }, readNumber("divisions", 2f).toInt().toString(), orange) {
+                    editNumber("divisions", (it + 2).toFloat())
                     renderDraft()
                 }
-                slider(parent, "Rotation", fx.number("rotation"), -180f, 180f, color = orange) {
-                    fx.values["rotation"] = it.toString()
-                    renderDraft()
+                hint(parent, "Drag the picture to pan. Twist with two fingers to rotate the source. Drag the center or round handle to adjust the split.")
+                button(parent, (if (kaleidoscopeFine) "⌄ " else "› ") + "Fine adjustments") {
+                    kaleidoscopeFine = !kaleidoscopeFine
+                    videoParameters(parent, fx, chain)
                 }
-                slider(parent, "Zoom", fx.number("zoom", .75f), .5f, 4f, color = orange) {
-                    fx.values["zoom"] = it.toString()
-                    renderDraft()
-                }
-                for ((name, key) in
-                    listOf("Center X" to "centerX", "Center Y" to "centerY")) slider(
-                    parent,
-                    name,
-                    fx.number(key, .5f),
-                    0f,
-                    1f,
-                    color = orange,
-                ) {
-                    fx.values[key] = it.toString()
-                    renderDraft()
+                if (kaleidoscopeFine) {
+                    for (p in Kaleidoscope.controls) {
+                        fun reset() {
+                            editNumber(p.id, p.initial.toFloat())
+                            videoParameters(parent, fx, chain); renderDraft()
+                        }
+                        val bar = slider(parent, p.title, readNumber(p.id, p.initial.toFloat()), p.min.toFloat(), p.max.toFloat(),
+                            format = { if (p.id.endsWith("Angle")) "%.0f°".format(it) else "%.0f%%".format(it * 100) },
+                            color = orange, reset = ::reset) {
+                            editNumber(p.id, ((it / p.step).roundToInt() * p.step).toFloat().coerceIn(p.min.toFloat(), p.max.toFloat()))
+                            renderDraft()
+                        }
+                        bind(bar, p.id, p.min.toFloat(), p.max.toFloat())
+                    }
+                    button(parent, "Reset split") {
+                        for (key in listOf("centerX", "centerY", "splitAngle")) editNumber(key, if (key == "splitAngle") 0f else .5f)
+                        videoParameters(parent, fx, chain); renderDraft()
+                    }
+                    button(parent, "Center source") {
+                        editNumber("sourcePanX", 0f); editNumber("sourcePanY", 0f)
+                        videoParameters(parent, fx, chain); renderDraft()
+                    }
                 }
             }
             "Widescreen 1953" -> {
@@ -2569,22 +2927,15 @@ class Panels(private val a: MainActivity) {
                 }
             }
             "RGB Offset" -> {
-                slider(
-                    parent,
-                    "Offset",
-                    fx.number("distance", .025f),
-                    0f,
-                    .15f,
-                    format = { "%.1f%%".format(java.util.Locale.US, it * 100) },
-                    color = orange,
-                ) {
-                    fx.values["distance"] = it.toString()
+                val pads = RGBOffsetPads(a, factor, { key -> readNumber(key) }) { channel, x, y ->
+                    editNumber(channel + "X", x)
+                    editNumber(channel + "Y", y)
                     renderDraft()
                 }
-                slider(parent, "Angle", fx.number("angle", 90f), -180f, 180f, color = orange) {
-                    fx.values["angle"] = it.toString()
-                    renderDraft()
-                }
+                rgbPads = pads
+                pads.enable(fx.enabled)
+                parent.addView(pads, LinearLayout.LayoutParams(-1, -2))
+                hint(parent, "Drag a cross to shift its color. Double-tap to center it.")
             }
             "Color Isolation" -> {
                 val mode = fx.values["mode"] ?: "Color"
@@ -2644,39 +2995,77 @@ class Panels(private val a: MainActivity) {
                 )
             }
             "Color Correction" -> {
-                fun colorParameter(
-                    name: String,
-                    key: String,
-                    initial: Float,
-                    low: Float,
-                    high: Float,
-                ) {
-                    slider(
-                        parent,
-                        name,
-                        fx.number(key, initial),
-                        low,
-                        high,
-                        format = {
-                            if (key == "exposure") "%+.1f EV".format(it) else "%.2f".format(it)
-                        },
-                        color = orange,
-                    ) {
-                        fx.values[key] = it.toString()
-                        renderDraft()
+                videoDraft?.endpoint?.let { b ->
+                    hint(parent, "Editing endpoint ${if (b) "B" else "A"}")
+                }
+                fun controls(ids: List<String>) {
+                    for (id in ids) {
+                        val p = EffectContracts.correction.firstOrNull { it.id == id }
+                        val name = p?.title ?: "Intensity"
+                        val min = p?.min?.toFloat() ?: 0f
+                        val max = p?.max?.toFloat() ?: 1f
+                        val initial = p?.initial?.toFloat() ?: 1f
+                        fun reset() {
+                            editNumber(id, initial)
+                            videoParameters(parent, fx, chain)
+                            renderDraft()
+                        }
+                        val bar = slider(parent, name, readNumber(id, initial), min, max,
+                            format = { EffectContracts.display(id, it) }, color = orange,
+                            reset = ::reset, help = EffectContracts.help(id)) {
+                            val step = p?.step?.toFloat() ?: .01f
+                            editNumber(id, ((it / step).roundToInt() * step).coerceIn(min, max))
+                            if (id == "contrast") {
+                                val enabled = readNumber("contrast", 1f) != 1f
+                                parent.findViewWithTag<View>("correction.pivot")?.isEnabled = enabled
+                                parent.findViewWithTag<View>("correction.pivotHint")?.visibility = if (enabled) View.GONE else View.VISIBLE
+                            }
+                            renderDraft()
+                        }
+                        bind(bar, id, min, max)
+                    bar.tag = "correction.$id"
+                        bar.isEnabled = id != "pivot" || readNumber("contrast", 1f) != 1f
                     }
                 }
-                colorParameter("Exposure", "exposure", 0f, -3f, 3f)
-                colorParameter("Contrast", "contrast", 1f, 0f, 2f)
-                colorParameter("Saturation", "saturation", 1f, 0f, 2f)
-                colorParameter("Temperature", "temperature", 0f, -1f, 1f)
-                colorParameter("Tint", "tint", 0f, -1f, 1f)
-                button(parent, "Reset color") {
-                    fx.values.clear()
+                choices(parent, listOf("Light", "Color"), if (correctionTab == 0) "Light" else "Color", orange) {
+                    correctionTab = it
                     videoParameters(parent, fx, chain)
-                    renderDraft()
+                }
+                hint(parent, "Before color looks · tap a value to reset")
+                if (correctionTab == 0) {
+                    controls(listOf("exposure", "contrast", "shadows", "highlights"))
+                    button(parent, (if (correctionAdvanced) "⌄ " else "› ") + "Advanced light") {
+                        correctionAdvanced = !correctionAdvanced
+                        videoParameters(parent, fx, chain)
+                    }
+                    if (correctionAdvanced) {
+                        controls(listOf("blacks", "whites", "pivot"))
+                        add(parent, text("Adjust contrast to use the pivot.", 7.5f, MUTED).apply {
+                            tag = "correction.pivotHint"
+                            visibility = if (readNumber("contrast", 1f) == 1f) View.VISIBLE else View.GONE
+                        })
+                    }
+                } else controls(listOf("saturation", "vibrance", "temperature", "tint", "hue"))
+                controls(listOf("intensity"))
+                hint(parent, "Hold a label for help")
+                button(parent, "Reset correction") {
+                    android.app.AlertDialog.Builder(a).setTitle("Reset this correction?")
+                        .setMessage(if (fx.motion != null) "Returns the selected animation endpoint to neutral."
+                            else "Returns all controls to neutral and removes their keyframes. Other effects are kept.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Reset all adjustments") { _, _ ->
+                            val work = videoDraft
+                            if (work != null) work.reset(fx, editor.cursor)
+                            else {
+                                fx.values.clear(); fx.parameters.clear()
+                                fx.parameters.addAll(EffectContracts.parameters(fx.kind))
+                            }
+                            videoParameters(parent, fx, chain)
+                            renderDraft()
+                        }.show()
                 }
             }
+
             "Quantization" -> {
                 space(parent, 8f)
                 val heading = row()
@@ -2828,11 +3217,6 @@ class Panels(private val a: MainActivity) {
         }
     }
 
-    private fun applyChain(chain: List<Effect>, audio: Boolean) {
-        val kinds = if (audio) Effects.audio else Effects.video
-        editor.replaceChain(chain, kinds)
-    }
-
     fun audio(existing: Effect? = null, initial: List<Effect>? = null) {
         val chain =
             (initial
@@ -2853,7 +3237,7 @@ class Panels(private val a: MainActivity) {
             setup(
                 "Enhance audio",
                 {
-                    applyChain(chain, true)
+                    editor.replaceChain(chain, Effects.audio)
                     close()
                 },
             )
@@ -3234,7 +3618,9 @@ class Panels(private val a: MainActivity) {
     }
 
     fun volume() {
-        val initial = editor.targets().firstOrNull()?.gainDb ?: 0f
+        val work = AudioEditsDraft(editor)
+        if (work.clips.isEmpty()) { a.message("Select an audio section first"); return }
+        val initial = work.clips.first().gainDb
         var gain = initial
         var audible = if (initial > -60f) initial else 0f
         var mute: ReferenceToggle? = null
@@ -3242,11 +3628,11 @@ class Panels(private val a: MainActivity) {
             setup(
                 "Volume",
                 {
-                    editor.setGain(gain)
-                    close()
+                    try { work.commit(editor); close() }
+                    catch (e: IllegalStateException) { a.message(e.message ?: "Unable to apply volume") }
                 },
             )
-        draftGain = gain
+        audioDraft = work
         val controls = contentWithPreview(body)
         label(controls, "This audio section")
         val value = text("%+.1f dB".format(java.util.Locale.US, gain), 14f)
@@ -3257,7 +3643,7 @@ class Panels(private val a: MainActivity) {
             gain = level.coerceIn(-60f, 24f)
             if (gain > -60f) audible = gain
             mute?.checked = gain <= -60f
-            draftGain = gain
+            work.gain(gain)
             value.text = "%+.1f dB".format(java.util.Locale.US, gain)
             bar?.progress = ((gain + 60) / 84 * 1000).roundToInt()
             renderDraft()
@@ -3293,7 +3679,92 @@ class Panels(private val a: MainActivity) {
         val reset = text("Reset to 0 dB", 10f, RED)
         reset.setOnClickListener { update(0f) }
         add(controls, reset, 30f)
+        for (out in listOf(false, true)) {
+            val target = work.target(out) ?: continue
+            val name = if (out) "Fade out" else "Fade in"
+            val fade = if (out) target.fadeOut else target.fadeIn
+            label(controls, name)
+            hint(controls, "Audio ${editor.project.clips.indexOfFirst { it.id == target.id }.takeIf { it >= 0 }?.plus(1) ?: target.track + 1} · ${timeLabel(target.start)}–${timeLabel(target.end)}")
+            val bar = slider(controls, "$name duration", (fade?.remaining(target.duration) ?: 0.0).toFloat(), 0f, target.duration.toFloat(),
+                format = { if (it <= 0) "Off" else "%.2f s".format(java.util.Locale.US, it) }) {
+                work.fade(out, it.toDouble()); renderDraft()
+            }
+            button(controls, "Turn $name off") { work.fade(out, 0.0); bar.progress = 0; renderDraft() }
+            button(controls, "Audition $name") {
+                a.playback.pause()
+                editor.cursor = if (out) max(target.start, target.end - max(2.0, (target.fadeOut?.remaining(target.duration) ?: 0.0) + .5)) else target.start
+                a.playback.previewProject = work.snapshot()
+                a.playback.play(if (out) target.end else min(target.end, target.start + max(2.0, (target.fadeIn?.remaining(target.duration) ?: 0.0) + .5)))
+            }
+        }
         renderDraft()
+    }
+
+    fun censor(existingId: String? = null) {
+        val original = editor.project.duplicate()
+        val existing = original.clips.flatMap { c -> c.censors.filter { it.id == existingId }.map { c to it } }
+        val targets = editor.targets().filter { it.audio }
+        if (targets.isEmpty() && existing.isEmpty()) { a.message("Select an audio section first"); return }
+        var from = existing.minOfOrNull { it.first.start + it.second.from } ?: editor.range?.start ?: targets.minOf { it.start }
+        var to = existing.maxOfOrNull { it.first.start + it.second.to } ?: editor.range?.endInclusive ?: targets.maxOf { it.end }
+        val selected = (if (existing.isEmpty()) targets.map { it.id } else existing.map { it.first.id }).toMutableSet()
+        var config = existing.firstOrNull()?.second?.settings ?: AudioCensorSettings()
+        val event = existingId ?: uid()
+        fun state(remove: Boolean = false): Project {
+            val next = original.duplicate()
+            if (existingId != null) next.clips.forEach { c -> c.censors.removeAll { it.id == existingId } }
+            if (!remove) censorAudio(next, selected, from, to, config, event)
+            else if (existingId == null) censorAudio(next, selected, from, to, null)
+            return next
+        }
+        val body = setup("Censor audio", {
+            try { editor.commitDraft(original, state()); close() }
+            catch (e: IllegalStateException) { a.message(e.message ?: "Unable to apply censoring") }
+        })
+        fun update() {
+            a.playback.pause()
+            censorDraft = state()
+            val start = max(0.0, from - 1)
+            previewSpan = start..min(original.duration, min(to + 1, start + 10))
+            renderDraft()
+        }
+        update()
+        val controls = contentWithPreview(body)
+        fun controls() {
+            controls.removeAllViews()
+            reflowControls = ::controls
+            label(controls, "Censor range")
+            slider(controls, "Start", from.toFloat(), 0f, (to - 1.0 / original.fps).coerceAtLeast(0.0).toFloat(),
+                format = { timeLabel(it.toDouble()) }) { from = it.toDouble().coerceAtMost(to - min(1.0 / original.fps, to / 2)); update() }
+            slider(controls, "End", to.toFloat(), (from + 1.0 / original.fps).coerceAtMost(original.duration).toFloat(), original.duration.toFloat(),
+                format = { timeLabel(it.toDouble()) }) { to = it.toDouble().coerceIn(from + min(1.0 / original.fps, (original.duration - from) / 2), original.duration); update() }
+            for ((index, c) in original.clips.withIndex().filter { it.value.audio && it.value.start < to && it.value.end > from })
+                toggle(controls, "Audio ${index + 1} · ${timeLabel(c.start)}–${timeLabel(c.end)}", c.id in selected) {
+                    if (it) selected.add(c.id) else selected.remove(c.id)
+                    update()
+                }
+            label(controls, "Waveform")
+            choices(controls, CensorWaveform.entries.map { it.name }, config.waveform.name, TEAL) {
+                config = config.copy(waveform = CensorWaveform.entries[it]); update()
+            }
+            slider(controls, "Frequency", config.frequency.toFloat(), 100f, 4000f, format = { "%.0f Hz".format(it) }) {
+                config = config.copy(frequency = it.toDouble()); update()
+            }
+            slider(controls, "Beep level", config.levelDb.toFloat(), -36f, -6f, format = { "%.1f dB".format(it) }) {
+                config = config.copy(levelDb = it.toDouble()); update()
+            }
+            label(controls, "Envelope")
+            val names = listOf("Short fade", "Soft fade", "Pulsed")
+            choices(controls, names, names[config.envelope.ordinal], TEAL) {
+                config = config.copy(envelope = CensorEnvelope.entries[it]); update()
+            }
+            hint(controls, "Track Volume applies. Where selected tracks overlap, the loudest track carries the beep. Original sound stays muted throughout the range.")
+            button(controls, "Remove censoring") {
+                try { editor.commitDraft(original, state(remove = true)); close() }
+                catch (e: IllegalStateException) { a.message(e.message ?: "Unable to remove censoring") }
+            }
+        }
+        controls()
     }
 
     fun speed() {
@@ -3350,84 +3821,129 @@ class Panels(private val a: MainActivity) {
         hint(controls, "Overlapping clips on separate tracks can be arranged with Placement.")
     }
 
-    fun pauses() {
-        var threshold = 0.02f
-        var duration = 0.5f
-        val body = setup("Pauses", { removePauses(threshold, duration) })
+    fun freezeFrame(existing: Effect? = null) {
+        val original = editor.project.duplicate()
+        val held = existing?.let { fx -> original.clips.firstOrNull { c -> c.frozen != null && c.effects.any { it.id == fx.id } } }
+        val position = held?.start ?: editor.cursor
+        var seconds = held?.duration?.toFloat() ?: 3f
+        var push = existing?.number("pushIn", .05f) ?: .05f
+        var continueAudio = existing?.values?.get("audio") == "Continue"
+        fun rebuild() {
+            val temporary = Editor(original.duplicate()).apply { cursor = position }
+            if (held == null) temporary.insertFreeze(seconds.toDouble(), push, continueAudio)
+            else temporary.resizeFreeze(held.id, seconds.toDouble(), push, continueAudio)
+            freezeDraft = temporary.project
+            previewSpan = position..min(temporary.project.duration, position + seconds + 1)
+        }
+        val body = setup("Freeze Frame", { editor.commitDraft(original, checkNotNull(freezeDraft)); close() })
+        rebuild()
         val controls = contentWithPreview(body)
-        label(controls, "Remove silent pauses")
-        slider(
-            controls,
-            "Silence threshold",
-            threshold,
-            0.001f,
-            0.1f,
-            format = { "%.0f dB".format(20 * log10(it)) },
-        ) {
-            threshold = it
+        label(controls, if (held == null) "Insert a held frame" else "Edit held frame")
+        hint(controls, "The hold adds time at the playhead. The following footage resumes afterward.")
+        slider(controls, "Hold duration", seconds, min(.5f, seconds), (10 - (held?.frozen?.offset ?: 0.0)).toFloat(), format = { "%.1f s".format(it) }) {
+            seconds = it; rebuild(); renderDraft()
         }
-        slider(controls, "Minimum pause", duration, 0.2f, 3f, format = { "%.1f s".format(it) }) {
-            duration = it
+        slider(controls, "Push-in", push, 0f, .15f) { push = it; rebuild(); renderDraft() }
+        choices(controls, listOf("Silence", "Continue"), if (continueAudio) "Continue" else "Silence") {
+            continueAudio = it == 1; rebuild(); renderDraft()
         }
-        hint(
-            controls,
-            "Detect pauses in the selected audio and remove them from linked video and audio.",
-        )
+        if (held != null) button(controls, "Remove hold") {
+            val temporary = Editor(original.duplicate()).apply {
+                selected.add(held.id); deleteSelection()
+            }
+            editor.commitDraft(original, temporary.project); close()
+        }
+        renderDraft()
     }
 
-    private fun removePauses(threshold: Float, duration: Float) {
-        val targets = editor.targets().filter { it.audio }
-        if (targets.isEmpty()) {
-            close()
-            return
+    fun pauses() = pauseReview(PausesDraft(editor))
+
+    private fun pauseReview(work: PausesDraft) {
+        val body = setup("Pauses", { work.commit(editor); close() })
+        pausesDraft = work
+        val controls = contentWithPreview(body)
+        val initial = work.reviews.values.firstOrNull()
+        if (initial == null) { hint(controls, "Select audio to find pauses."); return }
+        label(controls, "Review silent pauses")
+        choices(controls, listOf("Automatic", "Manual"), if (initial.automatic) "Automatic" else "Manual") { i ->
+            work.reviews.replaceAll { _, s -> s.copy(automatic = i == 0) }
         }
-        progress("Finding pauses", 0f, null)
-        Thread {
+        slider(controls, "Silence threshold", initial.thresholdDb.toFloat(), -70f, -15f,
+            format = { "%.0f dB".format(it) }) { value -> work.reviews.replaceAll { _, s -> s.copy(thresholdDb = value.toDouble()) } }
+        slider(controls, "Minimum pause", initial.minimum.toFloat(), .2f, 3f,
+            format = { "%.2f s".format(it) }) { value -> work.reviews.replaceAll { _, s -> s.copy(minimum = value.toDouble()) } }
+        slider(controls, "Keep before", initial.before.toFloat(), 0f, .5f,
+            format = { "%.2f s".format(it) }) { value ->
+            work.reviews.replaceAll { _, s -> s.copy(before = value.toDouble()) }; renderDraft()
+        }
+        slider(controls, "Keep after", initial.after.toFloat(), 0f, .5f,
+            format = { "%.2f s".format(it) }) { value ->
+            work.reviews.replaceAll { _, s -> s.copy(after = value.toDouble()) }; renderDraft()
+        }
+        button(controls, "Find pauses") {
+            work.cancelled = false
+            progress("Finding pauses", 0f) { work.cancelled = true }
+            Thread {
                 try {
-                    val cuts = mutableListOf<ClosedFloatingPointRange<Double>>()
-                    val region =
-                        editor.range ?: (targets.minOf { it.start }..targets.maxOf { it.end })
-                    val project = editor.project.duplicate()
-                    AudioMixer(project, a.audioCache).use { mixer ->
-                        mixer.prepare()
-                        mixer.seek(region.start)
-                        var position = region.start
-                        var silence: Double? = null
-                        while (position < region.endInclusive) {
-                            val frames =
-                                min(1024, ceil((region.endInclusive - position) * 48000).toInt())
-                            if (frames <= 0) break
-                            val peak = mixer.read(frames).maxOf { abs(it) }
-                            if (peak < threshold) {
-                                if (silence == null) silence = position
-                            } else if (silence != null) {
-                                if (position - silence >= duration) cuts.add(silence..position)
-                                silence = null
-                            }
-                            position += frames / 48000.0
-                        }
-                        if (silence != null && region.endInclusive - silence >= duration)
-                            cuts.add(silence..region.endInclusive)
-                    }
-                    ui.post {
-                        editor.beginBatch()
-                        for (r in cuts.sortedByDescending { it.start }) {
-                            editor.range = r
-                            editor.selected.clear()
-                            editor.deleteSelection()
-                        }
-                        close()
-                        editor.endBatch(false)
-                        a.message("Removed ${cuts.size} pauses")
-                    }
-                } catch (e: Exception) {
-                    ui.post {
-                        close()
-                        a.message(e.message ?: "Cannot analyze audio")
+                    work.analyze(a.audioCache) { p -> ui.post { updateProgress(p) } }
+                    ui.post { if (!work.cancelled) pauseReview(work) }
+                } catch (e: Exception) { ui.post { close(); a.message(e.message ?: "Cannot analyze audio") } }
+            }.start()
+        }
+        hint(controls, "Checked pauses are skipped. Original sound and review decisions stay in the project.")
+        for (clip in work.clips.distinctBy { "${it.path}:${it.start}:${it.sourceIn}:${it.sourceOut}" }) {
+            val review = work.reviews.getValue(clip.id)
+            hint(controls, "${timeLabel(clip.start)} · ${review.candidates.size} candidates · ${review.thresholdDb.toInt()} dB")
+            for (candidate in review.candidates) {
+                val toggle = CheckBox(a).apply {
+                    text = "${timeLabel(candidate.raw.start)} · %.2f s".format(candidate.raw.duration / clip.effectiveRate)
+                    setTextColor(Color.WHITE); isChecked = candidate.enabled
+                    setOnCheckedChangeListener { _, checked ->
+                        work.reviews.replaceAll { _, current -> current.copy(candidates = current.candidates.map {
+                            if (it.id == candidate.id) it.copy(enabled = checked) else it
+                        }) }
+                        renderDraft()
                     }
                 }
+                add(controls, toggle, 42f)
             }
-            .start()
+        }
+        button(controls, "Keep all pauses") { work.reset(); pauseReview(work) }
+        renderDraft()
+    }
+
+    private fun reviewSubtitles(work: SubtitlesDraft) {
+        val body = setup("Subtitles", { work.commit(editor); close() })
+        subtitlesDraft = work
+        val controls = contentWithPreview(body)
+        label(controls, "Transcript")
+        hint(controls, "Tap a phrase to correct it. Timing is estimated within detected speech.")
+        button(controls, "Copy transcript") {
+            val clipboard = a.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Transcript", work.transcript()))
+            a.message("Transcript copied")
+        }
+        button(controls, "Words per caption") {
+            a.choose("Words per caption", listOf("1", "3", "6", "10")) { i ->
+                work.regroup(listOf(1, 3, 6, 10)[i]); reviewSubtitles(work)
+            }
+        }
+        slider(controls, "Vertical position", work.project.clips.flatMap { it.effects }
+            .firstOrNull { it.subtitle != null }?.number("y", .9f) ?: .9f, .05f, .95f) {
+            work.placement("y", it.toString()); renderDraft()
+        }
+        for (phrase in work.rows()) {
+            button(controls, "${timeLabel(phrase.time)} · ${phrase.text}") {
+                editor.cursor = phrase.time; renderDraft()
+                val input = EditText(a).apply { setText(phrase.text); setTextColor(Color.WHITE) }
+                android.app.AlertDialog.Builder(a).setTitle("Correct subtitle").setView(input)
+                    .setNegativeButton("Cancel", null)
+                    .setNeutralButton("Remove") { _, _ -> work.remove(phrase.id); reviewSubtitles(work) }
+                    .setPositiveButton("Save") { _, _ -> work.correct(phrase.id, input.text.toString()); reviewSubtitles(work) }
+                    .show()
+            }
+        }
+        renderDraft()
     }
 
     fun captions() {
@@ -3442,44 +3958,28 @@ class Panels(private val a: MainActivity) {
                 "Auto captions",
                 {
                     val snapshot = editor.project.duplicate()
+                    val targets = editor.targets().filter { it.video }.map { it.id }.toSet()
+                    val scope = editor.range ?: (editor.targets().minOfOrNull { it.start } ?: 0.0)..
+                        (editor.targets().maxOfOrNull { it.end } ?: snapshot.duration)
                     progress("Generating captions", 0f) { job.cancelled = true }
                     Thread {
                             try {
                                 val captions =
-                                    job.generate(snapshot, language) { p ->
+                                    job.generate(snapshot, language, scope) { p ->
                                         ui.post { updateProgress(p) }
                                     }
                                 ui.post {
-                                    editor.change {
-                                        for (caption in captions) for (clip in
-                                            editor.project.clips.filter {
-                                                it.video &&
-                                                    it.start < caption.end &&
-                                                    it.end > caption.start
-                                            }) {
-                                            clip.effects.add(
-                                                Effect(
-                                                    kind = "Text",
-                                                    from = max(0.0, caption.start - clip.start),
-                                                    to =
-                                                        min(
-                                                            clip.duration,
-                                                            caption.end - clip.start,
-                                                        ),
-                                                    values =
-                                                        mutableMapOf(
-                                                            "text" to caption.text,
-                                                            "x" to "0.05",
-                                                            "y" to "0.9",
-                                                            "size" to "0.045",
-                                                            "style" to "Bold",
-                                                        ),
-                                                )
-                                            )
+                                    if (editor.project != snapshot) {
+                                        close(); a.message("The project changed. Generate subtitles again.")
+                                    } else {
+                                        val result = snapshot.duplicate()
+                                        result.clips.filter { it.id in targets }.forEach { clip ->
+                                            clip.effects.removeAll { it.subtitle != null && clip.start + it.from < scope.endInclusive && clip.start + it.to > scope.start }
                                         }
+                                        val series = uid()
+                                        for (caption in captions) SubtitlesDraft.attach(result, series, caption.words, targets)
+                                        reviewSubtitles(SubtitlesDraft(editor, result))
                                     }
-                                    close()
-                                    a.message("Added ${captions.size} captions")
                                 }
                             } catch (e: Exception) {
                                 ui.post {
@@ -3493,6 +3993,8 @@ class Panels(private val a: MainActivity) {
             )
         val controls = contentWithPreview(body)
         label(controls, "Automatic subtitles")
+        if (editor.project.clips.any { c -> c.effects.any { it.subtitle != null } })
+            button(controls, "Review subtitles") { reviewSubtitles(SubtitlesDraft(editor)) }
         if (job.ready) {
             button(controls, "Language · Auto detect") {
                 val languages =
@@ -3513,7 +4015,7 @@ class Panels(private val a: MainActivity) {
             }
             hint(
                 controls,
-                "Captions are generated on your phone. You can edit them with the Text tool.",
+                "Recognize the selection on your phone, then review and correct the words. Word timing is estimated.",
             )
         } else {
             hint(
@@ -3544,6 +4046,7 @@ class Panels(private val a: MainActivity) {
             return
         }
         var size = 1080
+        var color = ExportColor.SDR
         val body =
             setup(
                 "Export",
@@ -3555,7 +4058,7 @@ class Panels(private val a: MainActivity) {
                     var h = if (ratio >= 1) size else (size / ratio).roundToInt()
                     w = w / 2 * 2
                     h = h / 2 * 2
-                    a.export(w, h)
+                    a.export(w, h, color)
                 },
             )
         val controls = contentWithPreview(body)
@@ -3563,7 +4066,12 @@ class Panels(private val a: MainActivity) {
         choices(controls, listOf("720p", "1080p", "4K"), "1080p") {
             size = listOf(720, 1080, 2160)[it]
         }
-        label(controls, "H.264 · ${editor.project.fps} fps · AAC 48 kHz", MUTED)
+        label(controls, "Color")
+        choices(controls, listOf("SDR · H.264", "HDR · HEVC 10-bit HLG"), "SDR · H.264") {
+            color = if (it == 1) ExportColor.HLG else ExportColor.SDR
+        }
+        hint(controls, "HDR requires a Main10 encoder, an HLG recording surface and 10-bit source decoding. Unsupported hardware reports the unavailable path.")
+        label(controls, "${editor.project.fps} fps · AAC 48 kHz", MUTED)
         label(controls, "Duration · ${timeLabel(editor.project.duration)}", MUTED)
         hint(controls, "Save the edited video to Movies/MyRec, then play or share it.")
     }
@@ -3642,10 +4150,38 @@ class Panels(private val a: MainActivity) {
         private var lastX = 0f
         private var lastY = 0f
         private var placementEdge = 0
+        private val inspection = PreviewViewport()
+        private var inspectMode = false
+        private var panAnchored = true
+        private var controlGesture = false
+        private val inspectButton = RectF()
+        private val resetButton = RectF()
+        private val inspectionPinch = InspectionGesture { factor, x, y, oldX, oldY ->
+            inspection.scale(factor, x - inset, y, oldX - inset, oldY)
+            panAnchored = false
+            invalidate()
+        }
+        private fun editsContent() = draft?.kind in listOf("Crop", "Zoom", "Placement", "Text", "Image", "Kaleidoscope")
+        private fun inspecting() = if (draft?.kind == "Crop") !cropFrame else inspectMode || !editsContent()
+
+        init { contentDescription = "Tool preview"; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
+
+        fun resetInspection() { inspection.reset(); invalidate() }
+
+        private fun toggleInspection() {
+            inspection.reset()
+            if (draft?.kind == "Crop") { cropFrame = !cropFrame; renderDraft() }
+            else inspectMode = !inspectMode
+            invalidate()
+        }
         private val scale =
             ScaleGestureDetector(
                 context,
                 object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
+                        panAnchored = false
+                        return true
+                    }
                     override fun onScale(d: ScaleGestureDetector): Boolean {
                         val fx = draft ?: return false
                         if (fx.kind == "Placement") {
@@ -3670,9 +4206,9 @@ class Panels(private val a: MainActivity) {
                         }
                         val key =
                             if (fx.kind == "Crop" || fx.kind == "Zoom") "zoom"
-                            else if (fx.kind == "Placement") "w" else "size"
+                            else "size"
                         val initial =
-                            if (key == "zoom" || key == "w") 1f
+                            if (key == "zoom") 1f
                             else if (fx.kind == "Text") 0.07f else 0.3f
                         fx.values[key] =
                             (fx.number(key, initial) * d.scaleFactor)
@@ -3681,7 +4217,6 @@ class Panels(private val a: MainActivity) {
                                     if (key == "zoom") 5f else 1f,
                                 )
                                 .toString()
-                        if (key == "w") fx.values["h"] = fx.values[key]!!
                         renderDraft()
                         return true
                     }
@@ -3703,6 +4238,11 @@ class Panels(private val a: MainActivity) {
                     (height + b.height * ratio) / 2,
                 )
             val fx = draft
+            inspection.configure(width - inset * 2, height.toFloat(), b.width.toFloat(), b.height.toFloat())
+            c.save()
+            c.clipRect(inset, 0f, width - inset, height.toFloat())
+            c.translate(inspection.x, inspection.y)
+            c.scale(inspection.zoom, inspection.zoom, width / 2f, height / 2f)
             if (fx?.kind == "Crop" && cropFrame) {
                 c.save()
                 c.translate(fx.number("x") * bounds.width(), fx.number("y") * bounds.height())
@@ -3738,6 +4278,22 @@ class Panels(private val a: MainActivity) {
                     c.drawLine(bounds.left, y, bounds.right, y, paint)
                 }
             } else c.drawBitmap(b, null, bounds, paint)
+            if (fx?.kind == "Kaleidoscope" && fx.enabled && previewEffects && !inspecting()) splitGuide.draw(c, bounds, factor, opticalEffect(fx))
+            c.restore()
+            inspectButton.setEmpty()
+            resetButton.setEmpty()
+            var edge = width - factor * 6
+            fun badge(rect: RectF, label: String, span: Float) {
+                rect.set(edge - factor * span, height - factor * 32, edge, height - factor * 5)
+                paint.color = Color.argb(205, 8, 8, 8)
+                c.drawRoundRect(rect, factor * 13, factor * 13, paint)
+                paint.color = Color.WHITE; paint.textSize = factor * 8; paint.textAlign = Paint.Align.CENTER
+                c.drawText(label, rect.centerX(), rect.centerY() + factor * 3, paint)
+                edge = rect.left - factor * 4
+            }
+            if (editsContent() && fx?.kind != "Crop") badge(inspectButton, if (inspecting()) "Edit" else "Inspect", 48f)
+            if (inspection.zoom > 1.001f) badge(resetButton, "%.1f× · Reset".format(java.util.Locale.US, inspection.zoom), 66f)
+            paint.textAlign = Paint.Align.LEFT
             if (title == "Video effects") {
                 val badge =
                     RectF(
@@ -3820,6 +4376,29 @@ class Panels(private val a: MainActivity) {
             }
         }
 
+        private fun editOptical(key: String, value: Float) {
+            val fx = draft ?: return
+            val work = videoDraft
+            if (work != null) work.editNumber(fx, key, value, editor.cursor, rgbAnimating)
+            else fx.editNumber(key, value, 0.0, 0.0, rgbAnimating)
+            controlsTick?.invoke()
+        }
+        private val splitGuide = KaleidoscopeGuide(::editOptical, { renderDraft(); invalidate() })
+        private val splitActions = listOf(
+            Triple("Move split left", "centerX", -.01f), Triple("Move split right", "centerX", .01f),
+            Triple("Move split up", "centerY", -.01f), Triple("Move split down", "centerY", .01f),
+            Triple("Pan source left", "sourcePanX", -.01f), Triple("Pan source right", "sourcePanX", .01f),
+            Triple("Pan source up", "sourcePanY", -.01f), Triple("Pan source down", "sourcePanY", .01f),
+            Triple("Rotate split left", "splitAngle", -1f), Triple("Rotate split right", "splitAngle", 1f),
+            Triple("Rotate source left", "sourceAngle", -1f), Triple("Rotate source right", "sourceAngle", 1f),
+        )
+
+        private fun opticalEffect(fx: Effect): Effect {
+            val work = videoDraft ?: return fx.sampled(0.0)
+            val c = work.clip(editor.cursor)
+            return (work.effect(fx.id, editor.cursor) ?: fx).sampled(c?.sourceTime(editor.cursor) ?: 0.0)
+        }
+
         private fun placementWindow(fx: Effect): RectF {
             val x = bounds.left + fx.number("x") * bounds.width()
             val y = bounds.top + fx.number("y") * bounds.height()
@@ -3834,6 +4413,12 @@ class Panels(private val a: MainActivity) {
         }
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                controlGesture = true
+                if (resetButton.contains(e.x, e.y)) { resetInspection(); return true }
+                if (inspectButton.contains(e.x, e.y)) { toggleInspection(); return true }
+                controlGesture = false
+            } else if (controlGesture) return true
             if (
                 title == "Video effects" &&
                     e.actionMasked == MotionEvent.ACTION_DOWN &&
@@ -3841,11 +4426,37 @@ class Panels(private val a: MainActivity) {
                     e.y in bounds.top..bounds.top + factor * 32
             ) {
                 previewEffects = !previewEffects
+                controlGesture = true
                 renderDraft()
                 invalidate()
                 return true
             }
-            scale.onTouchEvent(e)
+            val optical = draft?.takeIf { it.kind == "Kaleidoscope" && it.enabled && previewEffects && !inspecting() }
+            if (optical != null) {
+                if (e.actionMasked == MotionEvent.ACTION_DOWN) parent.requestDisallowInterceptTouchEvent(true)
+                val handled = splitGuide.touch(e, opticalEffect(optical))
+                if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL)
+                    parent.requestDisallowInterceptTouchEvent(false)
+                return handled
+            }
+            if (inspecting()) inspectionPinch.event(e) else scale.onTouchEvent(e)
+            if (inspecting()) {
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        lastX = e.x; lastY = e.y; panAnchored = true
+                        parent.requestDisallowInterceptTouchEvent(true)
+                    }
+                    MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> panAnchored = false
+                    MotionEvent.ACTION_MOVE -> {
+                        if (e.pointerCount == 1 && panAnchored) inspection.pan(e.x - lastX, e.y - lastY)
+                        panAnchored = e.pointerCount == 1
+                        lastX = e.x; lastY = e.y
+                        invalidate()
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent.requestDisallowInterceptTouchEvent(false)
+                }
+                return true
+            }
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     lastX = e.x
@@ -3947,6 +4558,44 @@ class Panels(private val a: MainActivity) {
 
         override fun performClick(): Boolean {
             super.performClick()
+            return true
+        }
+
+        override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+            super.onInitializeAccessibilityNodeInfo(info)
+            for ((i, label) in listOf("Zoom in preview", "Zoom out preview", "Reset preview zoom").withIndex())
+                info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000101 + i, label))
+            if (editsContent()) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000104,
+                if (inspecting()) "Resume editing preview" else "Inspect preview"))
+            if (draft?.kind == "Kaleidoscope" && draft?.enabled == true && previewEffects)
+                splitActions.forEachIndexed { i, action ->
+                    info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000201 + i, action.first))
+                }
+            val reading = "%.2f× view".format(java.util.Locale.US, inspection.zoom)
+            if (android.os.Build.VERSION.SDK_INT >= 30) info.stateDescription = reading else info.text = reading
+        }
+
+        override fun performAccessibilityAction(action: Int, arguments: android.os.Bundle?): Boolean {
+            if (action in 0x02000201..0x0200020c) {
+                val fx = draft?.takeIf { it.kind == "Kaleidoscope" && it.enabled && previewEffects } ?: return false
+                val (_, key, delta) = splitActions[action - 0x02000201]
+                val current = opticalEffect(fx)
+                val spec = current.parameter(key)?.kind as? ParameterKind.Slider ?: return false
+                val next = current.number(key).toDouble() + delta
+                editOptical(key, (if (spec.wrapped) Kaleidoscope.wrapped(next) else next.coerceIn(spec.min, spec.max)).toFloat())
+                renderDraft(); invalidate()
+                return true
+            }
+            when (action) {
+                0x02000101, 0x02000102 -> {
+                    if (!inspecting()) toggleInspection()
+                    inspection.scale(if (action == 0x02000101) 1.5f else 1 / 1.5f)
+                }
+                0x02000103 -> inspection.reset()
+                0x02000104 -> toggleInspection()
+                else -> return super.performAccessibilityAction(action, arguments)
+            }
+            invalidate()
             return true
         }
     }

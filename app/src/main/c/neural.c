@@ -81,7 +81,7 @@ static int deepfilter(YrNeural *s, const float *input, float *output, int sample
     OrtValue *in[2] = {NULL}, *enc[7] = {NULL}, *mask = NULL, *coefs = NULL;
     int ok = 0;
     if (!spec || !erb || !features) goto done;
-    float mean[32], unit[96], alpha = expf(-.01f);
+    float mean[32], unit[96], alpha = .99f;
     for (int i = 0; i < 32; i++) mean[i] = -60 - 30.f * i / 31;
     for (int i = 0; i < 96; i++) unit[i] = .001f + (.0001f - .001f) * i / 95;
     for (int t = 0; t < frames; t++) {
@@ -169,95 +169,47 @@ done:
     return ok;
 }
 
-static float *resample(const float *input, int count, int from, int to, int *length) {
-    *length = (int)llround((double)count * to / from);
-    float *out = calloc((size_t)*length, sizeof(float));
-    if (!out) return NULL;
-    double cutoff = fmin(1, (double)to / from) * .95;
-    for (int i = 0; i < *length; i++) {
-        double pos = (double)i * from / to, sum = 0, norm = 0;
-        int center = (int)floor(pos);
-        for (int j = center - 31; j <= center + 32; j++) {
-            double d = pos - j;
-            if (fabs(d) >= 32) continue;
-            double x = pi * d * cutoff;
-            double weight = (fabs(x) < 1e-12 ? 1 : sin(x) / x) * (.5 + .5 * cos(pi * d / 32));
-            int at = j < 0 ? 0 : j >= count ? count - 1 : j;
-            sum += input[at] * weight;
-            norm += weight;
-        }
-        out[i] = (float)(sum / fmax(norm, 1e-12));
-    }
-    return out;
-}
-
 static int voicefixer(YrNeural *s, const float *input, float *output, int samples) {
-    enum { WINDOW = 501 * 441, STRIDE = 401 * 441, OVERLAP = 100 * 441 };
-    YrInference *n = &s->net;
-    const OrtApi *api = n->api;
-    int count;
-    float *wave = resample(input, samples, 48000, 44100, &count);
-    float *sum = calloc((size_t)count * 2, sizeof(float));
-    float *mel = calloc(501 * 128, sizeof(float));
-    OrtValue *mel_value = NULL, *predicted = NULL, *generated = NULL;
+    enum { FRAMES = 256, SAMPLES = 255 * 441 };
+    if (samples != SAMPLES) return 0;
+    YrInference *n = &s->net; const OrtApi *api = n->api;
+    float *mel = calloc(FRAMES * 128, sizeof(float));
+    OrtValue *value = NULL, *predicted = NULL, *generated = NULL;
     int ok = 0;
-    if (!wave || !sum || !mel) goto done;
-    for (int start = 0; start < count; start += STRIDE) {
-        int available = count - start < WINDOW ? count - start : WINDOW;
-        memset(mel, 0, 501 * 128 * sizeof(float));
-        for (int t = 0; t < 501; t++) {
-            float complex fft[2048];
-            for (int i = 0; i < 2048; i++) {
-                int at = t * 441 + i - 1024;
-                while (at < 0 || at >= WINDOW) at = at < 0 ? -at : 2 * WINDOW - 2 - at;
-                fft[i] = (at < available ? wave[start + at] : 0) * s->window[i];
-            }
-            yr_fft2(fft, 2048, 0);
-            for (int f = 0; f < 1025; f++) {
-                float magnitude = cabsf(fft[f]);
-                for (int m = 0; m < 128; m++) mel[t * 128 + m] += magnitude * s->mel[f * 128 + m];
-            }
+    if (!mel) goto done;
+    for (int t = 0; t < FRAMES; t++) {
+        float complex fft[2048];
+        for (int i = 0; i < 2048; i++) {
+            int j = t * 441 + i - 1024;
+            if (j < 0) j = -j;
+            if (j >= samples) j = 2 * samples - 2 - j;
+            fft[i] = input[j] * s->window[i];
         }
-        int64_t dims[] = {1, 1, 501, 128};
-        mel_value = yr_inference_tensor(n, mel, dims, 4);
-        const char *in_name[] = {"mel_orig"}, *out_name[] = {"mel"};
-        const OrtValue *inputs[] = {mel_value};
-        if (!mel_value || !yr_inference_check(n, api->Run(n->sessions[0], NULL, in_name,
-            inputs, 1, out_name, 1, &predicted))) goto done;
-        size_t elements;
-        float *log_mel = yr_inference_data(n, predicted, &elements);
-        if (!log_mel || elements != 501 * 128) goto done;
-        for (size_t i = 0; i < elements; i++) log_mel[i] = powf(10, fminf(5, log_mel[i]));
-        const char *vin[] = {"mel"}, *vout[] = {"wav"};
-        const OrtValue *vinputs[] = {predicted};
-        if (!yr_inference_check(n, api->Run(n->sessions[1], NULL, vin, vinputs, 1, vout, 1, &generated))) goto done;
-        float *restored = yr_inference_data(n, generated, &elements);
-        if (!restored || elements < (size_t)available) goto done;
-        for (int i = 0; i < available; i++) {
-            float weight = 1;
-            if (start > 0 && i < OVERLAP) weight *= i / (float)(OVERLAP - 1);
-            if (start + WINDOW < count && i >= WINDOW - OVERLAP)
-                weight *= (WINDOW - 1 - i) / (float)(OVERLAP - 1);
-            sum[start + i] += restored[i] * weight;
-            sum[count + start + i] += weight;
+        yr_fft2(fft, 2048, 0);
+        for (int f = 0; f < 1025; f++) {
+            float magnitude = sqrtf(fmaxf(1e-8f, crealf(fft[f]) * crealf(fft[f]) + cimagf(fft[f]) * cimagf(fft[f])));
+            for (int m = 0; m < 128; m++) mel[t * 128 + m] += magnitude * s->mel[f * 128 + m];
         }
-        api->ReleaseValue(mel_value); mel_value = NULL;
-        api->ReleaseValue(predicted); predicted = NULL;
-        api->ReleaseValue(generated); generated = NULL;
     }
-    for (int i = 0; i < count; i++) sum[i] /= fmaxf(sum[count + i], 1e-8f);
-    int length;
-    float *converted = resample(sum, count, 44100, 48000, &length);
-    if (!converted) goto done;
-    for (int i = 0; i < samples; i++) output[i] = converted[i < length ? i : length - 1];
-    free(converted);
+    int64_t dims[] = {1, 1, FRAMES, 128}; value = yr_inference_tensor(n, mel, dims, 4);
+    const char *in[] = {"mel_orig"}, *out[] = {"mel"}; const OrtValue *inputs[] = {value};
+    if (!value || !yr_inference_check(n, api->Run(n->sessions[0], NULL, in, inputs, 1, out, 1, &predicted))) goto done;
+    size_t elements; float *log_mel = yr_inference_data(n, predicted, &elements);
+    if (!log_mel || elements != FRAMES * 128) goto done;
+    for (size_t i = 0; i < elements; i++) log_mel[i] = powf(10, fminf(5, log_mel[i]));
+    const char *vin[] = {"mel"}, *vout[] = {"wav"}; const OrtValue *vinputs[] = {predicted};
+    if (!yr_inference_check(n, api->Run(n->sessions[1], NULL, vin, vinputs, 1, vout, 1, &generated))) goto done;
+    float *restored = yr_inference_data(n, generated, &elements);
+    if (!restored || elements != 260 * 441) goto done;
+    int trim = ((int)elements - samples) / 2;
+    for (int i = 0; i < samples; i++) { if (!isfinite(restored[trim + i])) goto done; output[i] = restored[trim + i]; }
     ok = 1;
 done:
-    if (mel_value) api->ReleaseValue(mel_value);
+    if (value) api->ReleaseValue(value);
     if (predicted) api->ReleaseValue(predicted);
     if (generated) api->ReleaseValue(generated);
-    free(wave); free(sum); free(mel);
-    if (!ok && !n->error[0]) snprintf(n->error, sizeof(n->error), "Cannot restore this audio block");
+    free(mel);
+    if (!ok && !n->error[0]) snprintf(n->error, sizeof(n->error), "Cannot restore this audio window");
     return ok;
 }
 

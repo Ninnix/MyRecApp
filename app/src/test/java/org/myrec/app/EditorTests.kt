@@ -15,6 +15,66 @@ fun main() {
         passed++
         println("PASS $name")
     }
+    TimeEffectsTests.run(::test)
+    ProcessingTests.run(::test)
+    EffectModelTests.run(::test)
+    VideoEffectsTests.run(::test)
+    AudioEditTests.run(::test)
+    PreviewModelTests.run(::test)
+    test("new recordings remain through undo redo and restored editing sessions") {
+        val e = Editor()
+        val first = Clip(path = "first.mp4", sourceOut = 5.0)
+        e.appendRecording(first)
+        check(!e.canUndo)
+        e.setGain(-6f)
+        val second = Clip(path = "second.mp4", sourceOut = 3.0)
+        e.appendRecording(second)
+        e.undo()
+        check(e.project.clips.map { it.path } == listOf("first.mp4", "second.mp4"))
+        check(e.project.clips.first().gainDb == 0f)
+        near(e.project.duration, 8.0)
+        val saved = e.session()
+        val restored = Editor(saved.project).apply { load(saved.project, saved) }
+        restored.appendRecording(Clip(path = "third.mp4", sourceOut = 2.0))
+        check(restored.canRedo)
+        restored.redo()
+        check(restored.project.clips.size == 3)
+        check(restored.project.clips.first().gainDb == -6f)
+        near(restored.project.duration, 10.0)
+        restored.select(restored.project.clips.last())
+        restored.deleteSelection()
+        check(restored.project.clips.size == 2)
+        check(restored.session().originals.size == 3)
+        restored.undo()
+        check(restored.project.clips.size == 3)
+    }
+    test("persistent session state retains more than sixty independent edits") {
+        val e = fixture()
+        repeat(100) { e.setGain(if (it % 2 == 0) -3f else -9f) }
+        val saved = e.session()
+        val restored = Editor(saved.project).apply { load(saved.project, saved) }
+        repeat(100) { check(restored.canUndo); restored.undo() }
+        check(!restored.canUndo && restored.project.clips.single().gainDb == 0f)
+        repeat(100) { check(restored.canRedo); restored.redo() }
+        check(restored.project.clips.single().gainDb == -9f)
+        check(!restored.canRedo)
+    }
+    test("draft sessions persist committed state and failed edits leave no undo step") {
+        val e = fixture()
+        e.beginBatch()
+        e.setGain(-12f)
+        check(e.session().project.clips.single().gainDb == 0f)
+        check(e.session().undo.isEmpty())
+        e.endBatch(false)
+        check(e.session().project.clips.single().gainDb == -12f)
+        check(e.session().undo.size == 1)
+        val before = e.project.duplicate()
+        try { e.change { e.project.clips.clear(); error("Injected edit failure") } }
+        catch (_: IllegalStateException) {}
+        check(e.project == before && e.session().undo.size == 1)
+        e.setGain(-12f)
+        check(e.session().undo.size == 1)
+    }
     test("recording rotation follows each sensor and the locked display orientation") {
         for (display in listOf(0, 90, 180, 270)) {
             val rear = CameraOrientation.recording(90, display, false)
@@ -64,7 +124,7 @@ fun main() {
         check(clips.size == 2)
         near(clips[0].duration, 4.0)
         near(clips[1].duration, 6.0)
-        check(clips[0].effects.single().id != clips[1].effects.single().id)
+        check(clips[0].effects.single().id == clips[1].effects.single().id)
         clips[1].effects[0].values["lut"] = "Warm"
         check(clips[0].effects[0].values["lut"] == "Mono")
         e.removeEffect(clips[1].effects[0].id)

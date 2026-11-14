@@ -28,23 +28,36 @@ to our first integration, not LavaSR v1; keeping them preserves downloads.
 
 Noise reduction uses DeepFilterNet3's encoder, ERB decoder, and complex deep-filter
 decoder. The C11 frontend has a 960-point Vorbis STFT, 32 ERB bands, normalized
-complex features, and two-frame lookahead. Its graphs total 8,587,242 bytes and
+complex features, the reference's 0.99 normalization coefficient, and two-frame
+lookahead. Its graphs total 8,587,242 bytes and
 match those in the [author's ONNX archive](https://github.com/Rikorose/DeepFilterNet/tree/978576aa8400552a4ce9730838c635aa30db5e61/models).
+On a 96,000-sample fixture, the C path and an independent libdf/ONNX calculation
+measured 1.11e-7 maximum sample error and 1.59e-8 RMS error. This checks the
+bounded-window implementation; it does not establish streaming or Core ML parity.
 
 Studio restoration uses VoiceFixer's analysis network and vocoder at 44.1 kHz.
-C11 handles resampling, STFT/mel analysis, log inversion, and overlap. The FP32
-graphs and mel filters total 415,446,261 bytes from this
+C11 handles band-limited rate conversion, STFT/mel analysis, log inversion, and
+overlap. The FP32 graphs and mel filters total 415,446,261 bytes from this
 [pinned conversion](https://huggingface.co/TigreGotico/audiosronnx-voicefixer/tree/aa259fa578b9d5f4c76fda3cd967f73542b0e15b).
-The iOS implementation uses a different conversion, precision, and windowing.
-Matching the network name does not establish matching output.
+The installer verifies the original graphs, changes only each fixed input
+shape from 501 to 256 frames and checks the derived SHA-256 before publication.
+Learned tensor payloads are unchanged. The frontend uses the reference's mel
+bank, periodic Hann window and 112,455-sample context. Output is center-trimmed
+from 114,660 samples, with 28,224-sample margins, 52,920-sample stride and
+3,087-sample overlap. Models live in `voicefixer-256`; an old download can be
+adapted locally by the preparation tool after verification.
+
+Each neural stage processes an original source before trims, timeline speed,
+gain, fades and censoring. Distinct stereo channels use independent predictions;
+exact dual mono can reuse a prediction. Reflected windows, atomic output and
+SHA-checked checkpoints allow completed work to be reused. RNNoise compensates
+initial latency and flushes partial final hops. DeepFilter currently uses
+independent bounded windows; it still needs the reference's continuous per-hop
+recurrent state. Core ML and ONNX conversion/precision differences also remain.
 
 The app offers missing models when you add a filter. Downloads can be cancelled
-and resumed and are verified before use. Playback prepares overlapping blocks
-and caches the result. Filter order, ranges, gain, speed, and transition fades
-remain part of processing. Restoration currently enhances the stereo mid signal
-and retains the side signal; iOS processes distinct channels separately. Cuts
-also affect our available context. Source-wide context, resumable processing
-windows, and equivalent DSP behavior still need work.
+and resumed and are verified before first use. VoiceFixer's original and adapted
+hashes and shape offsets are recorded in the model manifests.
 
 For development installation:
 
@@ -54,19 +67,29 @@ python3 tools/prepare-audio.py --install
 ```
 
 VoiceFixer can be slow and can change vocal character. Compare the result on
-speech before applying it to a long recording. The C11 DeepFilterNet3 and
-VoiceFixer frontends matched independent Python calculations below 1e-7 maximum
-sample error on short verification inputs. That is numerical evidence for
-those inputs, not a listening comparison with iOS.
+speech before applying it to a long recording. On a synthetic 112,455-sample
+context, the current C path versus an independent NumPy-FFT/ONNX calculation
+measured 0.999934 correlation, 0.000041 RMS error and 0.00161 maximum sample
+error. This checks frontend, window and center-trim behavior for that input;
+it is not an iOS Core ML waveform or listening comparison.
 
 ## Captions
 
 Qwen3-ASR-0.6B downloads a 1.9 GB weight file plus tokenizer and configuration
 files. Tools → Auto captions offers the download. Transcription then works
-offline and produces editable text effects in six-second chunks. Word timing,
-word-limit regrouping, and a full transcript workspace are still missing.
-The iOS app uses a smaller 4-bit MLX pack and pause-based estimated word timing;
-neither implementation uses forced alignment.
+offline. A band-limited mono conversion feeds 20 ms speech-island planning
+and recognition sections of at most twelve seconds. Estimated word anchors
+support transcript correction, regrouping and copy. Completed sections are
+checkpointed by edited-audio hash, language, range, speech plan and runtime/model
+identity. Corrupt or stale progress starts again; up to eight jobs are retained
+in the app cache. An active C inference call must finish before cancellation
+returns. All five model/tokenizer/configuration files have pinned sizes and
+SHA-256 checks. Actual recognition has run on the Mi 8 and OnePlus 15. The speech
+suite uses a fresh job for each run before checking completed-section reuse.
+
+The iOS app uses a smaller 4-bit MLX pack; Android uses the external Qwen C
+runtime and BF16 checkpoint. Those are different numerical backends. Neither
+implementation uses forced alignment.
 
 ```sh
 python3 tools/prepare-model.py

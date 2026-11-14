@@ -31,7 +31,17 @@ class EditorView(
     var preparing: Float? = null
     var playing = false
     var fullscreen = false
-    var fillPreview = false
+    val inspection = PreviewViewport()
+    private var previewGesture = false
+    private var panAnchored = false
+    private var panX = 0f
+    private var panY = 0f
+    private val previewPinch = InspectionGesture { factor, x, y, oldX, oldY ->
+        inspection.scale(factor, x / unit - ox - previewBounds.left, y / unit - oy - previewBounds.top,
+            oldX / unit - ox - previewBounds.left, oldY / unit - oy - previewBounds.top)
+        moved = true
+        invalidate()
+    }
     var moving = false
     var movingOrigin = 0.0
     var showPaste = false
@@ -46,7 +56,6 @@ class EditorView(
     private var downX = 0f
     private var downY = 0f
     private var moved = false
-    private var downTime = 0L
     private var downCursor = 0.0
     private var downLanes = listOf<TimelineLane>()
     private var downMoveStart = 0.0
@@ -61,8 +70,6 @@ class EditorView(
     private var audioGesture = false
     private var rangeHandle = 0
     private var lastPlayTap = 0L
-    private var lastTap = 0L
-    private var lastClip: String? = null
     private var gestureClip: Clip? = null
     private val red = Color.rgb(255, 55, 74)
     private val grey = Color.rgb(130, 130, 134)
@@ -72,22 +79,15 @@ class EditorView(
         ScaleGestureDetector(
             context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                    moved = true
+                    panAnchored = false
+                    return true
+                }
                 override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    if (
-                        previewBounds.contains(
-                            detector.focusX / unit - ox,
-                            detector.focusY / unit - oy,
-                        )
-                    )
-                        fillPreview = detector.scaleFactor > 1
-                    else {
-                        editor.wholeProject = false
-                        editor.scale =
-                            (editor.scale / detector.scaleFactor).coerceIn(
-                                1.0,
-                                max(1.0, editor.project.duration),
-                            )
-                    }
+                    editor.wholeProject = false
+                    editor.scale = (editor.scale / detector.scaleFactor).coerceIn(
+                        1.0, max(1.0, editor.project.duration))
                     invalidate()
                     return true
                 }
@@ -465,22 +465,29 @@ class EditorView(
 
     private fun drawPreview(c: Canvas, r: RectF) {
         rect(c, r, Color.BLACK)
+        hit(RectF(r), "preview")
         bitmap?.let { b ->
-            val ratio =
-                if (fillPreview) max(r.width() / b.width, r.height() / b.height)
-                else min(r.width() / b.width, r.height() / b.height)
+            inspection.configure(r.width(), r.height(), b.width.toFloat(), b.height.toFloat())
+            val ratio = min(r.width() / b.width, r.height() / b.height) * inspection.zoom
             val dest =
                 RectF(
-                    r.centerX() - b.width * ratio / 2,
-                    r.centerY() - b.height * ratio / 2,
-                    r.centerX() + b.width * ratio / 2,
-                    r.centerY() + b.height * ratio / 2,
+                    r.centerX() + inspection.x - b.width * ratio / 2,
+                    r.centerY() + inspection.y - b.height * ratio / 2,
+                    r.centerX() + inspection.x + b.width * ratio / 2,
+                    r.centerY() + inspection.y + b.height * ratio / 2,
                 )
             c.save()
             c.clipRect(r)
             p.alpha = 255
             c.drawBitmap(b, null, dest, p)
             c.restore()
+        }
+        if (inspection.zoom > 1.001f) {
+            val reset = RectF(r.right - 64, r.bottom - 29, r.right - 5, r.bottom - 5)
+            rect(c, reset, Color.argb(210, 15, 15, 15), 12f)
+            text(c, "%.1f× · Reset".format(java.util.Locale.US, inspection.zoom), reset.centerX(), reset.centerY() + 3,
+                7f, Color.WHITE, Paint.Align.CENTER)
+            hit(reset, "resetPreviewZoom")
         }
         preparing?.let { progress ->
             val box = RectF(r.centerX() - 60, r.centerY() - 16, r.centerX() + 60, r.centerY() + 16)
@@ -676,8 +683,7 @@ class EditorView(
                         var x = TimelineLayout.thumbnailStart(left, timeline.left, tw)
                         while (x < min(right, timeline.right)) {
                             val at =
-                                (start + (x - timeline.left) / timeline.width() * span -
-                                    clip.start) * clip.effectiveRate + clip.sourceIn
+                                clip.sourceTime(start + (x - timeline.left) / timeline.width() * span)
                             val total = max(clip.sourceOut, indexedDuration(clip.path))
                             val image =
                                 list[(at / total * list.size).toInt().coerceIn(0, list.size - 1)]
@@ -712,8 +718,7 @@ class EditorView(
                     var x = max(left, timeline.left)
                     while (x < min(right, timeline.right)) {
                         val source =
-                            (start + (x - timeline.left) / timeline.width() * span - clip.start) *
-                                clip.effectiveRate + clip.sourceIn
+                            clip.sourceTime(start + (x - timeline.left) / timeline.width() * span)
                         val i =
                             if (wave != null && wave.isNotEmpty())
                                 (source / indexedDuration(clip.path) * wave.size)
@@ -930,6 +935,10 @@ class EditorView(
                     }
                 chip(title.take(24), Effects.color(fx.kind), "effect:${fx.id}")
             }
+            val sound = editor.project.clips.filter { it.audio && it.contains(editor.cursor) }
+            for (region in sound.flatMap { clip -> clip.censors.filter { editor.cursor - clip.start >= it.from && editor.cursor - clip.start < it.to } }.distinctBy { it.id })
+                chip("Censor audio", cyan, "censor:${region.id}")
+            if (sound.any { it.fadeIn != null || it.fadeOut != null }) chip("Audio fades", cyan, "volume")
             val overlapping = editor.project.active(editor.cursor).size > 1
             if (overlapping && active.none { it.kind == "Placement" })
                 chip("Placement · default", Effects.color("Placement"), "placement")
@@ -962,7 +971,7 @@ class EditorView(
                 invalidate()
             }
             if (x + chipScroll > left) chipBounds.set(left, y - 17, right, y + 17)
-            return active.isNotEmpty() ||
+            return active.isNotEmpty() || sound.any { it.censors.isNotEmpty() || it.fadeIn != null || it.fadeOut != null } ||
                 overlapping ||
                 gain != null ||
                 tr != null ||
@@ -973,14 +982,17 @@ class EditorView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        pinch.onTouchEvent(event)
         val x = event.x / unit - ox
         val y = event.y / unit - oy
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) previewGesture = previewBounds.contains(x, y)
+        if (previewGesture) previewPinch.event(event) else pinch.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                previewGesture = previewBounds.contains(x, y)
+                panAnchored = true
+                panX = x; panY = y
                 downX = x
                 downY = y
-                downTime = event.eventTime
                 moved = false
                 downCursor = editor.cursor
                 downChipScroll = chipScroll
@@ -1002,7 +1014,14 @@ class EditorView(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (pinch.isInProgress || event.pointerCount > 1) return true
+                if ((!previewGesture && pinch.isInProgress) || event.pointerCount > 1) return true
+                if (previewGesture && inspection.zoom > 1.001f) {
+                    if (panAnchored) inspection.pan(x - panX, y - panY)
+                    panAnchored = true; panX = x; panY = y
+                    if (abs(x - downX) + abs(y - downY) > 3) moved = true
+                    invalidate()
+                    return true
+                }
                 val dx = x - downX
                 val dy = y - downY
                 if (abs(dx) + abs(dy) > 3) moved = true
@@ -1057,7 +1076,9 @@ class EditorView(
                 if (moved) return true
                 val hit = hits.lastOrNull { it.first.contains(x, y) }?.second
                 if (hit != null) {
-                    if (hit == "play") {
+                    if (hit == "resetPreviewZoom") { inspection.reset(); invalidate() }
+                    else if (hit == "preview") action("play")
+                    else if (hit == "play") {
                         if (event.eventTime - lastPlayTap < 300) {
                             action("audition")
                             lastPlayTap = 0
@@ -1077,17 +1098,15 @@ class EditorView(
                             span / timeline.width() * 5,
                         )
                     )
-                    lastClip = clip?.id
-                    lastTap = event.eventTime
                     invalidate()
                 } else if (previewBounds.contains(x, y)) {
-                    if (event.eventTime - lastTap < 300) {
-                        fillPreview = !fillPreview
-                        invalidate()
-                    } else action("play")
-                    lastTap = event.eventTime
+                    action("play")
                 }
                 performClick()
+            }
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                moved = true
+                panAnchored = false
             }
         }
         return true
@@ -1112,6 +1131,25 @@ class EditorView(
 
     override fun performClick(): Boolean {
         super.performClick()
+        return true
+    }
+
+    override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        for ((i, label) in listOf("Zoom in preview", "Zoom out preview", "Reset preview zoom").withIndex())
+            info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000101 + i, label))
+        val reading = "%.2f× preview".format(java.util.Locale.US, inspection.zoom)
+        if (android.os.Build.VERSION.SDK_INT >= 30) info.stateDescription = reading else info.text = reading
+    }
+
+    override fun performAccessibilityAction(action: Int, arguments: android.os.Bundle?): Boolean {
+        when (action) {
+            0x02000101 -> inspection.scale(1.5f)
+            0x02000102 -> inspection.scale(1 / 1.5f)
+            0x02000103 -> inspection.reset()
+            else -> return super.performAccessibilityAction(action, arguments)
+        }
+        invalidate()
         return true
     }
 }

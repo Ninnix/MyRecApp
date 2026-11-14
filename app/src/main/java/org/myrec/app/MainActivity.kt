@@ -15,6 +15,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
     lateinit var editor: Editor
@@ -47,12 +48,16 @@ class MainActivity : Activity() {
         val project: String, val at: Double, val layer: Boolean, val audio: Boolean,
     )
     private var pendingImport: MediaImport? = null
+    private var pendingSave: File? = null
+    private data class MediaRepair(val project: Project, val path: String)
+    private var pendingRepair: MediaRepair? = null
     private var imageCallback: ((String) -> Unit)? = null
     private var importAsProject = false
     private var exporting: Export? = null
     private var choices: PopupWindow? = null
     private var lastMessage = ""
     private var lastMessageAt = 0L
+    private var saveWarning: TextView? = null
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -72,7 +77,10 @@ class MainActivity : Activity() {
                 if (testSession) File(cacheDir, "test-projects/$testSessionId")
                 else File(filesDir, "projects")
             )
-        editor = Editor(store.current())
+        store.cleanTransfers()
+        store.recoverCaptures()
+        val saved = store.currentSession()
+        editor = Editor(saved.project).apply { load(saved.project, saved) }
         Studio.directory = File(getExternalFilesDir(null), "models/studio-lava-v1")
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
         AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
@@ -94,6 +102,7 @@ class MainActivity : Activity() {
                 {
                     editorView.playing = playback.playing
                     editorView.invalidate()
+                    panels.invalidatePreview()
                 },
                 { message(it) },
                 {
@@ -105,13 +114,18 @@ class MainActivity : Activity() {
         panels = Panels(this)
         root.addView(editorView, FrameLayout.LayoutParams(-1, -1))
         editor.onChange = {
-            store.save(editor.project)
+            saveProject()
             editorView.resetScroll()
             editorView.invalidate()
             playback.refresh()
         }
         playback.refresh()
         updateBars()
+        if (store.problems.isNotEmpty()) root.post {
+            message(store.problems.values.joinToString("\n"))
+            panels.projects()
+        }
+        indexOriginals(editor.project.id)
         if (intent.action == Intent.ACTION_SEND) {
             val uri =
                 if (Build.VERSION.SDK_INT >= 33)
@@ -122,6 +136,7 @@ class MainActivity : Activity() {
     }
 
     private fun action(id: String) {
+        if (id.startsWith("censor:")) { panels.censor(id.substringAfter(':')); return }
         if (id.startsWith("effect:")) {
             panels.editExisting(id.substringAfter(':'))
             return
@@ -302,7 +317,7 @@ class MainActivity : Activity() {
                     store,
                     { clip ->
                         if (editor.project.clips.isEmpty()) setProjectFormat(clip)
-                        editor.append(clip)
+                        editor.appendRecording(clip)
                     },
                     ::showEditor,
                 )
@@ -331,28 +346,71 @@ class MainActivity : Activity() {
         else if (code == 10) message("Camera and microphone permissions are needed to record")
     }
 
+    fun saveProject(): Boolean {
+        try {
+            store.save(editor)
+            saveWarning?.visibility = View.GONE
+            return true
+        } catch (e: Exception) {
+            if (saveWarning == null && ::root.isInitialized) {
+                saveWarning = TextView(this).apply {
+                    text = "Changes not saved · Retry"
+                    contentDescription = text
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.rgb(130, 35, 35))
+                    setPadding(24, 16, 24, 16)
+                    setOnClickListener { saveProject() }
+                }
+                root.addView(saveWarning, FrameLayout.LayoutParams(-2, -2,
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+            }
+            saveWarning?.visibility = View.VISIBLE
+            saveWarning?.bringToFront()
+            android.util.Log.w("MyRec", "Cannot save project", e)
+            message("Cannot save changes. They are kept in memory; tap Retry.")
+            return false
+        }
+    }
+
+    fun retryProjects() {
+        store.problems.clear()
+        val saved = store.currentSession()
+        if (store.problems.isEmpty()) editor.load(saved.project, saved)
+        panels.projects()
+    }
+
+    fun duplicateProject(project: Project) {
+        if (!saveProject()) return
+        panels.progress("Duplicating project…", 0f, null)
+        worker.execute {
+            try {
+                store.duplicate(project) { progress -> ui.post { panels.updateProgress(progress) } }
+                ui.post { panels.close(); panels.projects() }
+            } catch (e: Exception) {
+                ui.post { panels.close(); message(e.message ?: "Cannot duplicate project") }
+            }
+        }
+    }
+
     fun newProject() {
         playback.pause()
         if (capture?.recording == true) capture?.stop()
-        store.save(editor.project)
-        editor.load(
-            Project(name = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date()))
-        )
-        store.save(editor.project)
+        if (!saveProject()) return
+        editor.load(Project(name = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date())))
         editorView.bitmap = null
         editorView.invalidate()
     }
 
     fun openProject(project: Project) {
         playback.pause()
-        if (project.id == editor.project.id) {
+        if (project.id == editor.project.id) { showEditor(); return }
+        if (!saveProject()) return
+        try {
+            val saved = store.open(project.id)
+            editor.load(saved.project, saved)
+            indexOriginals(saved.project.id)
             showEditor()
-            return
-        }
-        store.save(editor.project)
-        editor.load(project)
-        store.save(project)
-        showEditor()
+        } catch (e: Exception) { message(e.message ?: "Cannot open project") }
     }
 
     private fun projects() {
@@ -579,8 +637,173 @@ class MainActivity : Activity() {
     }
 
     fun importProject() {
-        importAsProject = true
-        importVideo()
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "application/zip", "application/x-zip-compressed"))
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }, 23)
+    }
+
+    private fun documentName(uri: Uri): String = try {
+        contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        } ?: "Imported project"
+    } catch (_: Exception) { "Imported project" }
+
+    fun saveDocument(file: File, type: String, name: String = file.name) {
+        if (!file.isFile) { message("The original file is missing"); return }
+        pendingSave = file
+        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            this.type = type
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_TITLE, name.replace('/', '-').replace('\\', '-'))
+        }, 30)
+    }
+
+    fun exportProject(project: Project) {
+        if (!saveProject()) return
+        val cancelled = AtomicBoolean(false)
+        panels.progress("Preparing project ZIP…", 0f) { cancelled.set(true) }
+        worker.execute {
+            val file = File(cacheDir, "MyRec-${uid()}.zip")
+            try {
+                ProjectArchive.export(store, project, file, { cancelled.get() }) { value ->
+                    ui.post { panels.updateProgress(value) }
+                }
+                ui.post {
+                    panels.close()
+                    saveDocument(file, "application/zip", "${project.name.take(80)}.zip")
+                }
+            } catch (e: Exception) {
+                ui.post { panels.close(); message(e.message ?: "Cannot archive project") }
+            }
+        }
+    }
+
+    private fun restoreProject(uri: Uri) {
+        if (!saveProject()) return
+        val cancelled = AtomicBoolean(false)
+        panels.progress("Restoring project…", 0f) { cancelled.set(true) }
+        worker.execute {
+            val archive = File(cacheDir, ".restore-${uid()}.zip")
+            try {
+                contentResolver.openInputStream(uri)!!.use { input ->
+                    archive.outputStream().use { output ->
+                        val buffer = ByteArray(128 * 1024)
+                        while (true) {
+                            if (cancelled.get()) throw java.io.InterruptedIOException("Restore cancelled")
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            check(cacheDir.usableSpace > 64L * 1024 * 1024) { "Not enough free storage" }
+                            output.write(buffer, 0, n)
+                        }
+                    }
+                }
+                val result = ProjectArchive.restore(store, archive, { cancelled.get() }) { value ->
+                    ui.post { panels.updateProgress(value) }
+                }
+                ui.post {
+                    panels.close()
+                    openProject(result.project)
+                    if (result.missing.isNotEmpty()) message("Project restored with missing media. All editing history was kept.")
+                }
+            } catch (e: Exception) {
+                ui.post { panels.close(); message(e.message ?: "Cannot restore project") }
+            } finally { archive.delete() }
+        }
+    }
+
+    private fun indexOriginals(project: String) {
+        if (!File(store.root, "$project.json").isFile) return
+        worker.execute {
+            try { store.indexOriginals(project) }
+            catch (e: Exception) {
+                store.problems["checksum:$project"] = "Source verification could not finish: ${e.message}"
+            }
+        }
+    }
+
+    fun relinkOriginal(project: Project, path: String) {
+        if (!saveProject()) return
+        try {
+            check(store.trustedHash(project.id, path) != null) {
+                "No checksum was recorded before this original went missing. Its identity cannot be verified."
+            }
+            pendingRepair = MediaRepair(project.duplicate(), path)
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                type = "*/*"
+                addCategory(Intent.CATEGORY_OPENABLE)
+            }, 31)
+        } catch (e: Exception) { message(e.message ?: "Cannot relink this original") }
+    }
+
+    private fun repairOriginal(repair: MediaRepair, uri: Uri) {
+        val cancelled = AtomicBoolean(false)
+        panels.progress("Verifying original…", 0f) { cancelled.set(true) }
+        worker.execute {
+            val file = File(cacheDir, ".repair-${uid()}")
+            try {
+                contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    while (true) {
+                        if (cancelled.get()) throw java.io.InterruptedIOException("Repair cancelled")
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        check(cacheDir.usableSpace > 64L * 1024 * 1024) { "Not enough free storage" }
+                        output.write(buffer, 0, count)
+                    }
+                } }
+                val path = store.relink(repair.project, repair.path, file, { cancelled.get() })
+                ui.post {
+                    panels.close()
+                    if (editor.project.id == repair.project.id) {
+                        // Edits made while the source was being copied stay in
+                        // the live session; only the source path changes.
+                        val cursor = editor.cursor
+                        val selected = editor.selected.toSet()
+                        val saved = ProjectAssets.remap(editor.session(), editor.project.id, editor.project.name) {
+                            if (it == repair.path) path else it
+                        }
+                        editor.load(saved.project, saved)
+                        editor.cursor = cursor.coerceIn(0.0, editor.project.duration)
+                        editor.selected.addAll(selected)
+                        playback.refresh()
+                    }
+                    message("Original verified and relinked")
+                }
+            } catch (e: Exception) {
+                ui.post { panels.close(); message(e.message ?: "Cannot relink original") }
+            } finally { file.delete() }
+        }
+    }
+
+    fun reviewOriginal(source: Clip) {
+        if (!File(source.path).isFile) { message("This original file is missing"); return }
+        playback.pause()
+        val player = VideoView(this)
+        val controls = MediaController(this)
+        player.setMediaController(controls)
+        player.setVideoPath(source.path)
+        val dialog = Dialog(this).apply {
+            setTitle(File(source.path).name)
+            setContentView(player)
+            setOnDismissListener { player.stopPlayback() }
+        }
+        dialog.show()
+        dialog.window?.setLayout((resources.displayMetrics.widthPixels * .9f).toInt(),
+            (resources.displayMetrics.heightPixels * .7f).toInt())
+        player.setOnPreparedListener { player.start() }
+        player.setOnErrorListener { _, _, _ -> dialog.dismiss(); message("Cannot play this original"); true }
+    }
+
+    private var lutCallback: ((String, String) -> Unit)? = null
+
+    fun importLut(callback: (String, String) -> Unit) {
+        lutCallback = callback
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "*/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }, 32)
     }
 
     fun importImage(callback: (String) -> Unit) {
@@ -596,10 +819,70 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 32) {
+            val callback = lutCallback
+            lutCallback = null
+            val uri = data?.data
+            if (resultCode == RESULT_OK && callback != null && uri != null) {
+                val project = editor.project.id
+                worker.execute {
+                    try {
+                        val bytes = contentResolver.openInputStream(uri)!!.use { input ->
+                            val output = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                check(output.size() + n <= CubeLut.MAX_BYTES) { "The LUT is too large" }
+                                output.write(buffer, 0, n)
+                            }
+                            output.toByteArray()
+                        }
+                        val (file, cube) = LutAssets.ingest(bytes, store.media)
+                        store.registerMedia(project, file.path)
+                        val name = cube.title?.takeIf { it.isNotBlank() }
+                            ?: documentName(uri).substringBeforeLast('.').take(120)
+                        ui.post { if (editor.project.id == project) callback(file.path, name) }
+                    } catch (e: Exception) { message(e.message ?: "Cannot import LUT") }
+                }
+            }
+            return
+        }
+        if (requestCode == 31) {
+            val repair = pendingRepair
+            pendingRepair = null
+            if (resultCode == RESULT_OK && repair != null) data?.data?.let { repairOriginal(repair, it) }
+            return
+        }
+        if (requestCode == 30) {
+            val file = pendingSave
+            pendingSave = null
+            val uri = data?.data
+            if (resultCode == RESULT_OK && file != null && uri != null) worker.execute {
+                try {
+                    contentResolver.openOutputStream(uri, "wt")!!.use { output ->
+                        file.inputStream().use { it.copyTo(output) }
+                    }
+                    message("Saved ${file.name}")
+                } catch (e: Exception) { message(e.message ?: "Cannot save file") }
+            }
+            return
+        }
         if (resultCode != RESULT_OK || data == null) {
             if (requestCode == 20) importAsProject = false
             if (requestCode == 20 || requestCode == 22) pendingImport = null
             return
+        }
+        if (requestCode == 23) data.data?.let { uri ->
+            val type = contentResolver.getType(uri)
+            if (type in listOf("application/zip", "application/x-zip-compressed") ||
+                documentName(uri).endsWith(".zip", true)) restoreProject(uri)
+            else {
+                if (!saveProject()) return
+                val previous = editor.project.id
+                newProject()
+                if (editor.project.id != previous) importUri(uri, false)
+            }
         }
         if (requestCode == 20) {
             if (importAsProject) {
@@ -623,6 +906,7 @@ class MainActivity : Activity() {
     }
 
     private fun importUri(uri: Uri, image: Boolean, target: MediaImport? = null) {
+        val project = target?.project ?: editor.project.id
         panels.progress("Importing…", 0f, null)
         worker.execute {
             var file: File? = null
@@ -634,6 +918,7 @@ class MainActivity : Activity() {
                 contentResolver.openInputStream(uri)!!.use { input ->
                     imported.outputStream().use { input.copyTo(it) }
                 }
+                store.registerMedia(project, imported.absolutePath)
                 val clip = if (!image) ProjectStore.inspect(imported) else null
                 if (target?.audio == true) {
                     require(clip?.audio == true) { "This file has no playable audio" }
@@ -646,7 +931,7 @@ class MainActivity : Activity() {
                         imageCallback?.invoke(imported.absolutePath)
                         imageCallback = null
                     } else if (clip != null) {
-                        if (target != null && target.project != editor.project.id) {
+                        if (project != editor.project.id) {
                             imported.delete()
                             message("Import cancelled because the project changed")
                             return@post
@@ -676,7 +961,7 @@ class MainActivity : Activity() {
         playback.frameHeight = (playback.frameWidth.toFloat() * h / w).toInt()
     }
 
-    fun export(width: Int, height: Int) {
+    fun export(width: Int, height: Int, color: ExportColor = ExportColor.SDR) {
         if (exporting != null || editor.project.duration <= 0) return
         playback.pause()
         val snapshot = editor.project.duplicate()
@@ -686,7 +971,7 @@ class MainActivity : Activity() {
         panels.progress("Exporting", 0f) { exporter.cancelled = true }
         worker.execute {
             try {
-                exporter.run(snapshot, file, width, height) { progress ->
+                exporter.run(snapshot, file, width, height, color) { progress ->
                     ui.post { panels.updateProgress(progress) }
                 }
                 val values =
@@ -751,6 +1036,8 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    fun tryStrobe(seconds: Float) { capture?.tryStrobe(seconds) }
 
     fun captureEffects(current: List<Effect>, done: (List<Effect>) -> Unit) {
         panels.captureEffects(current, done)
@@ -858,7 +1145,7 @@ class MainActivity : Activity() {
         super.onPause()
         playback.pause()
         capture?.suspendCamera()
-        store.save(editor.project)
+        if (::editor.isInitialized) saveProject()
     }
 
     @Deprecated("Platform back support")

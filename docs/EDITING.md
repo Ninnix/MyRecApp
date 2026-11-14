@@ -4,6 +4,12 @@ Tap the preview or Play to start and pause. Double-tap Play to audition around
 the cursor. The transport buttons move between editing events and return to
 the previous position. Review speed changes playback without changing the edit.
 
+Pinch the preview continuously from 1× to 8× to inspect it, then drag to pan.
+Reset returns to the fitted picture. Inspection changes the view without
+changing the edit or export. Tools with draggable content offer Inspect/Edit;
+Crop uses its Frame/Inspect tabs. Playback controls return to Play when a preview
+finishes, including a draft that changes the timeline length.
+
 ## Work on the timeline
 
 Drag to scrub; pinch to zoom. The scale control offers fixed spans and Whole
@@ -30,45 +36,173 @@ They follow the source through splits, moves, copies, and speed changes.
 
 Drag vertically on audio to change gain. Volume gives you gain, mute, reset,
 and preview controls. Apply keeps the draft. Remove resets the selected gain
-and can be undone. Independent volume fades are still missing.
+and can be undone. Fade in and Fade out have separate durations, exact time entry,
+Off and edge auditions. With several selected audio parts, only the first start
+and last end receive the fades. Splitting inside a fade keeps its slope.
 
-Undo and redo are kept in memory. Reopening a project or leaving it for another
-project clears that history. Source files remain on disk; a portable project
-archive and a complete original-recordings browser are still missing.
+Tools → Censor audio replaces sound with a sine, triangle or square beep. Adjust
+Start/End, select the audio parts, and set frequency, level and envelope. Short,
+Soft and Pulsed shape the beep while the original stays muted for the entire
+range. Where selected parts overlap, the loudest carries one beep. Tap the
+Censor audio chip to reopen it; Remove or Undo restores the sound.
+
+Clip speed uses pitch-preserving audio preparation. Splits, seeks, preview and
+export reuse the prepared source at that rate. Long sources can take time to
+prepare; cancellation keeps the original unchanged. Extreme rates and complex
+music still need broader listening checks against the iOS engine.
+
+Undo and redo survive reopening and project switching. A new edit replaces the
+redo branch. Normal new recordings remain present when you undo an earlier
+edit; explicitly deleting a take is still undoable. Project indexes have five
+recovery copies. If storage fails, Changes not saved · Retry keeps the edit in
+memory and lets you save it again.
+
+In Projects, open the card's menu for Original recordings. Review a source,
+save its unchanged file through Android's picker, or insert it at the playhead.
+Originals remain available when absent from the timeline. Duplicate makes an
+independent copy of sources, overlays, sidecars, and undo/redo history.
+
+Zip project includes the originals, every editing state, and Timeline.otio.
+Use Projects → Import to restore a ZIP or import a video. Restore checks entry
+paths and checksums. Missing or damaged media keeps its editing history; damaged
+payloads are retained separately. In Original recordings, Relink original lets
+you select the unchanged source. Missing overlay images have a relink action too.
+MyRec verifies the bytes against a checksum recorded before the loss, then
+updates the complete edit and capture history. A source lost before its first
+checksum cannot be verified. Remove unavailable takes keeps the sources and
+history available and removes the missing clips as one undoable edit.
+
+Cancellation removes only that operation's unpublished files. Startup cleans
+marked interrupted copies, restores and repairs; referenced history assets and
+files whose project indexes cannot be checked are kept.
+
+Unzip an archive and open Timeline.otio in an external editor for a source
+conform with tracks, gaps, trims, speed, bookmarks, and simple dissolves.
+MyRec grades, overlays, processing and custom transitions need recreation there.
+The conform's JSON timing is tested; external-editor import still needs checks.
+Audio fades and generated censoring remain in the MyRec project payload.
+Archives currently limit metadata to 64 MB and keep 64 MB of free-space reserve.
 
 ## Add effects
 
 Tools contains video and audio effects, transitions, crop, placement,
 stabilization, text, images, LUTs, speed, and pause removal. Applied effects
 appear beneath the timeline. Swipe that row to reach more of them, then tap an
-effect to reopen it. Numeric readouts accept exact values. Text and placement
+effect to reopen it. Most numeric readouts accept exact values. Text and placement
 can be dragged or pinched in the preview.
 
 Crop includes 4:5, Frame/Inspect, and quarter turns. Original restores the source
 shape. Transitions overlap neighboring footage and shorten the composition;
 range edits keep surviving portions of a transition.
 
-Kaleidoscope starts with four mirrored sections. Two gives a two-way mirror;
-larger counts make angular patterns. Zoom and Rotation change the framing;
-Center X/Y move the junction. RGB Offset separates green and magenta edges.
-These controls and algorithms still differ from the released iOS effects.
+Kaleidoscope starts with two divisions and offers 2–9, including odd counts.
+Drag the picture to pan its source and twist with two fingers to rotate it.
+Drag the center or round handle to move or rotate the split. Fine adjustments
+separates source pan/rotation from split center/rotation; Reset split and Center
+source reset those controls independently. Its guide currently follows the fitted
+canvas; mapping it through transformed layers and the live camera still needs work.
+
+RGB Offset has separate red, green, and blue pads. Drag a cross, double-tap to
+center it, or use its accessibility actions. A pad's outer ring corresponds to
+12% of the picture's shorter side. Color Correction has Light/Color tabs,
+Advanced light controls, linear-stop exposure, tone endpoints, white balance,
+vibrance and hue. Tap a correction value to reset it; hold its label for help.
+
+Effects keep their own settings on each selected clip. Adding an effect shares
+its identity across the selection; splitting retains that identity and makes
+independent copies of its controls. The applied list follows the playhead.
+Animate adds source-time keys to the current clip. Existing keys remain editable
+with Animate off. Static changes affect matching effect IDs in the selection.
+
+Color Correction's Animate menu offers Edit A and Edit B. Adjust either endpoint,
+then choose Timing for Linear, Ease in, Ease out, Ease in & out, Rise & hold, or
+Rise, hold & return. The rise curves also have ramp shape and duration controls;
+the return curve adds release. Done editing endpoints returns to normal preview.
+Remove animation keeps the last edited endpoint as a static correction. Reset
+correction resets that endpoint when animated, or all controls and keys otherwise.
+Source clocks keep the animation stable through later cuts and speed changes.
+
+Silent Tint offers five dyes and Tint/Tone processing. Three-Strip separates
+saturation, red depth and warmth. Bleach Bypass has separate Strength and
+Intensity. Day for Night separates darkness, blue and moonlight highlights.
+Expressionism combines monochrome contrast, oval/circle vignette and tint.
+Their controls, including choices and toggles, support source-time keys.
+
+Video effects use fixed families with primary correction before creative looks.
+Older project controls are converted on loading; there is one renderer and
+inspector per effect. Color passes use linear light; HDR and explicit Log
+retain half-float intermediates. Actual ten-bit media/export and an iOS GPU
+comparison still need capable-device acceptance.
 
 Audio filters run in the order shown. Select a container to change its values
 or position. Neural effects prepare and cache audio before playback. Models
 can change vocal character; compare the result before applying it.
 
-Pause removal currently detects quiet spans and deletes them as one undoable
-edit. It has no candidate-by-candidate keep/cut review or independent padding.
-Speed changes also change audio pitch. Captions use fixed six-second recognition
-chunks and can be corrected as text; estimated word timing and regrouping are
-not implemented.
+Color LUTs imports standalone 1D and 3D `.cube` files. Imported files belong to
+the project, including its history and archives. Choose the LUT's expected
+input separately from the source interpretation. Recorded uses the movie's
+normal decoding; Apple Log and Apple Log 2 explicitly interpret unmanaged
+camera code values. Exposure and highlights run before the look and still apply
+at zero Strength. The built-in catalogue includes fourteen looks. Log viewing
+uses a highlight shoulder and half-float working images. Automatic Log metadata
+recognition, local highlight recovery and technical white balance remain open.
+
+Pauses analyzes original-source RMS, then shows candidates with separate keep
+before/after padding. Automatic mode estimates a threshold; Manual uses the
+chosen dB level. Checked pauses are skipped without deleting their source
+intervals. Apply saves candidates and decisions; reopening the tool lets you
+keep them again. Linked picture and sound use the same cuts. Speech-probability
+classification and steady-noise handling still need work.
+
+Automatic subtitles analyze speech islands and recognize at most twelve
+seconds at once. Review subtitles to correct phrases, regroup words, adjust their
+vertical placement or copy the transcript. Corrections preserve surviving word
+anchors; Apply makes one undoable edit. Recognition and word timing are separate:
+word times are estimates within speech, not forced alignment. Recognition needs
+the caption model; transcript review does not. Completed speech sections are
+checkpointed. Retrying the same edited audio, range and language resumes them;
+changed audio starts a new job. Cancellation waits for an active recognition
+call to return.
+
+Freeze Frame inserts a hold at the playhead and resumes the following footage.
+Choose its duration, push-in and Silence or Continue audio. Split and copy keep
+the held source frame. Print styling and fading sound over the hold remain open.
+Dolly Zoom separates a person from the background for a Stretch or Compress
+move. Imported Cinematic depth, matte refinement and live lens compensation
+remain open.
+
+Step Printing groups two to six actual source frames, including variable-rate
+footage. Smear mixes their linear-light average with the first frame; Speed
+can be 1× or 0.5× with linked picture and pitch-preserved sound. Animate can author held source-time Speed keys. Picture, audio, seeking and
+timeline duration share those rate spans, including through splits and pauses.
+Continuous speed ramps and the remaining Undercranking controls still need work.
+Negative Strobe alternates positive and negative frames with selectable cycle
+frequency and an optional timed burst. Its source clock survives cuts. In the
+camera inspector, Try strobe previews a burst; recording starts a fresh phase.
+
+Neural audio processes each original source before timeline speed, gain, fades
+and censoring. Left and right channels have independent inference; exact dual
+mono can reuse a prediction. Content-addressed stages and window checkpoints
+are shared by cuts. Speech detail uses reflected 192,000-sample windows with
+16,384-sample margins. Bundled RNNoise removes its initial model latency and
+flushes the final partial frame. VoiceFixer uses a 44.1 kHz, 112,455-sample
+context with reflected edges, centered vocoder output and 3,087-sample overlap.
+Rate conversion is band limited. The ONNX networks use FP32 rather than the
+reference's Core ML precision; DeepFilter still needs its continuous recurrent
+state contract. Speed changes preserve pitch.
 
 ## Export
 
-Export saves H.264 video with AAC stereo audio to `Movies/MyRec`, then offers
-playback and sharing. Resolution depends on the output shape and encoder.
-HDR sources are converted to SDR for editing and export; their original files
-remain HDR. There is no Log editing path yet.
+Export saves H.264 SDR or HEVC 10-bit HLG with AAC stereo audio to
+`Movies/MyRec`, then offers playback and sharing. Resolution depends on the
+output shape and encoder. HDR and explicit Log use linear half-float working
+images. SDR output maps HDR highlights once per source layer; ordinary SDR
+layers retain their brightness. Bounded creative effects use the reference's
+working highlight shoulder. HDR output requires Main10 encoding, a ten-bit EGL
+recording surface and actual ten-bit HDR decoder samples. Unsupported hardware
+reports the missing capability. Source files stay unchanged. The OnePlus 15 has passed 720p, 1080p and 4K Main10 HLG exports with measured
+highlight headroom and more than eight-bit precision. Broader HDR material and numerical
+iOS comparisons remain open. Mi 8 testing did not expose ten-bit decoder images.
 
 Export and inference run while the app is open. A background export service,
 checksum receipts, and reuse of an unchanged completed export are still missing.

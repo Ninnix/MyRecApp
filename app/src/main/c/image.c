@@ -1,4 +1,5 @@
 #include "quantize.h"
+#include "pixels.h"
 #include "stabilize.h"
 #include <android/bitmap.h>
 #include <jni.h>
@@ -9,44 +10,33 @@
 
 static float clampf(float x, float a, float b) { return fmaxf(a, fminf(b, x)); }
 static unsigned char byte(float x) { return (unsigned char)clampf(x, 0, 255); }
-static float luma(const uint8_t *p) { return p[0] * 0.299f + p[1] * 0.587f + p[2] * 0.114f; }
 
-static void blur(uint8_t *p, int w, int h, int stride, int radius) {
-    if (radius < 1)
-        return;
-    size_t size = (size_t)stride * h;
-    uint8_t *tmp = malloc(size);
-    if (!tmp)
-        return;
-    memcpy(tmp, p, size);
-    for (int pass = 0; pass < 2; pass++) {
-        int lines = pass ? w : h, count = pass ? h : w;
-        for (int line = 0; line < lines; line++) {
-            int sum[3] = {0};
-            for (int i = -radius; i <= radius; i++) {
-                int v = i < 0 ? 0 : i >= count ? count - 1 : i;
-                const uint8_t *q = tmp + (pass ? v * stride + line * 4 : line * stride + v * 4);
-                for (int ch = 0; ch < 3; ch++)
-                    sum[ch] += q[ch];
-            }
-            for (int i = 0; i < count; i++) {
-                uint8_t *out = p + (pass ? i * stride + line * 4 : line * stride + i * 4);
-                for (int ch = 0; ch < 3; ch++)
-                    out[ch] = (uint8_t)(sum[ch] / (radius * 2 + 1));
-                int left = i - radius, right = i + radius + 1;
-                if (left < 0)
-                    left = 0;
-                if (right >= count)
-                    right = count - 1;
-                const uint8_t *a =
-                    tmp + (pass ? left * stride + line * 4 : line * stride + left * 4);
-                const uint8_t *b =
-                    tmp + (pass ? right * stride + line * 4 : line * stride + right * 4);
-                for (int ch = 0; ch < 3; ch++)
-                    sum[ch] += b[ch] - a[ch];
-            }
+static void blur_image(YrPixels *p, int radius) {
+    if (radius < 1) return;
+    int w = p->info.width, h = p->info.height;
+    float *tmp = malloc((size_t)w * h * 3 * sizeof(float));
+    if (!tmp) return;
+    float divisor = 1.f / (radius * 2 + 1);
+    for (int y = 0; y < h; y++) {
+        float sum[3] = {0};
+        for (int i = -radius; i <= radius; i++) { float c[4]; yr_read(p, (int)yr_clamp(i, 0, w - 1), y, c); for (int ch = 0; ch < 3; ch++) sum[ch] += c[ch]; }
+        for (int x = 0; x < w; x++) {
+            for (int ch = 0; ch < 3; ch++) tmp[(y * w + x) * 3 + ch] = sum[ch] * divisor;
+            float a[4], b[4]; yr_read(p, (int)yr_clamp(x - radius, 0, w - 1), y, a); yr_read(p, (int)yr_clamp(x + radius + 1, 0, w - 1), y, b);
+            for (int ch = 0; ch < 3; ch++) sum[ch] += b[ch] - a[ch];
         }
-        memcpy(tmp, p, size);
+    }
+    for (int x = 0; x < w; x++) {
+        float sum[3] = {0};
+        for (int i = -radius; i <= radius; i++) for (int ch = 0; ch < 3; ch++) sum[ch] += tmp[((int)yr_clamp(i, 0, h - 1) * w + x) * 3 + ch];
+        for (int y = 0; y < h; y++) {
+            float c[4]; yr_read(p, x, y, c);
+            for (int ch = 0; ch < 3; ch++) {
+                c[ch] = sum[ch] * divisor;
+                sum[ch] += tmp[((int)yr_clamp(y + radius + 1, 0, h - 1) * w + x) * 3 + ch] - tmp[((int)yr_clamp(y - radius, 0, h - 1) * w + x) * 3 + ch];
+            }
+            yr_write(p, x, y, c);
+        }
     }
     free(tmp);
 }
@@ -57,53 +47,40 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_image(JNIEnv *env, jobject self
                                                         jfloat smoothing, jboolean dither,
                                                         jint palette, jboolean monochrome) {
     (void)self;
-    AndroidBitmapInfo info;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888)
-        return;
-    uint8_t *pixels;
-    if (AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels))
-        return;
+    YrPixels image;
+    if (!yr_lock(env, bitmap, &image)) return;
+    AndroidBitmapInfo info = image.info;
     amount = clampf(amount, 0, 1);
     if (amount == 0) {
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
     if (kind == 5 && smoothing > 0)
-        blur(pixels, (int)info.width, (int)info.height, (int)info.stride, (int)(smoothing * 3));
+        blur_image(&image, (int)(smoothing * 3));
     YrQuantizer quantizer;
     if (kind == 5) {
-        if (param < 0)
-            palette = 1, param = 5;
-        yr_quantizer_init(&quantizer, pixels, (int)info.width, (int)info.height,
-                          (int)info.stride, (int)param, palette, monochrome);
+        if (param < 0) palette = 1, param = 5;
+        uint8_t *analysis = malloc((size_t)info.width * info.height * 4);
+        if (!analysis) { AndroidBitmap_unlockPixels(env, bitmap); return; }
+        for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
+            float c[4]; yr_read(&image, x, y, c);
+            for (int ch = 0; ch < 3; ch++) analysis[(y * info.width + x) * 4 + ch] = yr_display(c[ch]);
+            analysis[(y * info.width + x) * 4 + 3] = 255;
+        }
+        yr_quantizer_init(&quantizer, analysis, info.width, info.height, info.width * 4, (int)param, palette, monochrome);
+        free(analysis);
     }
     if (kind == 14)
-        blur(pixels, (int)info.width, (int)info.height, (int)info.stride,
-             1 + (int)(amount * 12));
+        blur_image(&image, 1 + (int)(amount * 12));
     else
         for (unsigned y = 0; y < info.height; y++)
             for (unsigned x = 0; x < info.width; x++) {
-                uint8_t *p = pixels + y * info.stride + x * 4;
-                float r = p[0], g = p[1], b = p[2], l = luma(p), rr = r, gg = g, bb = b;
+                float p[4]; yr_read(&image, x, y, p);
+                float r = yr_clamp(yr_srgb(p[0]) * 255, 0, 255), g = yr_clamp(yr_srgb(p[1]) * 255, 0, 255), b = yr_clamp(yr_srgb(p[2]) * 255, 0, 255);
+                float l = .299f * r + .587f * g + .114f * b, rr = r, gg = g, bb = b;
                 switch (kind) {
                 case 1:
                     rr = gg = bb = l;
-                    break;
-                case 2:
-                    rr = r * 1.08f + 8;
-                    gg = g * 1.02f + 2;
-                    bb = b * 0.90f;
-                    break;
-                case 3:
-                    rr = r * 0.91f;
-                    gg = g * 1.02f;
-                    bb = b * 1.12f + 5;
-                    break;
-                case 4:
-                    rr = (r - 128) * 1.18f + 132;
-                    gg = (g - 128) * 1.07f + 128;
-                    bb = (b - 128) * 0.92f + 117;
                     break;
                 case 5: {
                     int levels = quantizer.count;
@@ -123,16 +100,6 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_image(JNIEnv *env, jobject self
                     bb = quantizer.colors[index][2];
                     break;
                 }
-                case 6:
-                    rr = (r + l) * 0.65f;
-                    gg = (g + l) * 0.65f;
-                    bb = (b + l) * 0.65f;
-                    break;
-                case 7:
-                    rr = r * 0.45f;
-                    gg = g * 0.58f;
-                    bb = b * 0.82f;
-                    break;
                 case 8:
                     rr = l * 1.15f;
                     gg = l * 0.95f;
@@ -161,17 +128,6 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_image(JNIEnv *env, jobject self
                     gg = l + (g - l) * 1.8f;
                     bb = l + (b - l) * 1.8f;
                     break;
-                case 15: {
-                    float saturation = fmaxf(r, fmaxf(g, b)) - fminf(r, fminf(g, b));
-                    if (r < g * 1.15f || r < b * 1.15f || saturation < 30)
-                        rr = gg = bb = l;
-                    break;
-                }
-                case 16:
-                    rr = (r - 24) * 1.18f + (r - g) * .10f;
-                    gg = (g - 20) * 1.12f;
-                    bb = (b - 22) * 1.12f + (b - r) * .05f;
-                    break;
                 case 13: {
                     float grain = (float)((x * 374761393u + y * 668265263u +
                                            (unsigned)param * 1274126177u) %
@@ -185,9 +141,10 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_image(JNIEnv *env, jobject self
                 default:
                     break;
                 }
-                p[0] = byte(r + (rr - r) * amount);
-                p[1] = byte(g + (gg - g) * amount);
-                p[2] = byte(b + (bb - b) * amount);
+                p[0] = yr_linear(clampf(r + (rr - r) * amount, 0, 255) / 255);
+                p[1] = yr_linear(clampf(g + (gg - g) * amount, 0, 255) / 255);
+                p[2] = yr_linear(clampf(b + (bb - b) * amount, 0, 255) / 255);
+                yr_write(&image, x, y, p);
             }
     AndroidBitmap_unlockPixels(env, bitmap);
 }
@@ -197,32 +154,19 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_blend(JNIEnv *env, jobject self
                                                         jfloat progress, jfloat amount,
                                                         jfloat angle, jboolean soft) {
     (void)self;
-    AndroidBitmapInfo ai, bi, oi;
-    if (AndroidBitmap_getInfo(env, a, &ai) || AndroidBitmap_getInfo(env, b, &bi) ||
-        AndroidBitmap_getInfo(env, out, &oi))
-        return;
-    if (ai.width != bi.width || ai.width != oi.width || ai.height != bi.height ||
-        ai.height != oi.height)
-        return;
-    uint8_t *ap = NULL, *bp = NULL, *op = NULL;
-    if (AndroidBitmap_lockPixels(env, a, (void **)&ap))
-        return;
-    if (AndroidBitmap_lockPixels(env, b, (void **)&bp)) {
-        AndroidBitmap_unlockPixels(env, a);
-        return;
-    }
-    if (AndroidBitmap_lockPixels(env, out, (void **)&op)) {
-        AndroidBitmap_unlockPixels(env, a);
-        AndroidBitmap_unlockPixels(env, b);
-        return;
-    }
+    YrPixels first, second, output;
+    if (!yr_lock(env, a, &first)) return;
+    if (!yr_lock(env, b, &second)) { AndroidBitmap_unlockPixels(env, a); return; }
+    if (!yr_lock(env, out, &output)) { AndroidBitmap_unlockPixels(env, a); AndroidBitmap_unlockPixels(env, b); return; }
+    AndroidBitmapInfo oi = output.info;
+    if (first.info.width != oi.width || second.info.width != oi.width || first.info.height != oi.height || second.info.height != oi.height) goto done;
     float t = clampf(progress, 0, 1);
     float cosine = cosf(angle * 3.14159265f / 180), sine = sinf(angle * 3.14159265f / 180);
     float extent = fabsf(cosine) * oi.width + fabsf(sine) * oi.height;
     for (unsigned y = 0; y < oi.height; y++)
         for (unsigned x = 0; x < oi.width; x++) {
-            uint8_t *pa = ap + y * ai.stride + x * 4, *pb = bp + y * bi.stride + x * 4,
-                    *po = op + y * oi.stride + x * 4;
+            float pa[4], pb[4], po[4] = {0, 0, 0, 1};
+            yr_read(&first, x, y, pa); yr_read(&second, x, y, pb);
             float mix = t, flash = 0;
             switch (kind) {
             case 1: {
@@ -236,7 +180,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_blend(JNIEnv *env, jobject self
                 mix = clampf((t - fabsf(2 * (float)x / oi.width - 1)) * 30 + 0.5f, 0, 1);
                 break;
             case 3:
-                mix = clampf((t - (amount < 0.5f ? 1 - luma(pa) / 255 : luma(pa) / 255)) * 8 +
+                mix = clampf((t - (amount < 0.5f ? 1 - yr_luma(pa) : yr_luma(pa))) * 8 +
                                  0.5f,
                              0, 1);
                 break;
@@ -255,10 +199,10 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_blend(JNIEnv *env, jobject self
                 int shift = (int)(t * oi.width);
                 unsigned sx = (x + (unsigned)shift) % oi.width;
                 if (x + (unsigned)shift < oi.width) {
-                    pa = ap + y * ai.stride + sx * 4;
+                    yr_read(&first, sx, y, pa);
                     mix = 0;
                 } else {
-                    pb = bp + y * bi.stride + sx * 4;
+                    yr_read(&second, sx, y, pb);
                     mix = 1;
                 }
                 break;
@@ -271,73 +215,23 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_blend(JNIEnv *env, jobject self
             if (t >= 1)
                 mix = 1;
             for (int c = 0; c < 3; c++)
-                po[c] = byte((pa[c] * (1 - mix) + pb[c] * mix) * (1 - flash) + 255 * flash);
-            po[3] = 255;
+                po[c] = (pa[c] * (1 - mix) + pb[c] * mix) * (1 - flash) + flash;
+            yr_write(&output, x, y, po);
         }
     if (kind == 7)
-        blur(op, (int)oi.width, (int)oi.height, (int)oi.stride,
-             (int)(sinf(t * 3.14159265f) * amount * 22));
+        blur_image(&output, (int)(sinf(t * 3.14159265f) * amount * 22));
+done:
     AndroidBitmap_unlockPixels(env, a);
     AndroidBitmap_unlockPixels(env, b);
     AndroidBitmap_unlockPixels(env, out);
 }
 
-// Edge differences ignore gradual exposure changes and prefer stable geometry.
-JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_motion(JNIEnv *env, jobject self,
-                                                                jobject a, jobject b) {
-    (void)self;
-    float result[2] = {0};
-    AndroidBitmapInfo ai, bi;
-    uint8_t *ap = NULL, *bp = NULL;
-    if (AndroidBitmap_getInfo(env, a, &ai) || AndroidBitmap_getInfo(env, b, &bi) ||
-        ai.width != bi.width || ai.height != bi.height)
-        goto done;
-    if (AndroidBitmap_lockPixels(env, a, (void **)&ap))
-        goto done;
-    if (AndroidBitmap_lockPixels(env, b, (void **)&bp)) {
-        AndroidBitmap_unlockPixels(env, a);
-        goto done;
-    }
-    double best = 1e30;
-    int w = (int)ai.width, h = (int)ai.height, step = w / 96;
-    if (step < 1)
-        step = 1;
-    for (int dy = -12; dy <= 12; dy += 2)
-        for (int dx = -12; dx <= 12; dx += 2) {
-            double score = 0;
-            for (int y = 16; y < h - 16; y += step)
-                for (int x = 16; x < w - 16; x += step) {
-                    const uint8_t *p = ap + y * ai.stride + x * 4,
-                                  *q = bp + (y + dy) * bi.stride + (x + dx) * 4;
-                    float ea = luma(p + 4) - luma(p), eb = luma(q + 4) - luma(q);
-                    score += fabsf(ea - eb);
-                }
-            if (score < best) {
-                best = score;
-                result[0] = (float)dx;
-                result[1] = (float)dy;
-            }
-        }
-    AndroidBitmap_unlockPixels(env, a);
-    AndroidBitmap_unlockPixels(env, b);
-done:;
-    jfloatArray out = (*env)->NewFloatArray(env, 2);
-    if (out)
-        (*env)->SetFloatArrayRegion(env, out, 0, 2, result);
-    return out;
-}
-
 static float hdr_linear(float value, int transfer) {
     value = fminf(fmaxf(value, 0), 1);
     if (transfer == 7) return (value <= .5f ? value*value/3 :
-        (expf((value-.55991073f)/.17883277f)+.28466892f)/12)*3;
+        (expf((value-.55991073f)/.17883277f)+.28466892f)/12);
     float p = powf(value, 1/78.84375f);
     return powf(fmaxf(p-.8359375f,0)/(18.8515625f-18.6875f*p),1/.1593017578125f)*49.261084f;
-}
-
-static float display_srgb(float value) {
-    value = fmaxf(value,0);
-    return value <= .0031308f ? 12.92f*value : 1.055f*powf(value,1/2.4f)-.055f;
 }
 
 JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, jobject ybuf,
@@ -353,13 +247,10 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, 
     jlong yn = (*env)->GetDirectBufferCapacity(env, ybuf),
           un = (*env)->GetDirectBufferCapacity(env, ubuf),
           vn = (*env)->GetDirectBufferCapacity(env, vbuf);
-    AndroidBitmapInfo info;
-    if (!yp || !ub || !vb || width <= 0 || height <= 0 ||
-        AndroidBitmap_getInfo(env, bitmap, &info))
-        return;
-    uint8_t *pixels;
-    if (AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels))
-        return;
+    YrPixels image;
+    if (!yp || !ub || !vb || width <= 0 || height <= 0 || !yr_lock(env, bitmap, &image)) return;
+    AndroidBitmapInfo info = image.info;
+    uint8_t *pixels = image.data;
     int rotated = rotation % 180 != 0;
     int rw = rotated ? height : width, rh = rotated ? width : height;
     int rc = standard == 1 ? 459 : 409, guc = standard == 1 ? 55 : 100,
@@ -389,13 +280,14 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, 
             sy += top;
             jlong yi = (jlong)sy * ys + sx*(depth == 10 ? 2 : 1), ui = (jlong)(sy / 2) * us + (sx / 2) * up,
                   vi = (jlong)(sy / 2) * vs + (sx / 2) * vp;
-            uint8_t *p = pixels + y * info.stride + x * 4;
+            int fp16 = info.format == ANDROID_BITMAP_FORMAT_RGBA_F16;
+            uint8_t *p = pixels + y * info.stride + x * (fp16 ? 8 : 4);
             if (yi+(depth == 10) >= yn || ui+(depth == 10) >= un || vi+(depth == 10) >= vn || yi < 0 || ui < 0 || vi < 0) {
-                p[0] = p[1] = p[2] = 0;
-                p[3] = 255;
+                if (fp16) { uint16_t *v = (uint16_t *)p; v[0] = v[1] = v[2] = 0; v[3] = yr_half(1); }
+                else { p[0] = p[1] = p[2] = 0; p[3] = 255; }
                 continue;
             }
-            if(depth == 10 || transfer == 6 || transfer == 7 || standard == 6) {
+            if(fp16 || depth == 10 || transfer == 6 || transfer == 7 || standard == 6) {
                 float yv = depth == 10 ? (yp[yi] | yp[yi+1]<<8)/64.f : yp[yi];
                 float u = depth == 10 ? (ub[ui] | ub[ui+1]<<8)/64.f : ub[ui];
                 float v = depth == 10 ? (vb[vi] | vb[vi+1]<<8)/64.f : vb[vi];
@@ -409,6 +301,12 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, 
                 float g = (yv-kr*r-kb*b)/(1-kr-kb);
                 if(transfer == 6 || transfer == 7) {
                     r = hdr_linear(r,transfer); g = hdr_linear(g,transfer); b = hdr_linear(b,transfer);
+                    if (transfer == 7) {
+                        float luminance = primaries == 1 ? .2126f * r + .7152f * g + .0722f * b :
+                            primaries == 2 ? .2289746f * r + .6917385f * g + .0792869f * b : .2627f * r + .6780f * g + .0593f * b;
+                        float gain = powf(fmaxf(0, luminance), .2f) * (1000.f / 203);
+                        r *= gain; g *= gain; b *= gain;
+                    }
                     if(primaries == 2) {
                         float nr = 1.224745f*r-.224904f*g;
                         float ng = -.042058f*r+1.042081f*g;
@@ -418,8 +316,17 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, 
                         float ng = -.1246f*r+1.1329f*g-.0083f*b;
                         b = -.0182f*r-.1006f*g+1.1187f*b; r = nr; g = ng;
                     }
-                    float scale = 1+fmaxf(0,.2126f*r+.7152f*g+.0722f*b);
-                    r = display_srgb(r/scale); g = display_srgb(g/scale); b = display_srgb(b/scale);
+                    if (!fp16) {
+                        float c[4] = {r, g, b, 1}; yr_tone(c);
+                        r = yr_srgb(c[0]); g = yr_srgb(c[1]); b = yr_srgb(c[2]);
+                    }
+                } else if (fp16 && transfer != -1) {
+                    r = yr_linear(r); g = yr_linear(g); b = yr_linear(b);
+                }
+                if (fp16) {
+                    uint16_t *v = (uint16_t *)p;
+                    v[0] = yr_half(r); v[1] = yr_half(g); v[2] = yr_half(b); v[3] = yr_half(1);
+                    continue;
                 }
                 p[0] = byte(r*255); p[1] = byte(g*255); p[2] = byte(b*255); p[3] = 255;
                 continue;
@@ -438,31 +345,24 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_similarity(JNIEnv *env, 
                                                                     jobject a, jobject b) {
     (void)self;
     float transform[5] = {1, 0, 0, 0, 0};
-    AndroidBitmapInfo ai, bi;
-    uint8_t *ap = NULL, *bp = NULL;
-    if (AndroidBitmap_getInfo(env, a, &ai) || AndroidBitmap_getInfo(env, b, &bi) ||
-        ai.width != bi.width || ai.height != bi.height)
-        goto done;
-    if (AndroidBitmap_lockPixels(env, a, (void **)&ap))
-        goto done;
-    if (AndroidBitmap_lockPixels(env, b, (void **)&bp)) {
-        AndroidBitmap_unlockPixels(env, a);
-        goto done;
-    }
-    uint8_t *gray = malloc((size_t)ai.width * ai.height * 2);
-    if (gray) {
-        for (unsigned y = 0; y < ai.height; y++)
-            for (unsigned x = 0; x < ai.width; x++) {
-                gray[y * ai.width + x] = byte(luma(ap + y * ai.stride + x * 4));
-                gray[ai.width * ai.height + y * ai.width + x] =
-                    byte(luma(bp + y * bi.stride + x * 4));
+    YrPixels first, second;
+    if (!yr_lock(env, a, &first)) goto done;
+    if (!yr_lock(env, b, &second)) { AndroidBitmap_unlockPixels(env, a); goto done; }
+    AndroidBitmapInfo ai = first.info;
+    if (ai.width == second.info.width && ai.height == second.info.height) {
+        uint8_t *gray = malloc((size_t)ai.width * ai.height * 2);
+        if (gray) {
+            for (unsigned y = 0; y < ai.height; y++) for (unsigned x = 0; x < ai.width; x++) {
+                float c[4], d[4]; yr_read(&first, x, y, c); yr_read(&second, x, y, d);
+                for (int i = 0; i < 3; i++) { c[i] = yr_srgb(c[i]); d[i] = yr_srgb(d[i]); }
+                gray[y * ai.width + x] = byte(255 * (.299f*c[0] + .587f*c[1] + .114f*c[2]));
+                gray[ai.width * ai.height + y * ai.width + x] = byte(255 * (.299f*d[0] + .587f*d[1] + .114f*d[2]));
             }
-        yr_similarity(gray, gray + ai.width * ai.height, (int)ai.width, (int)ai.height,
-                      transform);
-        free(gray);
+            yr_similarity(gray, gray + ai.width * ai.height, ai.width, ai.height, transform);
+            free(gray);
+        }
     }
-    AndroidBitmap_unlockPixels(env, a);
-    AndroidBitmap_unlockPixels(env, b);
+    AndroidBitmap_unlockPixels(env, a); AndroidBitmap_unlockPixels(env, b);
 done:;
     jfloatArray out = (*env)->NewFloatArray(env, 5);
     if (out)

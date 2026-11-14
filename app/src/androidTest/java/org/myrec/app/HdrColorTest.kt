@@ -412,7 +412,7 @@ object HdrColorTest {
 
     private fun displayColor(rgb: JSONArray, primaries: Int): List<Int> {
         fun linear(v: Double) =
-            if (v <= .5) v * v else (exp((v - .55991073) / .17883277) + .28466892) / 4
+            if (v <= .5) v * v / 3 else (exp((v - .55991073) / .17883277) + .28466892) / 12
         val r = linear(rgb.getDouble(0))
         val g = linear(rgb.getDouble(1))
         val b = linear(rgb.getDouble(2))
@@ -432,9 +432,20 @@ object HdrColorTest {
                         -.0182 * r - .1006 * g + 1.1187 * b,
                     )
             }
-        val luma = max(0.0, .2126 * target[0] + .7152 * target[1] + .0722 * target[2])
-        return target.map { value ->
-            val v = max(0.0, value) / (1 + luma)
+        val luminance = when (primaries) {
+            1 -> .2126 * r + .7152 * g + .0722 * b
+            2 -> .2289746 * r + .6917385 * g + .0792869 * b
+            else -> .2627 * r + .678 * g + .0593 * b
+        }
+        val gain = max(0.0, luminance).pow(.2) * 1000 / 203
+        for (i in target.indices) target[i] *= gain
+        val luma = max(.000001, .2126 * target[0] + .7152 * target[1] + .0722 * target[2])
+        val mapped = if (luma <= .75) luma else .75 + .25 * (1 - exp(-(luma - .75) / .25))
+        val delta = target.map { it * mapped / luma - mapped }
+        var fit = 1.0
+        for (d in delta) if (d > 0) fit = min(fit, (1 - mapped) / d) else if (d < 0) fit = min(fit, -mapped / d)
+        return delta.map { difference ->
+            val v = (mapped + difference * max(0.0, fit)).coerceIn(0.0, 1.0)
             ((if (v <= .0031308) 12.92 * v else 1.055 * v.pow(1 / 2.4) - .055) * 255)
                 .roundToInt()
                 .coerceIn(0, 255)

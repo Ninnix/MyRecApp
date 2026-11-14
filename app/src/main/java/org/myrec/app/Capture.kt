@@ -71,6 +71,8 @@ class Capture(
     private var recordingOrientation = 0
     private var recordingDisplayRotation = 0
     private var recordingFile: File? = null
+    private var receipt: CaptureReceipt? = null
+    private val receiptWorker = Executors.newSingleThreadExecutor()
     private var pendingStart = false
     private var previewSurface: Surface? = null
     private var cameraId = ""
@@ -122,6 +124,8 @@ class Capture(
     private var liveEffects = mutableListOf<Effect>()
     private val effectHistory = mutableListOf<Effect>()
     private var effectSince = 0.0
+    private var strobePreviewSince = 0L
+    private var strobePreviewUntil = 0L
     private var liveFrame: Bitmap? = null
     private var rendering = false
     private var effectGeneration = 0
@@ -425,7 +429,9 @@ class Capture(
                                     closeRecordingSurface()
                                     recorder?.release()
                                     recorder = null
-                                    recordingFile?.delete()
+                                    recordingFile?.takeIf { it.length() == 0L }?.delete()
+                                    receipt?.let { runCatching { store.abandonCapture(it) } }
+                                    receipt = null
                                     createSession()
                                     activity.message(e.message ?: "Cannot start recording")
                                 }
@@ -849,6 +855,8 @@ class Capture(
         } catch (_: Exception) {}
     }
 
+    internal val readyToRecord get() = !matchingColor && (device != null || dualReady)
+
     fun start() {
         if (recording) return
         if (matchingColor) {
@@ -872,6 +880,7 @@ class Capture(
             activity.message("Waiting for the selected microphone")
             return
         }
+        if (!activity.saveProject()) return
         stopMeter()
         if (hdr) {
             startHdr(microphone)
@@ -882,6 +891,7 @@ class Capture(
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(activity) else MediaRecorder()
         try {
+            receipt = store.beginCapture(activity.editor.project, file, liveEffects)
             r.setAudioSource(
                 if (bluetooth(microphone)) MediaRecorder.AudioSource.VOICE_COMMUNICATION
                 else MediaRecorder.AudioSource.CAMCORDER
@@ -946,7 +956,9 @@ class Capture(
         } catch (e: Exception) {
             closeRecordingSurface()
             r.release()
-            file.delete()
+            if (file.length() == 0L) file.delete()
+            receipt?.let { runCatching { store.abandonCapture(it) } }
+            receipt = null
             recorder = null
             recording = false
             createSession()
@@ -958,6 +970,7 @@ class Capture(
     private fun startHdr(microphone: AudioDeviceInfo) {
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
         try {
+            receipt = store.beginCapture(activity.editor.project, file, liveEffects)
             val renderer = composition ?: error("Waiting for HDR camera")
             recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
             recordingOrientation = cameraOrientation()
@@ -1000,7 +1013,9 @@ class Capture(
             composition?.record(null)
             hdrRecorder?.close()
             hdrRecorder = null
-            file.delete()
+            if (file.length() == 0L) file.delete()
+            receipt?.let { runCatching { store.abandonCapture(it) } }
+            receipt = null
             recording = false
             startMeter()
             activity.message(e.message ?: "Cannot start HDR recording")
@@ -1139,6 +1154,7 @@ class Capture(
         val at = elapsedSeconds()
         if (recordingMarks.none { abs(it - at) < .1 }) recordingMarks.add(at)
         markedUntil = SystemClock.elapsedRealtime() + 800
+        checkpointReceipt()
         overlay.invalidate()
     }
 
@@ -1190,6 +1206,7 @@ class Capture(
         } catch (e: Exception) {
             activity.message(e.message ?: "Cannot pause recording")
         }
+        checkpointReceipt()
         overlay.invalidate()
     }
 
@@ -1205,14 +1222,13 @@ class Capture(
         finishEffectRange(elapsedSeconds())
         recording = false
         paused = false
-        var success = true
         // Stop feeding the encoder before MediaRecorder disconnects its surface.
         runCatching { composition?.record(null) }
         try {
             r?.stop()
             hr?.stop()
         } catch (_: Exception) {
-            success = false
+            // Probe any completed media below even when the encoder reports failure.
         } finally {
             closeRecordingSurface()
             r?.release()
@@ -1220,17 +1236,36 @@ class Capture(
         }
         val file = recordingFile
         recordingFile = null
-        if (success && file != null)
+        val completed = receipt
+        receipt = null
+        if (file != null && file.length() > 0)
             try {
-                val clip = ProjectStore.inspect(file)
+                val inspected = ProjectStore.inspect(file)
+                val clip = if (completed == null) inspected else inspected.copy(id = completed.id, group = completed.id)
                 clip.marks.addAll(recordingMarks.filter { it < clip.sourceOut })
                 effectHistory.forEach { clip.effects.add(it.copyEffect(true)) }
-                onClip(clip)
+                if (completed != null) store.finishCapture(completed, clip)
+                if (completed == null || completed.project == activity.editor.project.id) onClip(clip)
+                else {
+                    val target = store.editor(Project(id = completed.project))
+                    target.appendRecording(clip)
+                    store.save(target, false)
+                    activity.message("Take saved in ${target.project.name}")
+                }
+                if (completed != null) store.acknowledgeCapture(completed)
+                val project = completed?.project ?: activity.editor.project.id
+                receiptWorker.execute {
+                    try { store.registerMedia(project, clip.path) }
+                    catch (e: Exception) {
+                        store.problems["checksum:$project"] = "Source verification could not finish: ${e.message}"
+                    }
+                }
             } catch (e: Exception) {
-                activity.message(e.message ?: "Cannot open recorded video")
+                activity.message("Recording kept for recovery: ${e.message}")
             }
         else {
             file?.delete()
+            completed?.let { runCatching { store.abandonCapture(it) } }
             activity.message("Recording was too short to save")
         }
         activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
@@ -1494,32 +1529,43 @@ class Capture(
         return output
     }
 
+    fun tryStrobe(seconds: Float) {
+        strobePreviewSince = SystemClock.elapsedRealtime()
+        strobePreviewUntil = strobePreviewSince + (seconds.coerceIn(.1f, 10f) * 1000).toLong()
+    }
+
     private fun updateLiveFrame() {
         val raw = cameraFrame(640, if (width > height) 360 else 1138) ?: return
         rendering = true
         val generation = effectGeneration
-        val effects = liveEffects.filter { it.enabled }.map { it.copyEffect() }
+        val now = SystemClock.elapsedRealtime()
+        val clock = if (recording) elapsedSeconds() else (now - strobePreviewSince) / 1000.0
+        val effects = EffectOrder.ordered(liveEffects).filter {
+            it.enabled && (it.kind != "Negative Strobe" || recording || now < strobePreviewUntil)
+        }.map { it.copyEffect() }
         imageWorker.execute {
             val person =
                 if (
                     effects.any {
                         it.kind == "Color Isolation" &&
                             it.values["mode"] == "Person" &&
-                            it.number("strength", 1f) > 0f
+                            it.strength(0.0, 1.0) > 0f
                     }
                 )
                     Person.mask(raw)
                 else null
-            for (fx in effects) {
-                Effects.correct(raw, fx, fx.number("strength", 1f), person)
+            for (original in effects) {
+                val fx = original.sampled(clock)
+                if (fx.kind == "Negative Strobe" && TimeEffects.negative(original.copy(phase = EffectPhase(0.0)), clock, prefs.getInt("fps", 30).toDouble()))
+                    Native.workingNegative(raw, fx.strength(0.0, 1.0))
+                Effects.correct(raw, fx, fx.strength(0.0, 1.0), person)
                 var kind = fx.kind
-                if (kind == "Color LUTs") kind = fx.values["lut"] ?: "Natural"
                 val id = Effects.pixelId(kind)
                 if (id > 0)
                     Native.image(
                         raw,
                         id,
-                        fx.number("strength", 1f),
+                        fx.strength(0.0, 1.0),
                         fx.number("colors", 5f),
                         fx.number("smoothing", 0.5f),
                         fx.number("dither") == 1f,
@@ -1556,12 +1602,28 @@ class Capture(
         }
     }
 
+    private fun checkpointReceipt() {
+        val take = receipt ?: return
+        val marks = recordingMarks.toList()
+        val effects = effectHistory.map { it.copyEffect() } + liveEffects.filter { it.enabled }.map {
+            it.copyEffect().apply {
+                from = effectSince; to = Double.MAX_VALUE
+                if (kind == "Negative Strobe") phase = EffectPhase(0.0)
+            }
+        }
+        receiptWorker.execute {
+            try { store.checkpoint(take, marks, effects) }
+            catch (e: Exception) { ui.post { activity.message("Recording metadata could not be saved: ${e.message}") } }
+        }
+    }
+
     private fun finishEffectRange(end: Double) {
         if (end <= effectSince) return
         for (fx in liveEffects.filter { it.enabled }) effectHistory.add(
             fx.copyEffect(true).apply {
                 from = effectSince
                 to = end
+                if (kind == "Negative Strobe") phase = EffectPhase(0.0)
             }
         )
         effectSince = end
@@ -1573,6 +1635,7 @@ class Capture(
             if (recording && next != liveEffects) finishEffectRange(elapsedSeconds())
             if (next != liveEffects) effectGeneration++
             liveEffects = next
+            checkpointReceipt()
             if (it.none { fx -> fx.enabled }) {
                 liveFrame?.recycle()
                 liveFrame = null
@@ -1620,6 +1683,7 @@ class Capture(
         ui.removeCallbacks(ticker)
         handlerThread.quitSafely()
         meterWorker.shutdown()
+        receiptWorker.shutdown()
         imageWorker.shutdown()
         liveFrame?.recycle()
     }

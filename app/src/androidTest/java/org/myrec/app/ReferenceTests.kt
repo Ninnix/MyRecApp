@@ -134,7 +134,12 @@ object ReferenceTests {
                             81,
                         )!!
                     val mirrored = SourceMirror.flip(raw)
-                    check(actual.sameAs(mirrored)) { "Timeline selfie orientation differs" }
+                    check(actual.width == mirrored.width && actual.height == mirrored.height)
+                    val actualPixels = IntArray(actual.width * actual.height)
+                    val expectedPixels = IntArray(actualPixels.size)
+                    actual.getPixels(actualPixels, 0, actual.width, 0, 0, actual.width, actual.height)
+                    mirrored.getPixels(expectedPixels, 0, mirrored.width, 0, 0, mirrored.width, mirrored.height)
+                    check(actualPixels.contentEquals(expectedPixels)) { "Timeline selfie orientation differs" }
                     mirrored.recycle()
                 } finally {
                     reader.release()
@@ -147,149 +152,7 @@ object ReferenceTests {
                 index.close()
             }
         }
-        test("Kaleidoscope keeps subject detail, original colors and the requested mirror count") {
-            val source = Bitmap.createBitmap(240, 400, Bitmap.Config.ARGB_8888)
-            for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
-                x,
-                y,
-                Color.rgb(x, y * 255 / 400, (x + y) % 256),
-            )
-            for (count in listOf(2, 4, 6, 8, 24)) {
-                val output = source.copy(Bitmap.Config.ARGB_8888, true)
-                val effect =
-                    Effect(
-                        kind = "Kaleidoscope",
-                        values =
-                            mutableMapOf("segments" to "$count", "centerY" to ".5", "zoom" to "1"),
-                    )
-                Effects.correct(output, effect, 0f)
-                check(output.sameAs(source))
-                Effects.correct(output, effect, 1f)
-                check(!output.sameAs(source))
-                if (count == 2) {
-                    for (y in 10 until 190 step 20) for (x in 10 until 230 step 20) {
-                        val expected = output.getPixel(x, y)
-                        for (actual in
-                            listOf(
-                                output.getPixel(x, y),
-                                output.getPixel(x, 399 - y),
-                            )) for (shift in listOf(0, 8, 16)) check(
-                            abs((expected shr shift and 255) - (actual shr shift and 255)) <= 1
-                        )
-                    }
-                }
-                save(output, "kaleidoscope-$count")
-                output.recycle()
-            }
-            source.recycle()
-        }
-        test("Default Kaleidoscope joins four sections at the image center") {
-            val source = Bitmap.createBitmap(113, 193, Bitmap.Config.ARGB_8888)
-            for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
-                x,
-                y,
-                Color.rgb(x * 2, y, (x * 3 + y) % 256),
-            )
-            val output = source.copy(Bitmap.Config.ARGB_8888, true)
-            val four = source.copy(Bitmap.Config.ARGB_8888, true)
-            try {
-                Effects.correct(output, Effect(kind = "Kaleidoscope"), 1f)
-                Effects.correct(
-                    four,
-                    Effect(kind = "Kaleidoscope", values = mutableMapOf("segments" to "4")),
-                    1f,
-                )
-                check(output.sameAs(four)) { "Default still uses two sections" }
-                for (dx in 3 until 56 step 7) for (dy in 3 until 96 step 11) {
-                    val expected = output.getPixel(56 - dx, 96 - dy)
-                    for ((x, y) in
-                        listOf(
-                            56 + dx to 96 - dy,
-                            56 - dx to 96 + dy,
-                            56 + dx to 96 + dy,
-                        )) for (shift in listOf(0, 8, 16)) check(
-                        abs(
-                            (expected shr shift and 255) - (output.getPixel(x, y) shr shift and 255)
-                        ) <= 1
-                    ) {
-                        "Four sections do not join at the image center"
-                    }
-                }
-            } finally {
-                source.recycle()
-                output.recycle()
-                four.recycle()
-            }
-        }
-        test("Kaleidoscope Center moves the mirror junction without panning its source") {
-            val source = Bitmap.createBitmap(113, 193, Bitmap.Config.ARGB_8888)
-            for (y in 0 until source.height) for (x in 0 until source.width) source.setPixel(
-                x,
-                y,
-                Color.rgb(x * 2, y, (x * 3 + y) % 256),
-            )
-            fun close(a: Int, b: Int) =
-                listOf(0, 8, 16).all { abs((a shr it and 255) - (b shr it and 255)) <= 1 }
-            fun render(count: Int, rotation: Int, x: Float, y: Float): Bitmap =
-                source.copy(Bitmap.Config.ARGB_8888, true).apply {
-                    Effects.correct(
-                        this,
-                        Effect(
-                            kind = "Kaleidoscope",
-                            values =
-                                mutableMapOf(
-                                    "segments" to "$count",
-                                    "rotation" to "$rotation",
-                                    "centerX" to "$x",
-                                    "centerY" to "$y",
-                                ),
-                        ),
-                        1f,
-                    )
-                }
-            for (count in listOf(2, 4, 6)) for (rotation in listOf(0, 37, 90)) {
-                val centered = render(count, rotation, .5f, .5f)
-                val moved = render(count, rotation, .25f, .625f)
-                try {
-                    for (y in 8 until 160 step 7) for (x in 30 until 110 step 7) {
-                        val expected = centered.getPixel(x, y)
-                        val actual = moved.getPixel(x - 28, y + 24)
-                        check(close(expected, actual)) {
-                            "Junction did not move with Center: $count sections, $rotation degrees"
-                        }
-                    }
-                    if (count == 4 && rotation == 0) {
-                        for (dx in listOf(3, 9, 21)) for (dy in listOf(3, 13, 35)) {
-                            val expected = moved.getPixel(28 - dx, 120 - dy)
-                            check(close(moved.getPixel(28 + dx, 120 - dy), expected))
-                            check(close(moved.getPixel(28 - dx, 120 + dy), expected))
-                            check(close(moved.getPixel(28 + dx, 120 + dy), expected))
-                        }
-                        save(moved, "kaleidoscope-moved-center")
-                    }
-                    if (rotation == 0) {
-                        val default = source.copy(Bitmap.Config.ARGB_8888, true)
-                        try {
-                            Effects.correct(
-                                default,
-                                Effect(
-                                    kind = "Kaleidoscope",
-                                    values = mutableMapOf("segments" to "$count"),
-                                ),
-                                1f,
-                            )
-                            check(default.sameAs(centered)) { "Default junction is off-center" }
-                        } finally {
-                            default.recycle()
-                        }
-                    }
-                } finally {
-                    centered.recycle()
-                    moved.recycle()
-                }
-            }
-            source.recycle()
-        }
+        KaleidoscopeTests.run(instrumentation, a, onMain, test)
         test("RGB Offset shifts channel edges and preserves flat colors and alpha") {
             val source = Bitmap.createBitmap(200, 300, Bitmap.Config.ARGB_8888)
             source.eraseColor(Color.rgb(220, 190, 150))
@@ -301,11 +164,9 @@ object ReferenceTests {
             canvas.drawCircle(125f, 110f, 10f, paint)
             canvas.drawRect(75f, 185f, 125f, 195f, paint)
             val output = source.copy(Bitmap.Config.ARGB_8888, true)
-            val effect =
-                Effect(
-                    kind = "RGB Offset",
-                    values = mutableMapOf("distance" to ".05", "angle" to "0"),
-                )
+            val effect = Effect(kind = "RGB Offset").apply {
+                setNumber("redX", .05f / .12f); setNumber("greenX", -.05f / .12f); setNumber("blueX", .05f / .12f)
+            }
             Effects.correct(output, effect, 0f)
             check(output.sameAs(source))
             Effects.correct(output, effect, 1f)
@@ -322,7 +183,7 @@ object ReferenceTests {
                 Effects.correct(combined, Effect(kind = "RGB Offset"), 1f)
                 Effects.correct(
                     combined,
-                    Effect(kind = "Kaleidoscope", values = mutableMapOf("segments" to "$count")),
+                    Effect(kind = "Kaleidoscope").apply { setNumber("divisions", count.toFloat()) },
                     1f,
                 )
                 save(combined, "combined-$count")
@@ -346,16 +207,18 @@ object ReferenceTests {
                     check(find(a.root, "Privacy policy")!!.performClick())
                 }
                 Thread.sleep(100)
-                onMain {
-                    // The policy uses a dialog, outside the root view hierarchy.
-                    check(
-                        a.assets
-                            .open("privacy.txt")
-                            .bufferedReader()
-                            .use { it.readText() }
-                            .contains("locally")
-                    )
+                val policy = a.assets.open("privacy.txt").bufferedReader().use { it.readText() }
+                var shown = false
+                repeat(40) {
+                    if (!shown) {
+                        val window = instrumentation.uiAutomation.rootInActiveWindow
+                        val messages = window?.findAccessibilityNodeInfosByText(policy.lineSequence().first { it.isNotBlank() }) ?: emptyList()
+                        shown = messages.any { it.text?.toString() == policy }
+                        messages.forEach { it.recycle() }; window?.recycle()
+                        if (!shown) Thread.sleep(50)
+                    }
                 }
+                check(shown) { "Privacy dialog does not show the bundled policy" }
                 instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
                 onMain { check(find(a.root, "Recently deleted (1)")!!.performClick()) }
                 snapshot("deleted-$name")

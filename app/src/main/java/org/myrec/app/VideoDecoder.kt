@@ -6,7 +6,8 @@ import java.io.Closeable
 import java.io.File
 import kotlin.math.*
 
-class VideoDecoder(path: String) : Closeable {
+class VideoDecoder(path: String, private val rawColor: Boolean = false, private val linear: Boolean = false,
+    private val tenBit: Boolean = false) : Closeable {
     private val mirrored = SourceMirror.enabled(path)
     private val extractor = MediaExtractor()
     private val codec: MediaCodec
@@ -19,6 +20,7 @@ class VideoDecoder(path: String) : Closeable {
     private var standard = MediaFormat.COLOR_STANDARD_BT709
     private var fullRange = false
     private var transfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO
+    private val sourceHdr: Boolean
     private val primaries =
         try {
             File(path + ".primaries").readText().trim().toInt().takeIf { it in 0..2 } ?: 0
@@ -47,10 +49,11 @@ class VideoDecoder(path: String) : Closeable {
         )
         if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER))
             transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+        sourceHdr = transfer in listOf(MediaFormat.COLOR_TRANSFER_HLG, MediaFormat.COLOR_TRANSFER_ST2084)
         if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD))
             standard = format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
         if (
-            android.os.Build.VERSION.SDK_INT >= 31 &&
+            (linear || android.os.Build.VERSION.SDK_INT >= 31) &&
                 transfer in
                     listOf(MediaFormat.COLOR_TRANSFER_HLG, MediaFormat.COLOR_TRANSFER_ST2084)
         )
@@ -59,7 +62,7 @@ class VideoDecoder(path: String) : Closeable {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010,
             )
         extractor.selectTrack(track)
-        codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
+        codec = VideoCodecs.decoder(format)
         try {
             try {
                 codec.configure(format, null, null, 0)
@@ -80,9 +83,9 @@ class VideoDecoder(path: String) : Closeable {
 
     fun frame(time: Double, width: Int, height: Int): Bitmap? {
         val target = (time.coerceAtLeast(0.0) * 1_000_000).toLong()
-        if (last != null && target in lastTime - 20000..lastTime)
-            return last!!.copy(Bitmap.Config.ARGB_8888, true)
-        if (lastTime >= 0 && (target < lastTime - 20000 || target > lastTime + 750000)) {
+        if (last != null && target in lastTime - 2..lastTime)
+            return last!!.copy(last!!.config!!, true)
+        if (lastTime >= 0 && (target < lastTime - 2 || target > lastTime + 750000)) {
             extractor.seekTo(target, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             codec.flush()
             inputDone = false
@@ -128,12 +131,11 @@ class VideoDecoder(path: String) : Closeable {
                             val sourceW = if (rotated) crop.height() else crop.width()
                             val sourceH = if (rotated) crop.width() else crop.height()
                             val scale = min(width.toFloat() / sourceW, height.toFloat() / sourceH)
-                            val bitmap =
-                                Bitmap.createBitmap(
-                                    max(2, (sourceW * scale).toInt()),
-                                    max(2, (sourceH * scale).toInt()),
-                                    Bitmap.Config.ARGB_8888,
-                                )
+                            val bitDepth = if (image.format == android.graphics.ImageFormat.YCBCR_P010) 10 else 8
+                            if (tenBit && sourceHdr)
+                                check(bitDepth == 10 && transfer in listOf(MediaFormat.COLOR_TRANSFER_HLG, MediaFormat.COLOR_TRANSFER_ST2084)) { "This decoder does not expose 10-bit HDR samples" }
+                            val bitmap = if (linear) WorkingColor.bitmap(max(2, (sourceW * scale).toInt()), max(2, (sourceH * scale).toInt()))
+                                else Bitmap.createBitmap(max(2, (sourceW * scale).toInt()), max(2, (sourceH * scale).toInt()), Bitmap.Config.ARGB_8888)
                             val planes = image.planes
                             Native.yuv(
                                 planes[0].buffer.slice(),
@@ -152,13 +154,8 @@ class VideoDecoder(path: String) : Closeable {
                                 standard,
                                 fullRange,
                                 bitmap,
-                                if (
-                                    android.os.Build.VERSION.SDK_INT >= 31 &&
-                                        image.format == android.graphics.ImageFormat.YCBCR_P010
-                                )
-                                    10
-                                else 8,
-                                transfer,
+                                bitDepth,
+                                if (rawColor) -1 else transfer,
                                 primaries,
                             )
                             last?.recycle()
@@ -170,10 +167,10 @@ class VideoDecoder(path: String) : Closeable {
                     }
                 }
                 codec.releaseOutputBuffer(index, false)
-                if (wanted) return last?.copy(Bitmap.Config.ARGB_8888, true)
+                if (wanted) return last?.let { it.copy(it.config!!, true) }
             }
         }
-        return last?.copy(Bitmap.Config.ARGB_8888, true)
+        return last?.let { it.copy(it.config!!, true) }
     }
 
     override fun close() {

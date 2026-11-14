@@ -24,10 +24,9 @@ release.properties
 /reference/
 /PARITY.md
 /PARITY_WORK.md
-/Porting.md
+/PORTING.md
 
-/artifacts/*
-!/artifacts/validation.json
+/artifacts/
 
 /tools/research-*.py
 /tools/research_metrics.py

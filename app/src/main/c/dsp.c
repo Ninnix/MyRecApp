@@ -31,10 +31,6 @@ static void load_rnnoise(void) {
 typedef struct {
     int rate;
     float in[2], hp[2], x1[2], x2[2], y1[2], y2[2], env, limiter_gain;
-    void *rn;
-    float rn_in[480], rn_out[480], dry[2][960];
-    int dry_pos;
-    int rn_pos;
 } Audio;
 
 JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioCreate(JNIEnv *env, jobject self,
@@ -46,9 +42,6 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioCreate(JNIEnv *env, jobje
         return 0;
     a->rate = rate;
     a->limiter_gain = 1;
-    pthread_once(&rn_once, load_rnnoise);
-    if (rn_create && rate == 48000)
-        a->rn = rn_create(NULL);
     return (jlong)(intptr_t)a;
 }
 JNIEXPORT jboolean JNICALL Java_org_myrec_app_Native_rnnoiseAvailable(JNIEnv *env,
@@ -63,14 +56,12 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioDestroy(JNIEnv *env, jobje
     (void)env;
     (void)self;
     Audio *a = (Audio *)(intptr_t)handle;
-    if (a && a->rn)
-        rn_destroy(a->rn);
     free(a);
 }
 JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioProcess(
     JNIEnv *env, jobject self, jlong handle, jfloatArray data, jint frames, jfloat gain,
     jfloat highpass, jfloat eq, jfloat frequency, jfloat compressor, jfloat gate,
-    jfloat denoise, jfloat limiter) {
+    jfloat limiter) {
     (void)self;
     Audio *a = (Audio *)(intptr_t)handle;
     if (!a || frames < 0 || (*env)->GetArrayLength(env, data) / 2 < frames)
@@ -91,20 +82,6 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioProcess(
     float a2 = (1 - alpha / amplitude) / a0;
     for (int i = 0; i < frames; i++) {
         float input[2] = {p[2 * i], p[2 * i + 1]};
-        if (denoise > 0 && a->rn) {
-            a->rn_in[a->rn_pos] = (input[0] + input[1]) * 16384;
-            float clean = a->rn_out[a->rn_pos] / 32768;
-            for (int ch = 0; ch < 2; ch++) {
-                float dry = a->dry[ch][a->dry_pos];
-                a->dry[ch][a->dry_pos] = input[ch];
-                input[ch] = dry + denoise * (clean - dry);
-            }
-            a->dry_pos = (a->dry_pos + 1) % 960;
-            if (++a->rn_pos == 480) {
-                rn_process(a->rn, a->rn_out, a->rn_in);
-                a->rn_pos = 0;
-            }
-        }
         float peak = fmaxf(fabsf(input[0]), fabsf(input[1]));
         a->env += (peak > a->env ? 0.02f : 0.001f) * (peak - a->env);
         float comp = 1;
@@ -143,4 +120,28 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioProcess(
             p[2 * i + ch] = output[ch] * attenuation;
     }
     (*env)->ReleaseFloatArrayElements(env, data, p, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_noiseCreate(JNIEnv *env, jobject self) {
+    (void)env; (void)self;
+    pthread_once(&rn_once, load_rnnoise);
+    return rn_create ? (jlong)(intptr_t)rn_create(NULL) : 0;
+}
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_noiseFree(JNIEnv *env, jobject self, jlong handle) {
+    (void)env; (void)self;
+    if (handle && rn_destroy) rn_destroy((void *)(intptr_t)handle);
+}
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_noiseProcess(JNIEnv *env, jobject self,
+    jlong handle, jfloatArray input) {
+    (void)self;
+    if (!handle || !rn_process || (*env)->GetArrayLength(env, input) != 480) return NULL;
+    float samples[480], output[480];
+    (*env)->GetFloatArrayRegion(env, input, 0, 480, samples);
+    if ((*env)->ExceptionCheck(env)) return NULL;
+    for (int i = 0; i < 480; i++) { if (!isfinite(samples[i])) return NULL; samples[i] *= 32768; }
+    rn_process((void *)(intptr_t)handle, output, samples);
+    for (int i = 0; i < 480; i++) output[i] /= 32768;
+    jfloatArray result = (*env)->NewFloatArray(env, 480);
+    if (result) (*env)->SetFloatArrayRegion(env, result, 0, 480, output);
+    return result;
 }

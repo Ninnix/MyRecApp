@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
-    <application android:theme="@android:style/Theme.Material.NoActionBar"
+    <application android:theme="@style/AppTheme"
         android:label="MyRec" android:icon="@mipmap/ic_launcher"
         android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true"

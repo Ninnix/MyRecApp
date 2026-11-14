@@ -40,9 +40,9 @@ class Playback(
             val after = value ?: editor.project
             val restart =
                 playing &&
-                    (Studio.has(before) || Studio.has(after)) &&
+                    (before.duration != after.duration || (Studio.has(before) || Studio.has(after)) &&
                     (Studio.signature(before) != Studio.signature(after) ||
-                        before.clips.map { it.id } != after.clips.map { it.id })
+                        before.clips.map { it.id } != after.clips.map { it.id }))
             field = value
             if (restart) {
                 val end = until
@@ -64,8 +64,9 @@ class Playback(
                 editor.cursor =
                     baseTime +
                         (SystemClock.elapsedRealtime() - baseClock) / 1000.0 * editor.playbackRate
-                if (editor.cursor >= min(until, editor.project.duration)) {
-                    editor.cursor = min(until, editor.project.duration)
+                val end = min(until, (previewProject ?: editor.project).duration)
+                if (editor.cursor >= end) {
+                    editor.cursor = end
                     pause()
                     onTick()
                     return
@@ -114,13 +115,14 @@ class Playback(
 
     fun play(end: Double = editor.project.duration) {
         pause()
-        if (editor.project.duration <= 0) return
-        if (editor.cursor >= editor.project.duration - 0.01) editor.cursor = 0.0
-        val ticket = ++generation
         val snapshot = (previewProject ?: editor.project).duplicate()
+        if (snapshot.duration <= 0) return
+        val limit = min(end, snapshot.duration)
+        if (editor.cursor >= limit - 0.01) editor.cursor = 0.0
+        val ticket = ++generation
         val start = editor.cursor
         val speed = editor.playbackRate
-        until = end
+        until = limit
         baseTime = start
         baseClock = SystemClock.elapsedRealtime()
         playing = true
@@ -166,18 +168,18 @@ class Playback(
                             .setTransferMode(AudioTrack.MODE_STREAM)
                             .build()
                     track = output
-                    output!!.playbackParams = PlaybackParams().setSpeed(speed)
+                    output.playbackParams = PlaybackParams().setSpeed(speed)
                     var position = start
                     baseTime = start
                     baseClock = SystemClock.elapsedRealtime()
-                    output!!.play()
-                    ui.post(tick)
+                    output.play()
+                    ui.post { if (ticket == generation && playing) tick.run() }
                     while (
                         playing && ticket == generation && position < min(until, snapshot.duration)
                     ) {
                         val pcm = mixer.read(1024)
                         if (!playing || ticket != generation) break
-                        output!!.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
+                        output.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
                         position += 1024 / 48000.0
                     }
                 }
@@ -216,6 +218,7 @@ class Playback(
             track?.pause()
             track?.flush()
         } catch (_: Exception) {}
+        onTick()
     }
 
     fun seek(t: Double) {

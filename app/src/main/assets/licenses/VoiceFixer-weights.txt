@@ -8,7 +8,8 @@ The published weights are CC BY 4.0. Architecture and conversion code have
 separate MIT notices in VoiceFixer.txt and VoiceFixer-ONNX.txt.
 MyRec uses the ONNX conversion by Kazuhito Takahashi, mirrored at
 https://huggingface.co/TigreGotico/audiosronnx-voicefixer/tree/aa259fa578b9d5f4c76fda3cd967f73542b0e15b
-Changes: ONNX conversion and C11 resampling, feature extraction, bounded
+Changes: ONNX conversion, fixed input shape from 501 to 256 frames with
+unchanged learned tensors, and C11 resampling, feature extraction, bounded
 processing windows and wet/dry mixing. No retraining. The authors do not
 endorse MyRec.
 

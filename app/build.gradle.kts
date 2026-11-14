@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins { id("com.android.application") }
 
 android {
@@ -29,7 +31,22 @@ android {
             keyPassword = "android"
         }
     }
-    buildTypes { release { isMinifyEnabled = false } }
+    val signingFile = rootProject.file("keystore.properties")
+    if (signingFile.isFile) {
+        val settings = Properties().apply { signingFile.inputStream().use { load(it) } }
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(settings.getProperty("storeFile"))
+            storePassword = settings.getProperty("storePassword")
+            keyAlias = settings.getProperty("keyAlias")
+            keyPassword = settings.getProperty("keyPassword")
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (signingFile.isFile) signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 
 tasks.register<JavaExec>("testEditor") {

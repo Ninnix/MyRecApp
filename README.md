@@ -10,8 +10,8 @@ and the work stay on your phone.
 
 The project follows [YouRec for iPhone](https://github.com/antirez/YouRecApp),
 by Salvatore Sanfilippo (antirez). This is an independent Android implementation.
-There are still substantial differences in features and processing; this is
-not an official YouRec release or a claim of identical output.
+Features and processing are being aligned with the released iPhone source.
+The guides describe current behavior and limits.
 
 ## Recording and editing
 
@@ -21,20 +21,35 @@ views together or capture 10-bit HLG video.
 
 The editor has separate video and audio tracks. Split, trim, copy, paste, move,
 and arrange clips; add text, images, transitions, color effects, and stabilization.
-Audio filters run in order. Captions and neural audio restoration work offline
-after their models have been downloaded.
+Audio filters run in order. Clip speed preserves pitch; Volume offers separate
+edge fades, and Censor audio replaces selected sound with a generated tone.
+Captions and neural audio restoration work offline after their models have been
+downloaded.
 
-Edits leave the source files alone. Undo and redo work during the editing
-session; their history does not yet survive reopening a project. HDR recordings
-keep their original files, but editing and export currently produce SDR.
-Export writes H.264 video and AAC audio to `Movies/MyRec`.
+Edits leave the source files alone. Undo and redo survive reopening and project
+switching; ordinary new recordings stay present through earlier editor undo.
+Projects can be duplicated with independent media or transferred as checked ZIP
+archives, including originals, history, overlays, and an OpenTimelineIO source
+conform. Export writes H.264 SDR or, on capable devices, HEVC 10-bit HLG with
+AAC audio to `Movies/MyRec`. HDR and Log editing use half-float working images;
+HDR export requires a decoder and recording surface that preserve ten bits.
+
+Color LUTs accepts project-owned 1D/3D CUBE files and explicit Apple Log
+interpretation. Subtitles have transcript review and regrouping; Pauses saves
+reviewable source cuts. Freeze Frame inserts a hold, and Dolly Zoom separates
+a person from the background. Step Printing repeats and smears source frame
+groups; Negative Strobe alternates positive and negative frames. Neural audio
+prepares independent source channels
+before timeline speed and gain. These paths still have differences from the
+reference; see the editing guide for current limits.
 
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
 ## Try it
 
-You need Android 9 or later and an ARM64 device. Build the APK, install it, and
+You need Android 9 or later and an ARM64 device. Download the APK from
+[release 0.1.0](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.0), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 
@@ -43,8 +58,9 @@ the earlier `org.yourec.app` build. Android keeps their private projects, settin
 and downloaded models separate. There is no automatic migration yet; keep the
 old app installed if it holds recordings or edits you need.
 
-This is development software. Physical checks have covered a OnePlus 15;
-other cameras, microphones, and phones need testing. A passing Android check
+This is development software. Physical checks cover a OnePlus 15 and a Xiaomi
+Mi 8 running Android 10. Other cameras, microphones, and phones need testing.
+A passing Android check
 does not establish the same behavior or output as the iOS app.
 
 ## Build
@@ -72,7 +88,7 @@ when you choose captions or a neural audio filter.
 
 | Model | Use | Download |
 | --- | --- | --- |
-| RNNoise | Legacy voice isolation | Included |
+| RNNoise | Voice isolation | Included |
 | PPHumanSeg | Keep people in color | Included, 5.9 MB |
 | DeepFilterNet3 | Noise reduction | 8.6 MB |
 | VoiceFixer | Studio restoration | 415 MB |

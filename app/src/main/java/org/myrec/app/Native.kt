@@ -3,21 +3,26 @@ package org.myrec.app
 import android.graphics.Bitmap
 
 object Native {
+    external fun workingAverage(bitmap: Bitmap, other: Bitmap, weight: Float)
+    external fun workingNegative(bitmap: Bitmap, strength: Float)
+    external fun hlgSurface(surface: android.view.Surface): Boolean
+    external fun workingToneMap(bitmap: Bitmap)
+    external fun workingDisplay(bitmap: Bitmap, output: Bitmap, toneMap: Boolean)
+    external fun dolly(bitmap: Bitmap, mask: FloatArray, scale: Float, targetX: Float, targetY: Float, intensity: Float)
+    external fun colorLut(bitmap: android.graphics.Bitmap, entries: FloatArray, size: Int,
+        oneDimensional: Boolean, bounds: FloatArray, input: Int, strength: Float, exposure: Float, highlights: Float, source: Int = 0)
+
     init {
         System.loadLibrary("myrec")
     }
 
-    external fun kaleidoscope(
-        bitmap: Bitmap,
-        strength: Float,
-        segments: Int,
-        rotation: Float,
-        zoom: Float,
-        centerX: Float,
-        centerY: Float,
-    )
+    external fun kaleidoscope(bitmap: Bitmap, strength: Float, divisions: Int, centerX: Float, centerY: Float,
+        splitAngle: Float, sourcePanX: Float, sourcePanY: Float, sourceAngle: Float)
+    external fun rgbChannels(bitmap: Bitmap, strength: Float,
+        redX: Float, redY: Float, greenX: Float, greenY: Float, blueX: Float, blueY: Float)
 
-    external fun rgbOffset(bitmap: Bitmap, strength: Float, distance: Float, angle: Float)
+    external fun filmColor(bitmap: Bitmap, kernel: Int, strength: Float, parameters: FloatArray)
+    external fun primaryColor(bitmap: Bitmap, strength: Float, parameters: FloatArray)
 
     external fun widescreen(
         bitmap: Bitmap,
@@ -36,6 +41,14 @@ object Native {
 
     external fun asrFree(handle: Long)
 
+    fun interface AudioProgress { fun step(frames: Long, total: Long): Boolean }
+    external fun audioResample(input: String, output: String, from: Int, to: Int, frames: Long, channels: Int = 2, progress: AudioProgress): Long
+    external fun audioStretch(input: String, output: String, speed: Double, progress: AudioProgress): Long
+
+    external fun noiseCreate(): Long
+    external fun noiseProcess(handle: Long, input: FloatArray): FloatArray?
+    external fun noiseFree(handle: Long)
+
     external fun audioCreate(rate: Int): Long
 
     external fun audioProcess(
@@ -48,7 +61,6 @@ object Native {
         frequency: Float,
         compressor: Float,
         gate: Float,
-        denoise: Float,
         limiter: Float = 0f,
     )
 
@@ -74,7 +86,6 @@ object Native {
 
     external fun personMask(handle: Long, bitmap: Bitmap): FloatArray
 
-    external fun personFree(handle: Long)
 
     external fun isolate(
         bitmap: Bitmap,
@@ -83,16 +94,6 @@ object Native {
         tolerance: Float,
         softness: Float,
         person: FloatArray?,
-    )
-
-    external fun colorCorrect(
-        bitmap: Bitmap,
-        strength: Float,
-        exposure: Float,
-        contrast: Float,
-        saturation: Float,
-        temperature: Float,
-        tint: Float,
     )
 
     external fun night(bitmap: Bitmap, strength: Float, cleanup: Float)
@@ -145,5 +146,4 @@ object Native {
 
     external fun similarity(a: Bitmap, b: Bitmap): FloatArray
 
-    external fun motion(a: Bitmap, b: Bitmap): FloatArray
 }

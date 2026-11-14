@@ -15,16 +15,18 @@ class Export(private val cache: AudioCache) {
         if (cancelled) throw InterruptedIOException("Export cancelled")
     }
 
-    fun run(project: Project, target: File, width: Int, height: Int, progress: (Float) -> Unit) {
+    fun run(project: Project, target: File, width: Int, height: Int, color: ExportColor = ExportColor.SDR, progress: (Float) -> Unit) {
         require(project.duration > 0) { "The project is empty" }
         val video = File(target.parentFile, target.name + ".video.mp4")
         val audio = File(target.parentFile, target.name + ".audio.m4a")
         try {
-            encodeVideo(project, video, width, height) { progress(it * 0.8f) }
+            encodeVideo(project, video, width, height, color) { progress(it * 0.8f) }
             checkCancelled()
             encodeAudio(project, audio) { progress(0.8f + it * 0.15f) }
+            val priming = Mp4Audio.delay(cache.head(audio.path, 12288))
             checkCancelled()
             mux(video, audio, target)
+            Mp4Audio.trim(target, Mp4Audio.PREFIX + priming, project.duration)
             progress(1f)
         } catch (e: Exception) {
             target.delete()
@@ -40,11 +42,21 @@ class Export(private val cache: AudioCache) {
         target: File,
         width: Int,
         height: Int,
+        color: ExportColor,
         progress: (Float) -> Unit,
     ) {
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        var surface: Surface? = null
-        var egl: EncoderSurface? = null
+        val hdr = color == ExportColor.HLG
+        val format = MediaFormat.createVideoFormat(if (hdr) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+        format.setInteger(MediaFormat.KEY_COLOR_STANDARD, if (hdr) MediaFormat.COLOR_STANDARD_BT2020 else MediaFormat.COLOR_STANDARD_BT709)
+        format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, if (hdr) MediaFormat.COLOR_TRANSFER_HLG else MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+        if (hdr) format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, max(2_000_000, width * height * 6))
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, project.fps)
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        val input = videoInput(format, hdr, width, height, project.fps)
+        val codec = input.first; val surface = input.second; val egl = input.third
         val muxer = MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var started = false
         var track = -1
@@ -80,27 +92,14 @@ class Export(private val cache: AudioCache) {
             }
         }
         try {
-            val format =
-                MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
-            format.setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
-            )
-            format.setInteger(MediaFormat.KEY_BIT_RATE, max(2_000_000, width * height * 6))
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, project.fps)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            surface = codec.createInputSurface()
-            egl = EncoderSurface(surface)
-            codec.start()
             Frames().use { frames ->
-                val count = ceil(project.duration * project.fps).toInt()
+                val count = ceil(project.duration * project.fps - 1e-7).toInt().coerceAtLeast(1)
                 for (i in 0 until count) {
                     checkCancelled()
                     drain(false)
-                    val bitmap = frames.render(project, i.toDouble() / project.fps, width, height)
-                    egl.draw(bitmap, i * 1_000_000_000L / project.fps)
-                    bitmap.recycle()
+                    val bitmap = frames.render(project, i.toDouble() / project.fps, width, height, keepLinear = hdr)
+                    try { egl.draw(bitmap, i * 1_000_000_000L / project.fps) }
+                    finally { bitmap.recycle() }
                     progress((i + 1f) / count)
                 }
             }
@@ -111,14 +110,42 @@ class Export(private val cache: AudioCache) {
                 codec.stop()
             } catch (_: Exception) {}
             codec.release()
-            egl?.close()
-            surface?.release()
+            egl.close()
+            surface.release()
             try {
                 if (started) muxer.stop()
             } finally {
                 muxer.release()
             }
         }
+    }
+
+    private fun videoInput(format: MediaFormat, hdr: Boolean, width: Int, height: Int, fps: Int): Triple<MediaCodec, Surface, EncoderSurface> {
+        val mime = format.getString(MediaFormat.KEY_MIME)!!
+        val candidates = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { codec ->
+            if (!codec.isEncoder || mime !in codec.supportedTypes) false else try {
+                val caps = codec.getCapabilitiesForType(mime)
+                caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface) &&
+                    (!hdr || caps.profileLevels.any { it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 }) &&
+                    caps.videoCapabilities?.areSizeAndRateSupported(width, height, fps.toDouble()) == true
+            } catch (_: Exception) { false }
+        }
+        var failure: Exception? = null
+        for (candidate in candidates) {
+            var codec: MediaCodec? = null; var surface: Surface? = null; var egl: EncoderSurface? = null
+            try {
+                codec = MediaCodec.createByCodecName(candidate.name)
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                surface = codec.createInputSurface(); egl = EncoderSurface(surface, hdr)
+                codec.start()
+                return Triple(codec, surface, egl)
+            } catch (error: Exception) {
+                failure = error
+                try { egl?.close() } finally { surface?.release(); codec?.release() }
+            }
+        }
+        error(if (hdr) "This device cannot start a HEVC Main10 HLG encoder for this size and frame rate: ${failure?.message.orEmpty()}"
+            else "This device cannot encode this size and frame rate: ${failure?.message.orEmpty()}")
     }
 
     private fun encodeAudio(project: Project, target: File, progress: (Float) -> Unit) {
@@ -138,7 +165,8 @@ class Export(private val cache: AudioCache) {
             AudioMixer(project, cache).use { mixer ->
                 mixer.prepare({ cancelled })
                 mixer.seek(0.0)
-                val count = (project.duration * 48000).toLong()
+                val content = (project.duration * 48000).roundToLong()
+                val count = content + Mp4Audio.PREFIX + Mp4Audio.TAIL
                 var position = 0L
                 var inputDone = false
                 var outputDone = false
@@ -166,7 +194,12 @@ class Export(private val cache: AudioCache) {
                                 )
                                 inputDone = true
                             } else {
-                                val pcm = mixer.read(n)
+                                val pcm = FloatArray(n * 2)
+                                for (i in 0 until n) if (position + i < Mp4Audio.PREFIX)
+                                    for (ch in 0..1) pcm[i * 2 + ch] = Mp4Audio.prefix[(position + i).toInt()]
+                                val from = max(0L, Mp4Audio.PREFIX - position).toInt().coerceAtMost(n)
+                                val until = min(n.toLong(), Mp4Audio.PREFIX + content - position).toInt().coerceAtLeast(from)
+                                if (until > from) mixer.read(until - from).copyInto(pcm, from * 2)
                                 for (v in pcm) buffer.putShort(
                                     (v.coerceIn(-1f, 1f) * 32767).toInt().toShort()
                                 )
@@ -262,12 +295,13 @@ class Export(private val cache: AudioCache) {
     }
 }
 
-private class EncoderSurface(surface: Surface) : Closeable {
+private class EncoderSurface(surface: Surface, private val hdr: Boolean) : Closeable {
     private val display: EGLDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-    private val context: EGLContext
-    private val eglSurface: EGLSurface
-    private val program: Int
-    private val texture: Int
+    private var context: EGLContext = EGL14.EGL_NO_CONTEXT
+    private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var program = 0
+    private var texture = 0
+    private var pixels: ByteBuffer? = null
     private val vertices =
         ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f, -1f, 0f, 1f, 1f, -1f, 1f, 1f, -1f, 1f, 0f, 0f, 1f, 1f, 1f, 0f))
@@ -275,7 +309,13 @@ private class EncoderSurface(surface: Surface) : Closeable {
         }
 
     init {
+        try { initialize(surface) } catch (error: Throwable) { close(); throw error }
+    }
+
+    private fun initialize(surface: Surface) {
         check(EGL14.eglInitialize(display, IntArray(2), 0, IntArray(2), 0))
+        if (hdr) check(EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty().split(' ')
+            .contains("EGL_EXT_gl_colorspace_bt2020_hlg")) { "This device cannot create an HLG editing surface" }
         val configs = arrayOfNulls<EGLConfig>(1)
         val count = IntArray(1)
         check(
@@ -283,13 +323,15 @@ private class EncoderSurface(surface: Surface) : Closeable {
                 display,
                 intArrayOf(
                     EGL14.EGL_RED_SIZE,
-                    8,
+                    if (hdr) 10 else 8,
                     EGL14.EGL_GREEN_SIZE,
-                    8,
+                    if (hdr) 10 else 8,
                     EGL14.EGL_BLUE_SIZE,
-                    8,
+                    if (hdr) 10 else 8,
+                    EGL14.EGL_ALPHA_SIZE,
+                    if (hdr) 2 else 0,
                     EGL14.EGL_RENDERABLE_TYPE,
-                    EGL14.EGL_OPENGL_ES2_BIT,
+                    if (hdr) 0x0040 else EGL14.EGL_OPENGL_ES2_BIT,
                     0x3142,
                     1,
                     EGL14.EGL_NONE,
@@ -302,12 +344,13 @@ private class EncoderSurface(surface: Surface) : Closeable {
                 0,
             )
         )
+        check(count[0] > 0) { "This device has no compatible recording surface" }
         context =
             EGL14.eglCreateContext(
                 display,
                 configs[0],
                 EGL14.EGL_NO_CONTEXT,
-                intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE),
+                intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, if (hdr) 3 else 2, EGL14.EGL_NONE),
                 0,
             )
         eglSurface =
@@ -315,9 +358,10 @@ private class EncoderSurface(surface: Surface) : Closeable {
                 display,
                 configs[0],
                 surface,
-                intArrayOf(EGL14.EGL_NONE),
+                if (hdr) intArrayOf(0x309D, 0x3540, EGL14.EGL_NONE) else intArrayOf(EGL14.EGL_NONE),
                 0,
             )
+        if (hdr) check(Native.hlgSurface(surface)) { "Cannot tag the HLG input surface" }
         check(EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context))
         fun shader(type: Int, source: String): Int {
             val id = GLES20.glCreateShader(type)
@@ -331,17 +375,33 @@ private class EncoderSurface(surface: Surface) : Closeable {
         val vs =
             shader(
                 GLES20.GL_VERTEX_SHADER,
-                "attribute vec2 position; attribute vec2 uv; varying vec2 v; void main(){v=uv;gl_Position=vec4(position,0.,1.);}",
+                if (hdr) "#version 300 es\nin vec2 position; in vec2 uv; out vec2 v; void main(){v=uv;gl_Position=vec4(position,0.,1.);}"
+                else "attribute vec2 position; attribute vec2 uv; varying vec2 v; void main(){v=uv;gl_Position=vec4(position,0.,1.);}",
             )
         val fs =
             shader(
                 GLES20.GL_FRAGMENT_SHADER,
-                "precision mediump float; varying vec2 v; uniform sampler2D image; void main(){gl_FragColor=texture2D(image,v);}",
+                if (hdr) """#version 300 es
+                    precision highp float;
+                    in vec2 v; uniform sampler2D image; out vec4 result;
+                    float hlg(float x) { return x <= 1.0/12.0 ? sqrt(3.0*x) : 0.17883277*log(12.0*x-0.28466892)+0.55991073; }
+                    void main() {
+                        vec3 c=texture(image,v).rgb;
+                        vec3 bt=max(vec3(0.0),vec3(dot(c,vec3(.627403896,.329283038,.043313066)),
+                            dot(c,vec3(.069097289,.919540395,.011362316)),dot(c,vec3(.016391439,.088013308,.895595253))));
+                        vec3 display=bt*(203.0/1000.0);
+                        float y=dot(display,vec3(.2627,.678,.0593));
+                        vec3 scene=y>0.0?display*pow(y,(1.0-1.2)/1.2):vec3(0.0);
+                        result=vec4(hlg(clamp(scene.r,0.0,1.0)),hlg(clamp(scene.g,0.0,1.0)),hlg(clamp(scene.b,0.0,1.0)),1.0);
+                    }
+                """.trimIndent() else "precision mediump float; varying vec2 v; uniform sampler2D image; void main(){gl_FragColor=texture2D(image,v);}",
             )
         program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, vs)
         GLES20.glAttachShader(program, fs)
         GLES20.glLinkProgram(program)
+        val linked = IntArray(1); GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linked, 0)
+        check(linked[0] != 0) { GLES20.glGetProgramInfoLog(program) }
         GLES20.glDeleteShader(vs)
         GLES20.glDeleteShader(fs)
         val textures = IntArray(1)
@@ -367,7 +427,16 @@ private class EncoderSurface(surface: Surface) : Closeable {
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        if (hdr) {
+            check(bitmap.config == Bitmap.Config.RGBA_F16) { "HDR export requires a linear half-float frame" }
+            val data = pixels?.takeIf { it.capacity() == bitmap.byteCount }
+                ?: ByteBuffer.allocateDirect(bitmap.byteCount).order(ByteOrder.nativeOrder()).also { pixels = it }
+            data.clear(); bitmap.copyPixelsToBuffer(data); data.flip()
+            GLES30.glPixelStorei(GLES30.GL_UNPACK_ROW_LENGTH, bitmap.rowBytes / 8)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA16F, bitmap.width, bitmap.height, 0, GLES30.GL_RGBA, GLES30.GL_HALF_FLOAT, data)
+            GLES30.glPixelStorei(GLES30.GL_UNPACK_ROW_LENGTH, 0)
+        } else GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        check(GLES20.glGetError() == GLES20.GL_NO_ERROR) { "Cannot upload export frame" }
         val position = GLES20.glGetAttribLocation(program, "position")
         val uv = GLES20.glGetAttribLocation(program, "uv")
         vertices.position(0)
@@ -383,8 +452,10 @@ private class EncoderSurface(surface: Surface) : Closeable {
     }
 
     override fun close() {
-        GLES20.glDeleteTextures(1, intArrayOf(texture), 0)
-        GLES20.glDeleteProgram(program)
+        if (context != EGL14.EGL_NO_CONTEXT) {
+            GLES20.glDeleteTextures(1, intArrayOf(texture), 0)
+            GLES20.glDeleteProgram(program)
+        }
         EGL14.eglMakeCurrent(
             display,
             EGL14.EGL_NO_SURFACE,

@@ -21,7 +21,7 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
             val reader = MediaMetadataRetriever()
             try {
                 reader.setDataSource(clip.path)
-                val duration =
+                val duration = Mp4Audio.presentedDuration(File(clip.path)) ?:
                     (reader
                         .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                         ?.toDoubleOrNull() ?: 0.0) / 1000

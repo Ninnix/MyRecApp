@@ -19,15 +19,58 @@ data class Effect(
     var to: Double = Double.MAX_VALUE,
     var enabled: Boolean = true,
     val values: MutableMap<String, String> = mutableMapOf(),
+    val parameters: MutableList<EffectParameter> = EffectContracts.parameters(kind),
+    var motion: EffectMotion? = null,
+    var subtitle: SubtitlePhrase? = null,
+    var phase: EffectPhase? = null,
 ) {
-    fun number(key: String, fallback: Float = 0f) = values[key]?.toFloatOrNull() ?: fallback
+    fun parameter(key: String) = parameters.firstOrNull { it.id == key }
+        ?: if (key == "strength") parameters.firstOrNull { it.id == "intensity" } else null
+
+    fun number(key: String, fallback: Float = 0f) =
+        (parameter(key)?.value as? EffectValue.Number)?.value?.toFloat() ?: values[key]?.toFloatOrNull() ?: fallback
+
+    fun numberAt(key: String, source: Double, fallback: Float = 0f) =
+        motion?.pose(source)?.get(parameter(key)?.id ?: key)?.toFloat()
+            ?: (parameter(key)?.at(source) as? EffectValue.Number)?.value?.toFloat() ?: number(key, fallback)
+
+    fun setNumber(key: String, value: Float, source: Double? = null) {
+        val p = parameter(key)
+        if (p == null) values[key] = value.toString()
+        else {
+            val next = EffectValue.Number(value.toDouble())
+            require(p.kind.accepts(next))
+            if (source != null && p.keyframes.isNotEmpty()) p.setKeyframe(source, next) else p.value = next
+        }
+    }
+
+    fun editNumber(key: String, value: Float, source: Double, begin: Double, animate: Boolean) {
+        val p = parameter(key) ?: return setNumber(key, value)
+        val next = EffectValue.Number(value.toDouble())
+        require(p.kind.accepts(next))
+        val prior = (p.at(source) as? EffectValue.Number)?.value
+        if (prior != null && abs(prior - value) <= .000001) return
+        if (animate && p.keyframes.isEmpty() && source > begin + .001) p.setKeyframe(begin, p.value)
+        if (animate || p.keyframes.isNotEmpty()) p.setKeyframe(source, next) else p.value = next
+    }
+
+    fun sampled(source: Double): Effect {
+        if (motion == null && parameters.none { it.keyframes.isNotEmpty() }) return this
+        val pose = motion?.pose(source)
+        return copy(motion = null, parameters = parameters.map {
+            it.copy(value = pose?.get(it.id)?.let { n -> EffectValue.Number(n) } ?: it.at(source), keyframes = mutableListOf())
+        }.toMutableList())
+    }
 
     fun copyEffect(newId: Boolean = false) =
-        copy(id = if (newId) uid() else id, values = values.toMutableMap())
+        copy(id = if (newId) uid() else id, values = values.toMutableMap(),
+            parameters = parameters.map { it.duplicate() }.toMutableList(), motion = motion?.duplicate(),
+            phase = phase?.copy(clock = phase!!.clock.toList()))
 
     fun active(local: Double) = enabled && local >= from && local < to
 
     fun strength(local: Double, duration: Double, fallback: Float = 1f): Float {
+        if (parameters.isNotEmpty()) return number("intensity", fallback)
         val end = min(to, duration)
         val ramp = min(0.5, max(0.001, (end - from) / 4))
         val fadeIn = ((local - from) / ramp).toFloat().coerceIn(0f, 1f)
@@ -57,23 +100,37 @@ data class Clip(
     val effects: MutableList<Effect> = mutableListOf(),
     var group: String = id,
     val marks: MutableList<Double> = mutableListOf(),
+    var fadeIn: AudioEdgeFade? = null,
+    var fadeOut: AudioEdgeFade? = null,
+    val censors: MutableList<AudioCensorRegion> = mutableListOf(),
+    var pauses: PauseReview? = null,
+    var frozen: FrozenFrame? = null,
 ) {
-    val effectiveRate
-        get() =
-            rate *
-                effects
-                    .filter { it.enabled && it.kind == "Undercranking" }
-                    .fold(1.0) { value, fx ->
-                        value * (1 + (fx.number("rate", 1.25f) - 1) * fx.number("strength", 1f))
-                    }
-
-    val duration
-        get() = (sourceOut - sourceIn) / effectiveRate
+    private var rateState: RateState? = null
+    private var spans = emptyList<PlaybackSpan>()
+    val playbackSpans: List<PlaybackSpan>
+        get() {
+            val state = RateState(rate, sourceIn, sourceOut, pauses, effects.filter {
+                it.kind == "Step Printing" || it.kind == "Undercranking"
+            }.map { it.copyEffect() })
+            if (state != rateState) { spans = computePlaybackSpans(); rateState = state }
+            return spans
+        }
+    val effectiveRate get() = rateAt(sourceIn)
+    val duration get() = frozen?.duration ?: playbackSpans.sumOf { it.duration }
 
     val end
         get() = start + duration
 
-    fun sourceTime(t: Double) = sourceIn + (t - start).coerceIn(0.0, duration) * effectiveRate
+    fun sourceTime(t: Double): Double {
+        frozen?.let { return it.sourceTime }
+        var remaining = (t - start).coerceIn(0.0, duration)
+        for (span in playbackSpans) {
+            if (remaining < span.duration - .0000001) return span.start + remaining * span.rate
+            remaining -= span.duration
+        }
+        return sourceOut
+    }
 
     fun contains(t: Double) = t >= start && t < end
 
@@ -83,6 +140,7 @@ data class Clip(
             id = next,
             group = if (newId && !keepGroup) next else group,
             effects = effects.map { it.copyEffect(newId) }.toMutableList(),
+            censors = censors.toMutableList(),
             marks = marks.toMutableList(),
         )
     }
@@ -160,6 +218,7 @@ data class Project(
     var width: Int = 1920,
     var height: Int = 1080,
     var fps: Int = 30,
+    var captureCount: Int = 0,
 ) {
     val duration
         get() = clips.maxOfOrNull { it.end } ?: 0.0
@@ -219,10 +278,20 @@ data class Project(
             .sorted()
 
     fun markers(): List<Double> = clips.flatMap { clip ->
-        clip.marks.filter { it >= clip.sourceIn && it < clip.sourceOut }
-            .map { clip.start + (it - clip.sourceIn) / clip.effectiveRate }
+        clip.marks.filter { source -> clip.frozen == null && clip.keptIntervals().any { source >= it.start && source < it.end } }
+            .map { clip.start + clip.timelineOffset(it) }
     }.distinct().sorted()
 }
+
+class EditRevision(val project: Project, var file: String? = null)
+
+data class EditSession(
+    val project: Project,
+    val undo: List<EditRevision> = emptyList(),
+    val redo: List<EditRevision> = emptyList(),
+    val captures: List<Clip> = emptyList(),
+    val originals: List<Clip> = emptyList(),
+)
 
 class Editor(var project: Project = Project()) {
     var cursor = 0.0
@@ -231,8 +300,60 @@ class Editor(var project: Project = Project()) {
     val selected = linkedSetOf<String>()
     var clipboard = listOf<Clip>()
     private var clipboardTransitions = listOf<Transition>()
-    private val undo = ArrayDeque<Project>()
-    private val redo = ArrayDeque<Project>()
+    private val undo = ArrayDeque<EditRevision>()
+    private val redo = ArrayDeque<EditRevision>()
+    private val captures = mutableListOf<Clip>()
+    private val originals = linkedMapOf<String, Clip>()
+    private var historyId = project.id
+
+    init { project.clips.forEach(::remember) }
+
+    private fun remember(clip: Clip) {
+        val old = originals[clip.path]
+        if (old == null || clip.sourceOut > old.sourceOut)
+            originals[clip.path] = clip.duplicate().apply { start = 0.0 }
+    }
+
+    fun session(): EditSession {
+        // Explicit fixture/import callers may replace the public project value.
+        if (historyId != project.id) resetHistory()
+        project.clips.forEach(::remember)
+        return EditSession(
+            (batch ?: project).duplicate(), undo.toList(), redo.toList(),
+            captures.map { it.duplicate() }, originals.values.map { it.duplicate() },
+        )
+    }
+
+    private fun resetHistory() {
+        undo.clear()
+        redo.clear()
+        captures.clear()
+        originals.clear()
+        historyId = project.id
+        project.clips.forEach(::remember)
+    }
+
+    private fun materialize(saved: Project): Project = saved.duplicate().also { value ->
+        value.name = project.name
+        for (capture in captures.drop(value.captureCount)) {
+            val clip = capture.duplicate()
+            clip.start = value.duration
+            value.clips.add(clip)
+        }
+        value.captureCount = captures.size
+    }
+
+    fun appendRecording(clip: Clip) {
+        check(batch == null) { "Finish the current edit before recording" }
+        clip.start = project.duration
+        captures.add(clip.duplicate())
+        project.captureCount = captures.size
+        project.clips.add(clip)
+        remember(clip)
+        clearSelection()
+        cursor = clip.start
+        onChange()
+    }
     private var batch: Project? = null
     var onChange: () -> Unit = {}
     val canUndo
@@ -248,10 +369,19 @@ class Editor(var project: Project = Project()) {
     var wholeProject = false
     var playbackRate = 1f
 
-    fun load(project: Project) {
+    fun load(project: Project, saved: EditSession? = null) {
         this.project = project
-        undo.clear()
-        redo.clear()
+        resetHistory()
+        if (saved != null) {
+            require(saved.project.id == project.id)
+            undo.addAll(saved.undo)
+            redo.addAll(saved.redo)
+            captures.addAll(saved.captures.map { it.duplicate() })
+            originals.clear()
+            saved.originals.forEach(::remember)
+            project.clips.forEach(::remember)
+            this.project = materialize(project)
+        }
         batch = null
         clearSelection()
         cursor = 0.0
@@ -260,13 +390,13 @@ class Editor(var project: Project = Project()) {
     }
 
     fun change(block: () -> Unit) {
-        if (batch == null) {
-            undo.addLast(project.duplicate())
-            if (undo.size > 60) undo.removeFirst()
+        val before = if (batch == null) project.duplicate() else null
+        try { block(); normalize() }
+        catch (e: Exception) { if (before != null) project = before; throw e }
+        if (before != null && project != before) {
+            undo.addLast(EditRevision(before))
             redo.clear()
         }
-        block()
-        normalize()
         onChange()
     }
 
@@ -279,7 +409,7 @@ class Editor(var project: Project = Project()) {
         batch = null
         if (cancel) project = original
         else if (project != original) {
-            undo.addLast(original)
+            undo.addLast(EditRevision(original))
             redo.clear()
         }
         normalize()
@@ -287,6 +417,11 @@ class Editor(var project: Project = Project()) {
     }
 
     private fun normalize() {
+        val origins = project.clips.flatMap { c -> c.effects.filter { it.kind in TimeEffects.kinds }.map { it.id to (c.start + it.from) } }
+            .groupBy({ it.first }, { it.second }).mapValues { it.value.min() }
+        for (clip in project.clips) for (effect in clip.effects) if (effect.kind in TimeEffects.kinds && effect.phase == null)
+            effect.phase = EffectPhase.anchor(clip, max(0.0, clip.start + effect.from - origins.getValue(effect.id)))
+
         project.clips.removeAll { it.duration < 0.001 }
         for (transition in project.transitions.toList()) {
             val left = project.clips.firstOrNull { it.id == transition.leftId }
@@ -308,8 +443,10 @@ class Editor(var project: Project = Project()) {
 
     fun undo() {
         if (!canUndo) return
-        redo.addLast(project.duplicate())
-        project = undo.removeLast()
+        val restored = materialize(undo.last().project)
+        redo.addLast(EditRevision(project.duplicate()))
+        undo.removeLast()
+        project = restored
         clearSelection()
         normalize()
         onChange()
@@ -317,8 +454,10 @@ class Editor(var project: Project = Project()) {
 
     fun redo() {
         if (!canRedo) return
-        undo.addLast(project.duplicate())
-        project = redo.removeLast()
+        val restored = materialize(redo.last().project)
+        undo.addLast(EditRevision(project.duplicate()))
+        redo.removeLast()
+        project = restored
         clearSelection()
         normalize()
         onChange()
@@ -378,7 +517,7 @@ class Editor(var project: Project = Project()) {
         onChange()
     }
 
-    // Each half owns its effects. A later edit must never change its sibling.
+    // A cut keeps shared effect identities and independent parameter values.
     private fun splitAt(t: Double, ids: Set<String>? = null): Map<String, String> {
         for (tr in project.transitions) for (id in listOf(tr.leftId, tr.rightId)) {
             val source = project.clips.firstOrNull { it.id == id } ?: continue
@@ -392,6 +531,7 @@ class Editor(var project: Project = Project()) {
                 (ids == null || it.id in ids) && t > it.start + 0.001 && t < it.end - 0.001
             }
         for (clip in clips) {
+            val oldDuration = clip.duration
             val local = t - clip.start
             val connected =
                 project.transitions.any { tr ->
@@ -402,19 +542,25 @@ class Editor(var project: Project = Project()) {
                 }
             val right = clip.duplicate(true, keepGroup = connected)
             right.start = t
-            right.sourceIn = clip.sourceTime(t)
+            if (clip.frozen == null) right.sourceIn = clip.sourceTime(t)
             right.effects.clear()
             for (fx in clip.effects) {
                 val end = min(fx.to, clip.duration)
                 if (end > local)
                     right.effects.add(
-                        fx.copyEffect(true).apply {
+                        fx.copyEffect().apply {
                             from = max(0.0, from - local)
                             to = end - local
                         }
                     )
             }
-            clip.sourceOut = right.sourceIn
+            right.sliceAudio(local, oldDuration, oldDuration)
+            clip.sliceAudio(0.0, local, oldDuration)
+            val hold = clip.frozen
+            if (hold != null) {
+                clip.frozen = hold.copy(duration = local)
+                right.frozen = hold.copy(duration = oldDuration - local, offset = hold.offset + local)
+            } else clip.sourceOut = right.sourceIn
             clip.effects.removeAll { it.from >= local }
             clip.effects.forEach { it.to = min(it.to, local) }
             project.clips.add(right)
@@ -461,7 +607,7 @@ class Editor(var project: Project = Project()) {
                             effect.kind !in listOf("Text", "Image"))
                 }
                 c.effects.add(
-                    effect.copyEffect(true).apply {
+                    effect.copyEffect().apply {
                         if (
                             replaceId == null &&
                                 kind in listOf("Text", "Image") &&
@@ -473,6 +619,7 @@ class Editor(var project: Project = Project()) {
                             to += offset
                         }
                         to = min(to, oldDuration)
+                        if (kind == "Dolly Zoom") values.putIfAbsent("origin", c.sourceTime(c.start + from).toString())
                     }
                 )
                 if (abs(c.duration - oldDuration) > .000001)
@@ -494,7 +641,7 @@ class Editor(var project: Project = Project()) {
                 c.effects.removeAll { it.kind in kinds }
                 chain.forEach {
                     c.effects.add(
-                        it.copyEffect(true).apply {
+                        it.copyEffect().apply {
                             from = 0.0
                             to = oldDuration
                         }
@@ -503,6 +650,43 @@ class Editor(var project: Project = Project()) {
                 if (abs(c.duration - oldDuration) > .000001)
                     retime(c, oldDuration, oldEnd, retimed.add(c.start to oldEnd))
             }
+        }
+    }
+
+    internal fun isolateAudioScope(): Set<String> {
+        val ids = targets().filter { it.audio }.map { it.id }.toMutableSet()
+        val r = range ?: return ids
+        ids.addAll(splitAt(r.endInclusive, ids).values)
+        ids.addAll(splitAt(r.start, ids).values)
+        return project.clips.filter { it.id in ids && it.start < r.endInclusive && it.end > r.start }.map { it.id }.toSet()
+    }
+
+    internal fun isolateVideoScope(): Set<String> {
+        range?.let { r ->
+            splitAt(r.endInclusive, targets().filter { it.video }.map { it.id }.toSet())
+            splitAt(r.start, targets().filter { it.video }.map { it.id }.toSet())
+        }
+        return targets().filter { it.video }.map { it.id }.toSet()
+    }
+
+    internal fun replaceVideoStates(states: Map<String, List<Effect>>, kinds: Set<String>) {
+        change {
+            val retimed = mutableSetOf<Pair<Double, Double>>()
+            for (c in project.clips.filter { it.id in states }.sortedByDescending { it.start }) {
+                val duration = c.duration
+                val end = c.end
+                c.effects.removeAll { it.kind in kinds }
+                c.effects.addAll(states.getValue(c.id).map { it.copyEffect() })
+                if (abs(c.duration - duration) > .000001)
+                    retime(c, duration, end, retimed.add(c.start to end))
+            }
+        }
+    }
+
+    fun commitDraft(expected: Project, edited: Project) {
+        change {
+            check(project == expected) { "The project changed while this tool was open. Reopen the tool to keep the newer edits." }
+            project = edited.duplicate()
         }
     }
 
@@ -542,7 +726,7 @@ class Editor(var project: Project = Project()) {
     fun removeEffect(id: String) {
         change {
             val retimed = mutableSetOf<Pair<Double, Double>>()
-            for (clip in project.clips.sortedByDescending { it.start }) {
+            for (clip in targets().sortedByDescending { it.start }) {
                 val duration = clip.duration
                 val end = clip.end
                 clip.effects.removeAll { it.id == id }
@@ -665,6 +849,7 @@ class Editor(var project: Project = Project()) {
 
     private fun retime(clip: Clip, oldDuration: Double, oldEnd: Double, ripple: Boolean = true) {
         val ratio = clip.duration / oldDuration
+        clip.retimeAudio(oldDuration)
         val delta = clip.duration - oldDuration
         clip.effects.forEach {
             it.from *= ratio
@@ -693,8 +878,10 @@ class Editor(var project: Project = Project()) {
                     val a = max(r.start, c.start)
                     val b = min(r.endInclusive, c.end)
                     if (b <= a) return@mapNotNull null
-                    c.sourceOut = clip.sourceTime(b)
-                    c.sourceIn = clip.sourceTime(a)
+                    c.sliceAudio(a - clip.start, b - clip.start, clip.duration)
+                    if (clip.frozen != null) c.frozen = clip.frozen!!.copy(duration = b - a,
+                        offset = clip.frozen!!.offset + a - clip.start)
+                    else { c.sourceOut = clip.sourceTime(b); c.sourceIn = clip.sourceTime(a) }
                     c.start = a
                     c.effects.forEach {
                         it.from = max(0.0, it.from - (a - clip.start))

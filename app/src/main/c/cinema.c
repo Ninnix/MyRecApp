@@ -4,108 +4,85 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "pixels.h"
 
 static float clamp(float v, float lo, float hi) { return fminf(hi, fmaxf(lo, v)); }
 
-static float reflect(float value, int length) {
-    if (length <= 1) return 0;
-    float edge = length - 1;
-    value = fmodf(fabsf(value), 2 * edge);
-    return value <= edge ? value : 2 * edge - value;
-}
-
-static void sample(const uint8_t *src, int stride, int width, int height, float x, float y,
-                   float out[3]) {
-    x = clamp(x, 0, width - 1);
-    y = clamp(y, 0, height - 1);
-    int ix = (int)x, iy = (int)y;
-    int nx = ix + 1 < width ? ix + 1 : ix;
-    int ny = iy + 1 < height ? iy + 1 : iy;
-    float dx = x - ix, dy = y - iy;
-    for (int c = 0; c < 3; c++)
-        out[c] = (1 - dy) * ((1 - dx) * src[iy * stride + ix * 4 + c] +
-                             dx * src[iy * stride + nx * 4 + c]) +
-                 dy * ((1 - dx) * src[ny * stride + ix * 4 + c] +
-                       dx * src[ny * stride + nx * 4 + c]);
-}
-
-JNIEXPORT void JNICALL Java_org_myrec_app_Native_kaleidoscope(
-    JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jint segments,
-    jfloat rotation, jfloat zoom, jfloat center_x, jfloat center_y) {
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_rgbChannels(
+    JNIEnv *env, jobject self, jobject bitmap, jfloat strength,
+    jfloat red_x, jfloat red_y, jfloat green_x, jfloat green_y, jfloat blue_x, jfloat blue_y) {
     (void)self;
-    AndroidBitmapInfo info;
-    uint8_t *pixels;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || strength <= 0 ||
-        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels)) return;
-    size_t bytes = (size_t)info.stride * info.height;
-    uint8_t *source = malloc(bytes);
-    if (!source) { AndroidBitmap_unlockPixels(env, bitmap); return; }
-    memcpy(source, pixels, bytes);
-    const float pi = 3.14159265358979323846f;
-    /* A period contains two mirrored sections. Keep the source wedge above
-     * the center, where a centered subject is, rather than at the right edge. */
-    float sector = 4 * pi / clamp((float)segments, 2, 24);
-    float angle = rotation * pi / 180 - pi / 2 - sector / 4;
-    /* Center locates the mirror junction; source framing stays fixed so moving
-     * the junction does not pan the subject inside each mirrored section. */
-    float half_w = (info.width - 1) * .5f, half_h = (info.height - 1) * .5f;
-    float cx = half_w, cy = half_h * 1.5f;
-    float ox = (info.width - 1) * clamp(center_x, 0, 1);
-    float oy = (info.height - 1) * clamp(center_y, 0, 1);
-    float turn = rotation * pi / 180, cs = cosf(turn), sn = sinf(turn);
+    if (strength <= 0 || (red_x == 0 && red_y == 0 && green_x == 0 && green_y == 0 &&
+                         blue_x == 0 && blue_y == 0)) return;
+    YrPixels image, source;
+    if (!yr_lock(env, bitmap, &image)) return;
+    if (!yr_copy_pixels(&image, &source)) { AndroidBitmap_unlockPixels(env, bitmap); return; }
+    AndroidBitmapInfo info = image.info;
+    float reach = .12f * fminf(info.width, info.height);
+    float dx[3] = {red_x * reach, green_x * reach, blue_x * reach};
+    float dy[3] = {red_y * reach, green_y * reach, blue_y * reach};
+    strength = clamp(strength, 0, 1);
+    /* Sampling and intensity both operate in the reference's linear BT.709
+     * working space. Interpolating display values would darken channel edges. */
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
-        float dx = x - ox, dy = y - oy;
-        float scale = fmaxf(.1f, zoom), sx, sy;
-        if (segments == 4) {
-            /* Four-way mirroring keeps complete subjects in a 2x2 layout. */
-            float tile_scale = scale * (5.f / 3);
-            sx = cx + (half_w - 2 * fabsf(dx * cs + dy * sn)) / tile_scale;
-            sy = cy + (half_h * .5f - 2 * fabsf(dy * cs - dx * sn)) / tile_scale;
-        } else {
-            float radius = hypotf(dx, dy) / scale;
-            float theta = fmodf(atan2f(dy, dx) - angle + 8 * pi, sector);
-            theta = fminf(theta, sector - theta) + angle;
-            sx = cx + radius * cosf(theta);
-            sy = cy + radius * sinf(theta);
+        float out[4], sampled[4]; yr_read(&image, x, y, out);
+        for (int c = 0; c < 3; c++) {
+            yr_sample(&source, x - dx[c], y - dy[c], sampled);
+            out[c] += strength * (sampled[c] - out[c]);
         }
-        float rgb[3];
-        sample(source, info.stride, info.width, info.height,
-               reflect(sx, info.width), reflect(sy, info.height), rgb);
-        uint8_t *out = pixels + y * info.stride + x * 4;
-        for (int c = 0; c < 3; c++)
-            out[c] = (uint8_t)clamp(out[c] + strength * (rgb[c] - out[c]), 0, 255);
+        yr_write(&image, x, y, out);
     }
-    free(source);
+    free(source.data);
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_myrec_app_Native_rgbOffset(
-    JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat distance, jfloat angle) {
+static float reflected_uv(float value) {
+    return 1 - fabsf(2 * (value * .5f - floorf(value * .5f)) - 1);
+}
+
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_kaleidoscope(
+    JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jint divisions,
+    jfloat center_x, jfloat center_y, jfloat split_angle, jfloat pan_x, jfloat pan_y, jfloat source_angle) {
     (void)self;
-    AndroidBitmapInfo info;
-    uint8_t *pixels;
-    if (strength <= 0 || distance <= 0 || AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
-        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels)) return;
-    size_t bytes = (size_t)info.stride * info.height;
-    uint8_t *source = malloc(bytes);
-    if (!source) { AndroidBitmap_unlockPixels(env, bitmap); return; }
-    memcpy(source, pixels, bytes);
-    float radius = fminf(info.width, info.height) * clamp(distance, 0, .25f);
-    float dx = radius * cosf(angle * .01745329252f);
-    float dy = radius * sinf(angle * .01745329252f);
+    YrPixels image, source;
+    if (!yr_lock(env, bitmap, &image)) return;
+    if (!yr_copy_pixels(&image, &source)) { AndroidBitmap_unlockPixels(env, bitmap); return; }
+    AndroidBitmapInfo info = image.info;
+    const float pi = 3.14159265358979323846f, turn = 2 * pi;
+    int count = (int)clamp((float)divisions, 2, 9);
+    float span = turn / count, axis = split_angle * pi / 180 - pi / 2;
+    float angle = -source_angle * pi / 180, cs = cosf(angle), sn = sinf(angle);
+    strength = clamp(strength, 0, 1);
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
-        float magenta[3], green[3];
-        sample(source, info.stride, info.width, info.height, x - dx, y - dy, magenta);
-        sample(source, info.stride, info.width, info.height, x + dx, y + dy, green);
-        uint8_t *out = pixels + y * info.stride + x * 4;
-        for (int c = 0; c < 3; c++) {
-            float value = c == 1 ? green[c] : magenta[c];
-            out[c] = (uint8_t)clamp(out[c] + strength * (value - out[c]), 0, 255);
+        float u = (x + .5f) / info.width, v = (y + .5f) / info.height;
+        float dx = (u - center_x) * info.width, dy = (v - center_y) * info.height;
+        if (dx * dx + dy * dy >= 1e-8f) {
+            float relative = (atan2f(dy, dx) - axis) / turn;
+            float theta = (relative - floorf(relative)) * turn;
+            int sector = (int)fminf(theta / span, count - 1);
+            if (sector != 0) {
+                float local = theta - sector * span;
+                if (count % 2 == 0 && sector % 2 != 0) local = span - local;
+                float mapped = axis + local, radius = hypotf(dx, dy);
+                u = center_x + radius * cosf(mapped) / info.width;
+                v = center_y + radius * sinf(mapped) / info.height;
+            }
         }
+        if (source_angle != 0) {
+            float rx = (u - center_x) * info.width, ry = (v - center_y) * info.height;
+            u = center_x + (cs * rx - sn * ry) / info.width;
+            v = center_y + (sn * rx + cs * ry) / info.height;
+        }
+        u -= pan_x; v -= pan_y;
+        if (u < 0 || u > 1 || v < 0 || v > 1) { u = reflected_uv(u); v = reflected_uv(v); }
+        float out[4], sampled[4]; yr_read(&image, x, y, out);
+        for (int c = 0; c < 3; c++) {
+            yr_sample(&source, u * info.width - .5f, v * info.height - .5f, sampled);
+            out[c] += strength * (sampled[c] - out[c]);
+        }
+        yr_write(&image, x, y, out);
     }
-    free(source);
+    free(source.data);
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
@@ -113,11 +90,9 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_widescreen(
     JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat ratio,
     jint bars, jfloat flares, jint tint) {
     (void)self;
-    AndroidBitmapInfo info;
-    uint8_t *pixels;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || strength <= 0 ||
-        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels)) return;
+    YrPixels image;
+    if (strength <= 0 || !yr_lock(env, bitmap, &image)) return;
+    AndroidBitmapInfo info = image.info;
     float content = fminf(info.height, info.width / fmaxf(1, ratio));
     float edge = (info.height - content) / 2;
     float color[3] = {(tint >> 16 & 255) / 255.f, (tint >> 8 & 255) / 255.f,
@@ -128,27 +103,34 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_widescreen(
         if (streak && flares > 0 && y >= edge && y < info.height - edge) {
             float tail = 0;
             for (unsigned x = 0; x < info.width; x++) {
-                uint8_t *p = pixels + y * info.stride + x * 4;
+                float p[4]; yr_read(&image, x, y, p);
+                for (int c = 0; c < 3; c++) p[c] = yr_srgb(p[c]) * 255;
                 float value = fmaxf(0, ((.2126f*p[0]+.7152f*p[1]+.0722f*p[2]) / 255.f - .9f) / .1f);
                 tail = tail * decay + value * (1 - decay);
                 streak[x] = tail;
             }
             tail = 0;
             for (int x = (int)info.width - 1; x >= 0; x--) {
-                uint8_t *p = pixels + y * info.stride + x * 4;
+                float p[4]; yr_read(&image, x, y, p);
+                for (int c = 0; c < 3; c++) p[c] = yr_srgb(p[c]) * 255;
                 float value = fmaxf(0, ((.2126f*p[0]+.7152f*p[1]+.0722f*p[2]) / 255.f - .9f) / .1f);
                 tail = tail * decay + value * (1 - decay);
                 for (int c = 0; c < 3; c++)
-                    p[c] = (uint8_t)clamp(p[c] + strength * flares * 600 *
+                    p[c] = clamp(p[c] + strength * flares * 600 *
                                           (streak[x] + tail) * color[c], 0, 255);
+                for (int c = 0; c < 3; c++) p[c] = yr_linear(p[c] / 255);
+                yr_write(&image, x, y, p);
             }
         }
         if (y < edge || y >= info.height - edge) for (unsigned x = 0; x < info.width; x++) {
-            uint8_t *p = pixels + y * info.stride + x * 4;
+            float p[4]; yr_read(&image, x, y, p);
+            for (int c = 0; c < 3; c++) p[c] = yr_srgb(p[c]) * 255;
             for (int c = 0; c < 3; c++) {
                 float value = bars == 1 ? 255 : 0;
-                p[c] = (uint8_t)clamp(p[c] + strength * (value - p[c]), 0, 255);
+                p[c] = clamp(p[c] + strength * (value - p[c]), 0, 255);
             }
+            for (int c = 0; c < 3; c++) p[c] = yr_linear(p[c] / 255);
+            yr_write(&image, x, y, p);
         }
     }
     free(streak);

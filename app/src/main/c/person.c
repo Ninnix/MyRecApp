@@ -1,4 +1,4 @@
-#include <android/bitmap.h>
+#include "pixels.h"
 #include <jni.h>
 #include <math.h>
 #include <onnxruntime_c_api.h>
@@ -92,13 +92,6 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_personLoad(JNIEnv *env, jobjec
     return (jlong)(intptr_t)p;
 }
 
-JNIEXPORT void JNICALL Java_org_myrec_app_Native_personFree(JNIEnv *env, jobject self,
-                                                             jlong handle) {
-    (void)env;
-    (void)self;
-    release((Person *)(intptr_t)handle);
-}
-
 static float clamp(float value, float low, float high) {
     return fmaxf(low, fminf(high, value));
 }
@@ -112,29 +105,16 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_personMask(JNIEnv *env, 
         failure(env, "Person effect is not ready");
         return NULL;
     }
-    AndroidBitmapInfo info;
-    uint8_t *pixels;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 || info.width < 1 || info.height < 1 ||
-        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels)) {
-        failure(env, "Cannot read the person effect frame");
-        return NULL;
-    }
+    YrPixels image;
+    if (!yr_lock(env, bitmap, &image)) { failure(env, "Cannot read the person effect frame"); return NULL; }
+    AndroidBitmapInfo info = image.info;
     for (int y = 0; y < SIDE; y++)
         for (int x = 0; x < SIDE; x++) {
             float sx = clamp((x + .5f) * info.width / SIDE - .5f, 0, (float)info.width - 1);
             float sy = clamp((y + .5f) * info.height / SIDE - .5f, 0, (float)info.height - 1);
-            int a = (int)sx, b = (int)sy;
-            int c = a + 1 < (int)info.width ? a + 1 : a;
-            int d = b + 1 < (int)info.height ? b + 1 : b;
-            float fx = sx - a, fy = sy - b;
-            for (int ch = 0; ch < 3; ch++) {
-                float value = pixels[b * info.stride + a * 4 + ch] * (1 - fx) * (1 - fy) +
-                              pixels[b * info.stride + c * 4 + ch] * fx * (1 - fy) +
-                              pixels[d * info.stride + a * 4 + ch] * (1 - fx) * fy +
-                              pixels[d * info.stride + c * 4 + ch] * fx * fy;
-                p->pixels[ch * AREA + y * SIDE + x] = roundf(value) / 127.5f - 1;
-            }
+            float value[4]; yr_sample(&image, sx, sy, value);
+            for (int ch = 0; ch < 3; ch++)
+                p->pixels[ch * AREA + y * SIDE + x] = roundf(yr_clamp(yr_srgb(value[ch]), 0, 1) * 255) / 127.5f - 1;
         }
     AndroidBitmap_unlockPixels(env, bitmap);
     const char *names[] = {"x"}, *outputs[] = {"save_infer_model/scale_0.tmp_1"};
@@ -175,12 +155,9 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_isolate(JNIEnv *env, jobject se
         return;
     if (person && (*env)->GetArrayLength(env, person) != AREA)
         return;
-    AndroidBitmapInfo info;
-    uint8_t *pixels;
-    if (AndroidBitmap_getInfo(env, bitmap, &info) ||
-        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
-        AndroidBitmap_lockPixels(env, bitmap, (void **)&pixels))
-        return;
+    YrPixels image;
+    if (!yr_lock(env, bitmap, &image)) return;
+    AndroidBitmapInfo info = image.info;
     float *mask = person ? (*env)->GetFloatArrayElements(env, person, NULL) : NULL;
     if (person && !mask) {
         AndroidBitmap_unlockPixels(env, bitmap);
@@ -190,7 +167,8 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_isolate(JNIEnv *env, jobject se
     softness = clamp(softness, 0, 1);
     for (unsigned y = 0; y < info.height; y++)
         for (unsigned x = 0; x < info.width; x++) {
-            uint8_t *p = pixels + y * info.stride + x * 4;
+            float p[4]; yr_read(&image, x, y, p);
+            for (int ch = 0; ch < 3; ch++) p[ch] = yr_srgb(p[ch]) * 255;
             float gray = .299f * p[0] + .587f * p[1] + .114f * p[2];
             float keep;
             if (mask) {
@@ -222,8 +200,8 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_isolate(JNIEnv *env, jobject se
             }
             keep = keep * keep * (3 - 2 * keep);
             for (int ch = 0; ch < 3; ch++)
-                p[ch] = (uint8_t)clamp(roundf(p[ch] + strength * (gray - p[ch]) * (1 - keep)),
-                                       0, 255);
+                p[ch] = yr_linear(clamp(p[ch] + strength * (gray - p[ch]) * (1 - keep), 0, 255) / 255);
+            yr_write(&image, x, y, p);
         }
     if (mask)
         (*env)->ReleaseFloatArrayElements(env, person, mask, JNI_ABORT);

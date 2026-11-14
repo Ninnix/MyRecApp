@@ -15,6 +15,7 @@ object AudioModels {
     private lateinit var root: File
     private lateinit var manifest: JSONObject
     @Volatile var cancelled = false
+    private val verified = mutableSetOf<Int>()
 
     fun configure(context: Context, directory: File) {
         root = directory
@@ -52,13 +53,53 @@ object AudioModels {
             }
     }
 
+    @Synchronized fun verify(name: String, cancelled: () -> Boolean) {
+        if (kind(name) == 2) { Studio.verify(cancelled); return }
+        if (kind(name) in verified) return
+        check(ready(name)) { "Download $name first" }
+        val files = spec(name).getJSONArray("files")
+        for (i in 0 until files.length()) {
+            val entry = files.getJSONObject(i)
+            check(SourceAudio.hash(File(directory(name), entry.getString("name")), cancelled) == entry.getString("sha256")) {
+                "$name model did not verify; download it again"
+            }
+        }
+        verified.add(kind(name))
+    }
+
     fun bytes(name: String): Long {
         if (kind(name) == 2) return 56235055L
         val files = spec(name).getJSONArray("files")
         return (0 until files.length()).sumOf { files.getJSONObject(it).getLong("bytes") }
     }
 
+    private fun publish(partial: File, file: File, spec: JSONObject) {
+        try {
+            val expected = spec.getString("sha256")
+            val actual = SourceAudio.hash(partial) { cancelled }
+            if (actual != expected) {
+                check(actual == spec.optString("downloadSha256", expected)) { "Audio model download did not verify" }
+                if (spec.has("contextOffset")) {
+                    // The pinned ONNX export has a fixed input dimension. Only
+                    // that two-byte protobuf varint changes; weights are untouched.
+                    java.io.RandomAccessFile(partial, "rw").use { data ->
+                        val offset = spec.getLong("contextOffset")
+                        require(offset >= 0 && offset + 2 <= data.length())
+                        data.seek(offset); check(data.readUnsignedShort() == 0xf503) { "Invalid model context" }
+                        data.seek(offset); data.writeByte(0x80); data.writeByte(0x02)
+                    }
+                }
+                check(SourceAudio.hash(partial) { cancelled } == expected) { "Adapted audio model did not verify" }
+            }
+            check(partial.renameTo(file)) { "Cannot publish the verified audio model" }
+        } catch (error: Exception) {
+            if (error !is InterruptedIOException) partial.delete()
+            throw error
+        }
+    }
+
     fun download(name: String, progress: (Float) -> Unit) {
+        synchronized(this) { verified.remove(kind(name)) }
         val files = spec(name).getJSONArray("files")
         val dir = directory(name).apply { mkdirs() }
         val total = bytes(name)
@@ -70,6 +111,12 @@ object AudioModels {
             val partial = File(dir, file.name + ".partial")
             if (cancelled) throw InterruptedIOException("Download cancelled")
             if (file.length() != size) {
+                if (partial.length() > size) partial.delete()
+                if (partial.length() == size) {
+                    publish(partial, file, spec)
+                    complete += size; progress(complete.toFloat() / total)
+                    continue
+                }
                 val connection =
                     URI(spec.getString("url")).toURL().openConnection() as HttpURLConnection
                 connection.connectTimeout = 30000
@@ -96,9 +143,8 @@ object AudioModels {
                             }
                         }
                     }
-                    check(partial.length() == size && partial.renameTo(file)) {
-                        "Incomplete audio model download"
-                    }
+                    check(partial.length() == size) { "Incomplete audio model download" }
+                    publish(partial, file, spec)
                 } finally {
                     connection.disconnect()
                 }

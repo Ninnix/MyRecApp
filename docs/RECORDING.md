@@ -2,7 +2,11 @@
 
 Open Projects, then Record or Continue recording. New footage appends to the
 current project unless you choose Start new project. The red button starts and
-stops the take. Pause keeps the session together.
+stops the take. Pause keeps the session together. Completed takes use a recording
+ledger, so undoing an older edit does not remove a new take. Interrupted files
+that remain playable are recovered into their recorded project once. Unreadable
+unfinished files are kept for recovery; the app does not yet repair unfinalized
+MP4 containers.
 
 While idle, scissors open the editor and the stacked icon opens Projects.
 During a take, portrait puts Mark to the right and Pause/Resume to the left;
@@ -73,8 +77,10 @@ The editor can also read an optional `.primaries` sidecar for an older file:
 without rewriting that file. Synthetic patch tests cover these paths, but do
 not establish the same color rendering as iOS.
 
-HDR sources are converted to SDR for editing and H.264 export. The original
-recording stays HDR. Log capture and HDR export are still missing.
+The editor uses half-float HDR working images. Export offers H.264 SDR and, on
+capable hardware, HEVC 10-bit HLG. A device must expose ten-bit decoder samples
+and recording/encoding support; unsupported paths report the missing capability.
+The original recording stays HDR. Identified native Log capture remains open.
 
 ## Camera effects
 

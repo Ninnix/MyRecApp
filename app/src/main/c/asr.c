@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <math.h>
 
 static void *library;
 static void *(*load_model)(const char *);
@@ -58,15 +59,23 @@ JNIEXPORT jbyteArray JNICALL Java_org_myrec_app_Native_asrTranscribe(JNIEnv *env
     if (set_language && language) {
         const char *lang = (*env)->GetStringUTFChars(env, language, NULL);
         if (lang) {
-            set_language(ctx, lang);
+            int status = set_language(ctx, lang);
             (*env)->ReleaseStringUTFChars(env, language, lang);
+            if (status) {
+                jclass error = (*env)->FindClass(env, "java/lang/IllegalArgumentException");
+                if (error) (*env)->ThrowNew(env, error, "Unsupported transcription language");
+                return NULL;
+            }
         }
     }
     int n = (*env)->GetArrayLength(env, audio);
+    if (n <= 0 || n > 16000 * 12) return NULL;
     float *samples = malloc((size_t)n * sizeof(float));
     if (!samples)
         return NULL;
     (*env)->GetFloatArrayRegion(env, audio, 0, n, samples);
+    if ((*env)->ExceptionCheck(env)) { free(samples); return NULL; }
+    for (int i = 0; i < n; i++) if (!isfinite(samples[i])) { free(samples); return NULL; }
     char *text = transcribe(ctx, samples, n);
     free(samples);
     if (!text)

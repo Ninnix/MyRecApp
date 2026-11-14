@@ -27,34 +27,45 @@ object Effects {
                     "Film grain",
                 ),
             "Camera & frame" to
-                listOf("Zoom", "Mirror", "Rotation", "Kaleidoscope", "Widescreen 1953"),
-            "Time" to listOf("Strobe", "Freeze", "Echo"),
+                listOf("Zoom", "Mirror", "Rotation", "Kaleidoscope", "Dolly Zoom", "Widescreen 1953"),
+            "Time" to listOf("Negative Strobe", "Step Printing", "Strobe", "Freeze", "Echo"),
             "Background" to listOf("Blur", "Letterbox"),
         )
     val legacy = listOf("Sepia", "Invert", "Contrast", "Warmth", "16mm", "Undercranking")
     val video
         get() = categories.values.flatten() + legacy
 
-    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null) {
+    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null, elapsed: Double = 0.0) {
+        if (effect.kind == "Color LUTs") {
+            val cube = effect.values["path"]?.let { LutAssets.load(it) }
+                ?: CubeLut.builtin(effect.values["lut"] ?: "Natural")
+            Native.colorLut(bitmap, cube.samples, cube.size, cube.oneDimensional, cube.minimum + cube.maximum,
+                when (effect.values["input"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 },
+                if (effect.values["path"] == null && (effect.values["lut"] ?: "Natural") == "Natural") 0f else strength,
+                effect.number("exposure"), effect.number("highlights"),
+                when (effect.values["source"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 })
+            return
+        }
         if (strength <= 0f) return
+        FilmColor.definitions[effect.kind]?.let {
+            Native.filmColor(bitmap, it.kernel, strength, FilmColor.uniforms(effect))
+            return
+        }
         when (effect.kind) {
-            "Kaleidoscope" ->
-                Native.kaleidoscope(
-                    bitmap,
-                    strength,
-                    effect.number("segments", 4f).toInt(),
-                    effect.number("rotation"),
-                    effect.number("zoom", .75f),
-                    effect.number("centerX", .5f),
-                    effect.number("centerY", .5f),
-                )
+            "Dolly Zoom" -> {
+                var t = (elapsed / effect.number("duration", 2.5f)).toFloat().coerceIn(0f, 1f)
+                if (effect.values["easing"] != "Linear") t = if (t < .5f) 4 * t * t * t else 1 - (-2 * t + 2).pow(3) / 2
+                val scale = 1 + effect.number("amount", .3f) * if (effect.values["direction"] == "Compress") 1 - t else t
+                Native.dolly(bitmap, person ?: Person.mask(bitmap), scale, effect.number("targetX", .5f), effect.number("targetY", .5f), strength)
+            }
+            "Kaleidoscope" -> Native.kaleidoscope(bitmap, strength,
+                effect.number("divisions", 2f).toInt(), effect.number("centerX", .5f), effect.number("centerY", .5f),
+                effect.number("splitAngle"), effect.number("sourcePanX"), effect.number("sourcePanY"), effect.number("sourceAngle"))
             "RGB Offset" ->
-                Native.rgbOffset(
-                    bitmap,
-                    strength,
-                    effect.number("distance", .025f),
-                    effect.number("angle", 90f),
-                )
+                Native.rgbChannels(bitmap, strength,
+                    effect.number("redX"), effect.number("redY"),
+                    effect.number("greenX"), effect.number("greenY"),
+                    effect.number("blueX"), effect.number("blueY"))
             "Widescreen 1953" ->
                 Native.widescreen(
                     bitmap,
@@ -66,15 +77,8 @@ object Effects {
                         .getOrDefault(Color.CYAN),
                 )
             "Color Correction" ->
-                Native.colorCorrect(
-                    bitmap,
-                    strength,
-                    effect.number("exposure"),
-                    effect.number("contrast", 1f),
-                    effect.number("saturation", 1f),
-                    effect.number("temperature"),
-                    effect.number("tint"),
-                )
+                Native.primaryColor(bitmap, strength,
+                    EffectContracts.correction.map { effect.number(it.id, it.initial.toFloat()) }.toFloatArray())
             "Night fix" -> Native.night(bitmap, strength, effect.number("cleanup", .5f))
             "Color Isolation" ->
                 Native.isolate(
@@ -136,23 +140,15 @@ object Effects {
         when (kind) {
             "Mono",
             "Noir" -> 1
-            "Warm" -> 2
-            "Cool" -> 3
-            "Cinema" -> 4
             "Quantization" -> 5
-            "Bleach Bypass" -> 6
-            "Day for Night" -> 7
-            "Sepia",
-            "Silent Tint" -> 8
+            "Sepia" -> 8
             "Invert" -> 9
             "Vignette" -> 10
-            "Contrast",
-            "Expressionism" -> 11
+            "Contrast" -> 11
             "Saturation" -> 12
             "Film grain",
             "16mm" -> 13
             "Blur" -> 14
-            "Three-Strip" -> 16
             else -> 0
         }
 
@@ -172,8 +168,11 @@ object Effects {
 
 class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
     private var fps = 30
+    private var extended = false
+    private var tenBit = false
     private val decoders = linkedMapOf<String, VideoDecoder>()
     private val failed = mutableSetOf<String>()
+    private var preserveHdr = false
     private val readers = linkedMapOf<String, MediaMetadataRetriever>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
@@ -186,23 +185,31 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             MediaMetadataRetriever().apply { setDataSource(path) }
         }
 
-    fun frame(path: String, time: Double, width: Int, height: Int, stream: String = path): Bitmap? {
-        if (path !in failed)
+    fun frame(path: String, time: Double, width: Int, height: Int, stream: String = path, rawColor: Boolean = false): Bitmap? {
+        val key = "$stream:$rawColor:$extended:$tenBit"
+        val failure = "$path:$rawColor:$extended:$tenBit"
+        if (failure !in failed)
             try {
                 val decoder =
-                    decoders.getOrPut(stream) {
+                    decoders.getOrPut(key) {
                         if (decoders.size >= 4) decoders.remove(decoders.keys.first())?.close()
-                        VideoDecoder(path)
+                        VideoDecoder(path, rawColor, extended, tenBit)
                     }
                 decoder.frame(time, width, height)?.let {
                     return it
                 }
             } catch (e: Exception) {
                 android.util.Log.w("MyRec", "Video decoder failed", e)
-                decoders.remove(stream)?.close()
-                failed.add(path)
+                decoders.remove(key)?.close()
+                failed.add(failure)
             }
-        return stillFrame(path, time, width, height)
+        check(!rawColor) { "Cannot read unmanaged Log values from this source" }
+        check(!extended || !WorkingColor.hdr(path)) { "Cannot preserve this source's HDR samples with the available decoder" }
+        return stillFrame(path, time, width, height)?.let { input ->
+            if (!extended) input else WorkingColor.bitmap(input.width, input.height).also {
+                Canvas(it).drawBitmap(input, 0f, 0f, null); input.recycle()
+            }
+        }
     }
 
     private fun stillFrame(path: String, time: Double, width: Int, height: Int): Bitmap? =
@@ -221,9 +228,14 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             null
         }
 
-    fun render(project: Project, at: Double, width: Int, height: Int): Bitmap {
+    fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false): Bitmap {
         fps = project.fps.coerceAtLeast(1)
-        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        tenBit = keepLinear
+        preserveHdr = keepLinear
+        val hasHdr = project.clips.any { it.video && WorkingColor.hdr(it.path) }
+        extended = keepLinear || hasHdr || project.clips.any { it.video && it.effects.any { fx -> fx.enabled &&
+            (fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2")) } }
+        val output = if (extended) WorkingColor.bitmap(width, height) else Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
         val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
@@ -272,7 +284,7 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             if (clip != null) drawClip(canvas, clip, t, width, height)
             else drawTransition(output, layer.transition!!, layer.before, layer.after, t)
         }
-        return output
+        return if (extended && !keepLinear) WorkingColor.display(output, toneMap = false).also { output.recycle() } else output
     }
 
     private fun drawTransition(
@@ -282,8 +294,8 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
         after: Clip?,
         t: Double,
     ) {
-        val a = output.copy(Bitmap.Config.ARGB_8888, true)
-        val b = output.copy(Bitmap.Config.ARGB_8888, true)
+        val a = output.copy(output.config!!, true)
+        val b = output.copy(output.config!!, true)
         try {
             if (before != null)
                 drawClip(
@@ -318,9 +330,32 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
         }
     }
 
+    private fun sequenceFrame(clip: Clip, effects: List<Effect>, source: Double, width: Int, height: Int, raw: Boolean): Bitmap? {
+        val step = effects.firstOrNull { it.kind == "Step Printing" }
+        if (step == null || clip.frozen != null) return frame(clip.path, source, width, height,
+            "${clip.path}:${clip.sourceIn}:${clip.start}", raw)
+        val original = clip.effects.first { it.id == step.id }
+        val index = VideoFrameIndex.get(clip.path, onAnalysis)
+        val times = index.block(source, original.phase?.origin ?: clip.sourceIn,
+            step.number("step", 3f).toInt(), clip.sourceIn, clip.sourceOut)
+        val stream = "${clip.path}:step:${step.id}"
+        val first = frame(clip.path, times[0], width, height, stream, raw) ?: return null
+        val average = first.copy(first.config!!, true)
+        try {
+            for (i in 1 until times.size) {
+                val next = frame(clip.path, times[i], width, height, stream, raw) ?: error("A source frame is unavailable")
+                try { Native.workingAverage(average, next, 1f / (i + 1)) } finally { next.recycle() }
+            }
+            Native.workingAverage(first, average, step.number("smear", .7f))
+            return first
+        } catch (error: Throwable) { first.recycle(); throw error }
+        finally { average.recycle() }
+    }
+
     private fun drawClip(canvas: Canvas, c: Clip, at: Double, width: Int, height: Int) {
         val local = at - c.start
-        val fx = c.effects.filter { it.active(local) }
+        val fx = EffectOrder.ordered(c.effects)
+            .filter { it.active(local) }.map { it.sampled(c.sourceTime(at)) }
         var sourceTime = c.sourceTime(at)
         fx.firstOrNull { it.kind == "Freeze" }
             ?.let { sourceTime = c.sourceIn + it.number("time").toDouble() }
@@ -329,16 +364,20 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                 val hz = it.number("frequency", 8f)
                 sourceTime = floor(sourceTime * hz) / hz
             }
-        val raw =
-            frame(c.path, sourceTime, width, height, "${c.path}:${c.sourceIn}:${c.start}") ?: return
+        val grade = fx.lastOrNull { it.kind == "Color LUTs" }
+        val rawLog = grade?.values?.get("source") in listOf("Apple Log", "Apple Log 2")
+        val raw = sequenceFrame(c, fx, sourceTime, width, height, rawLog) ?: return
         val bitmap =
-            if (raw.isMutable && raw.config == Bitmap.Config.ARGB_8888) raw
-            else raw.copy(Bitmap.Config.ARGB_8888, true).also { raw.recycle() }
+            if (raw.isMutable && raw.config == (if (extended) Bitmap.Config.RGBA_F16 else Bitmap.Config.ARGB_8888)) raw
+            else raw.copy(if (extended) Bitmap.Config.RGBA_F16 else Bitmap.Config.ARGB_8888, true).also { raw.recycle() }
+        grade?.let { Effects.correct(bitmap, it, it.strength(local, c.duration)) }
+        val mapped = extended && WorkingColor.hdr(c.path) && (!preserveHdr || fx.any { it.kind in Effects.video &&
+            it.kind !in setOf("Kaleidoscope", "Zoom", "Crop", "Mirror", "Rotation", "Stabilize", "Placement") || it.kind == "Freeze Frame" })
+        if (mapped) Native.workingToneMap(bitmap)
         val person =
             if (
                 fx.any {
-                    it.kind == "Color Isolation" &&
-                        it.values["mode"] == "Person" &&
+                    (it.kind == "Dolly Zoom" || it.kind == "Color Isolation" && it.values["mode"] == "Person") &&
                         it.strength(local, c.duration) > 0f
                 }
             )
@@ -348,9 +387,11 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             ?.let { effect ->
                 val time = max(c.sourceIn, sourceTime - 1.0 / fps)
                 if (time < sourceTime - .001) {
-                    frame(c.path, time, width, height, "${c.path}:night:${c.sourceIn}")?.let {
+                    frame(c.path, time, width, height, "${c.path}:night:${c.sourceIn}", rawColor = rawLog)?.let {
                         previous ->
                         try {
+                            grade?.let { Effects.correct(previous, it, it.strength(local, c.duration)) }
+                            if (mapped) Native.workingToneMap(previous)
                             if (previous.width == bitmap.width && previous.height == bitmap.height)
                                 Native.temporal(
                                     bitmap,
@@ -364,10 +405,15 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                     }
                 }
             }
-        for (e in fx) {
-            Effects.correct(bitmap, e, e.strength(local, c.duration), person)
+        for (e in fx.filter { it.kind != "Color LUTs" }) {
+            if (e.kind == "Negative Strobe") {
+                val original = c.effects.first { it.id == e.id }
+                if (TimeEffects.negative(original, sourceTime, fps.toDouble(), c.frozen?.let { it.offset + local }))
+                    Native.workingNegative(bitmap, e.strength(local, c.duration))
+            }
+            Effects.correct(bitmap, e, e.strength(local, c.duration), person,
+                sourceTime - (e.values["origin"]?.toDoubleOrNull() ?: c.sourceTime(c.start + e.from)))
             var kind = e.kind
-            if (kind == "Color LUTs") kind = e.values["lut"] ?: "Natural"
             val id = Effects.pixelId(kind)
             if (id > 0)
                 Native.image(
@@ -493,6 +539,13 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
         val zoom = (crop?.number("zoom", 1f) ?: 1f) * if (crop != null) cover else 1f
         val dx = crop?.number("x", 0f) ?: 0f
         val dy = crop?.number("y", 0f) ?: 0f
+        c.frozen?.let { hold ->
+            val settings = fx.firstOrNull { it.kind == "Freeze Frame" }
+            val push = settings?.number("pushIn") ?: 0f
+            val length = settings?.number("hold", (hold.offset + hold.duration).toFloat()) ?: (hold.offset + hold.duration).toFloat()
+            val scale = 1 + push * ((hold.offset + local) / length).toFloat().coerceIn(0f, 1f)
+            canvas.scale(scale, scale, rect.centerX(), rect.centerY())
+        }
         canvas.translate(dx * rect.width(), dy * rect.height())
         canvas.scale(zoom, zoom, rect.centerX(), rect.centerY())
         canvas.rotate(angle, rect.centerX(), rect.centerY())

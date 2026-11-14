@@ -14,11 +14,12 @@ class DeviceTests : Instrumentation() {
     private val report = StringBuilder()
     private var suite = ""
     private var currentProject = false
-    private val testSessionId = uid()
+    private var testSessionId = uid()
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         suite = arguments?.getString("suite") ?: ""
+        arguments?.getString("testSessionId")?.takeIf { it.matches(Regex("[A-Za-z0-9-]+")) }?.let { testSessionId = it }
         currentProject = arguments?.getString("currentProject") == "true"
         start()
     }
@@ -42,6 +43,39 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
+        if (suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing") {
+            var activity: MainActivity? = null
+            try {
+                val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
+                    .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
+                activity = a
+                if (suite == "scene") SceneTests.run(this, a, ::test)
+                else if (suite == "restoration") RestorationTests.run(this, a, ::test)
+                else if (suite == "time-effects") TimeEffectsDeviceTests.run(this, a, ::onMain, ::test)
+                else if (suite == "hdr-pipeline" || suite == "hdr-full") HdrPipelineTests.run(this, a, ::onMain, ::test, requireFull = suite == "hdr-full")
+                else if (suite == "audio-editing") AudioEditingTests.run(this, a, ::onMain, ::test)
+                else if (suite == "preview") PreviewTests.run(this, a, ::onMain, ::test)
+                else if (suite == "effect-contracts") EffectContractTests.run(this, a, ::onMain, ::test)
+                else StorageUITests.run(this, a, ::onMain, ::test)
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+            } catch (e: Throwable) {
+                finish(Activity.RESULT_CANCELED, Bundle().apply { putString("stream", report.toString() + "FAIL " + e.stackTraceToString()) })
+            } finally { activity?.let { onMain { it.finish() } } }
+            return
+        }
+        if (suite == "storage" || suite == "archives") {
+            try {
+                if (suite == "archives") ArchiveTests.run(this, ::test)
+                else DurabilityTests.run(this, ::test)
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+            } catch (e: Throwable) {
+                finish(Activity.RESULT_CANCELED, Bundle().apply {
+                    putString("stream", report.toString() + "FAIL " + e.stackTraceToString())
+                })
+            }
+            return
+        }
         if (suite == "hdr-scene") {
             hdrScene()
             return
@@ -188,7 +222,10 @@ class DeviceTests : Instrumentation() {
                     }
                 val out = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
                 Native.blend(a, b, out, 0, 0.5f, 1f)
-                check(Color.red(out.getPixel(10, 10)) in 160..170)
+                val gray = Color.red(a.getPixel(10, 10)) / 255.0
+                val light = if (gray <= .04045) gray / 12.92 else ((gray + .055) / 1.055).pow(2.4)
+                val expected = ((1.055 * ((light + 1) / 2).pow(1 / 2.4) - .055) * 255).roundToInt()
+                check(abs(Color.red(out.getPixel(10, 10)) - expected) <= 1)
                 Native.blend(a, b, out, 1, .5f, 1f, 0f, false)
                 check(Color.red(out.getPixel(4, 16)) > 240 && Color.red(out.getPixel(28, 16)) < 100)
                 Native.blend(a, b, out, 1, .5f, 1f, 90f, false)
@@ -294,9 +331,12 @@ class DeviceTests : Instrumentation() {
                         eraseColor(Color.rgb(50, 80, 120))
                     }
                 try {
-                    Native.colorCorrect(image, 1f, 0f, 1f, 1f, 0f, 0f)
+                    Effects.correct(image, Effect(kind = "Color Correction"), 1f)
                     check(image.getPixel(10, 10) == Color.rgb(50, 80, 120))
-                    Native.colorCorrect(image, 1f, 1f, 1f, 0f, 0f, 0f)
+                    val correction = Effect(kind = "Color Correction").apply {
+                        setNumber("exposure", 1f); setNumber("saturation", 0f)
+                    }
+                    Effects.correct(image, correction, 1f)
                     val pixel = image.getPixel(10, 10)
                     check(
                         Color.red(pixel) == Color.green(pixel) &&
@@ -362,7 +402,7 @@ class DeviceTests : Instrumentation() {
                 p.clips[0].gainDb = -60f
                 check(level(p) < original * 0.002)
             }
-            test("undercranking speeds up decoded audio by the same factor as video") {
+            test("undercranking changes duration while preserving decoded audio pitch") {
                 fun crossings(p: Project): Int =
                     AudioMixer(p, cache).use { mixer ->
                         mixer.prepare()
@@ -376,7 +416,8 @@ class DeviceTests : Instrumentation() {
                         clips.single().effects.add(Effect(kind = "Undercranking"))
                     }
                 val ratio = crossings(faster).toDouble() / normal
-                check(normal > 50 && ratio in 1.23..1.27) { "Audio rate ratio $ratio" }
+                check(normal > 50 && ratio in .98..1.02) { "Pitch changed with clip rate: $ratio" }
+                check(abs(faster.duration - project.duration / 1.25) < .001)
                 check(abs(faster.duration - 4.8) < .01)
             }
             test("limiter bounds peaks and bypass preserves samples") {
@@ -384,9 +425,9 @@ class DeviceTests : Instrumentation() {
                 val state = Native.audioCreate(48000)
                 try {
                     val bypass = pcm.copyOf()
-                    Native.audioProcess(state, bypass, 4800, 1f, 0f, 0f, 1800f, 0f, 0f, 0f)
+                    Native.audioProcess(state, bypass, 4800, 1f, 0f, 0f, 1800f, 0f, 0f)
                     check(bypass.contentEquals(pcm))
-                    Native.audioProcess(state, pcm, 4800, 1f, 0f, 0f, 1800f, 0f, 0f, 0f, 1f)
+                    Native.audioProcess(state, pcm, 4800, 1f, 0f, 0f, 1800f, 0f, 0f, 1f)
                     check(pcm.all { abs(it) <= .951f })
                     check(abs(pcm.last() / pcm[pcm.lastIndex - 1] + 1f / 3) < .001f)
                 } finally {
@@ -2129,11 +2170,10 @@ class DeviceTests : Instrumentation() {
                     val reader = MediaMetadataRetriever()
                     try {
                         reader.setDataSource(target.absolutePath)
-                        val duration =
-                            reader
+                        val duration = Mp4Audio.presentedDuration(target) ?: reader
                                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!
                                 .toDouble() / 1000
-                        check(abs(duration - 1.5) < .12) { "Transition export duration $duration" }
+                        check(abs(duration - 1.5) < .12) { "Transition export duration $duration vs ${restored.duration}" }
                     } finally {
                         reader.release()
                     }
@@ -2188,8 +2228,7 @@ class DeviceTests : Instrumentation() {
                             reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) ==
                                 "yes"
                         )
-                        val duration =
-                            reader
+                        val duration = Mp4Audio.presentedDuration(target) ?: reader
                                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)!!
                                 .toDouble() / 1000
                         check(abs(duration - 2) < 0.15) { "Exported duration $duration" }
@@ -2767,6 +2806,13 @@ class DeviceTests : Instrumentation() {
                 image.recycle()
             }
             fun fileTest(hdr: Boolean) {
+                var ready = false
+                val deadline = System.nanoTime() + 15_000_000_000L
+                while (!ready && System.nanoTime() < deadline) {
+                    onMain { ready = capture.readyToRecord }
+                    if (!ready) Thread.sleep(50)
+                }
+                check(ready) { "Camera/HDR preparation did not finish" }
                 val before = a.editor.project.clips.size
                 onMain { capture.start() }
                 Thread.sleep(2200)
@@ -2824,9 +2870,9 @@ class DeviceTests : Instrumentation() {
                         }
                         ex.selectTrack(index)
                         var first = -1L
-                        var last = -1L
+                        var last = Long.MIN_VALUE
                         var count = 0
-                        while (ex.sampleTime >= 0) {
+                        while (ex.sampleTrackIndex >= 0) {
                             if (first < 0) first = ex.sampleTime
                             if (mime.startsWith("audio/"))
                                 check(ex.sampleTime >= last) { "Audio timestamps moved backwards" }
@@ -3076,9 +3122,10 @@ class DeviceTests : Instrumentation() {
                 test("$name loads and processes through the Android C API") {
                     check(AudioModels.ready(name))
                     val input =
-                        FloatArray(48000) { i ->
-                            (.1 * sin(i * 2 * PI * 220 / 48000) +
-                                    .02 * sin(i * 2 * PI * 4100 / 48000))
+                        FloatArray(if (kind == 1) 255 * 441 else 48000) { i ->
+                            val rate = if (kind == 1) 44100 else 48000
+                            (.1 * sin(i * 2 * PI * 220 / rate) +
+                                    .02 * sin(i * 2 * PI * 4100 / rate))
                                 .toFloat()
                         }
                     val start = System.nanoTime()
@@ -3178,6 +3225,7 @@ class DeviceTests : Instrumentation() {
 
     private fun studio() {
         var activity: MainActivity? = null
+        val processing = File(targetContext.cacheDir, "studio-check-$testSessionId")
         try {
             activity =
                 startActivitySync(
@@ -3187,6 +3235,7 @@ class DeviceTests : Instrumentation() {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
                     as MainActivity
+            Studio.cacheDirectory = processing
             val source = File(targetContext.cacheDir, "studio-speech.wav")
             context.assets.open("speech.wav").use { input ->
                 source.outputStream().use { input.copyTo(it) }
@@ -3229,15 +3278,24 @@ class DeviceTests : Instrumentation() {
                 )
             }
             test("equivalent draft effect ids reuse prepared studio audio") {
-                val first = Studio.prepare(wet, wet.clips.single(), cache, { false }, {})!!
+                val first = Studio.prepare(wet.clips.single(), cache, { false }, {})!!
                 val changed =
                     wet.duplicate().apply {
                         val fx = clips.single().effects.single().copyEffect(true)
                         clips.single().effects.clear()
                         clips.single().effects.add(fx)
                     }
-                val second = Studio.prepare(changed, changed.clips.single(), cache, { false }, {})!!
-                check(first.file == second.file)
+                val second = Studio.prepare(changed.clips.single(), cache, { false }, {})!!
+                check(first == second)
+            }
+            test("source trims moves gain and split parts reuse the same full source stage") {
+                val first = Studio.prepare(wet.clips.single(), cache, { false }, {})!!
+                val changed = wet.clips.single().duplicate(true).apply {
+                    sourceIn = .8; sourceOut = 2.5; start = 5.0; gainDb = -6f
+                }
+                check(Studio.prepare(changed, cache, { false }, {}) == first)
+                val split = Editor(wet.duplicate()); split.cursor = 1.0; split.split()
+                check(split.project.clips.all { Studio.prepare(it, cache, { false }, {}) == first })
             }
             test("studio restoration respects its range and preserves mute") {
                 val range =
@@ -3276,7 +3334,7 @@ class DeviceTests : Instrumentation() {
                         clips.single().effects.single().values["strength"] = ".731"
                     }
                 try {
-                    Studio.prepare(changed, changed.clips.single(), cache, { true }, {})
+                    Studio.prepare(changed.clips.single(), cache, { true }, {})
                     error("Preparation ignored cancellation")
                 } catch (_: java.io.InterruptedIOException) {}
             }
@@ -3387,7 +3445,8 @@ class DeviceTests : Instrumentation() {
                 },
             )
         } finally {
-            activity?.let { onMain { it.finish() } }
+            activity?.let { onMain { it.playback.pause(); it.finish() } }
+            processing.deleteRecursively()
         }
     }
 
@@ -3397,30 +3456,30 @@ class DeviceTests : Instrumentation() {
             context.assets.open("speech.wav").use { src ->
                 file.outputStream().use { src.copyTo(it) }
             }
-            val cache = AudioCache(File(targetContext.cacheDir, "speech-test"))
+            val cache = AudioCache(File(targetContext.cacheDir, "speech-test/$testSessionId"))
             val directory = File(targetContext.getExternalFilesDir(null), "models/qwen3-asr-0.6b")
             val captions = Captions(cache, directory)
             test("RNNoise processes actual audio samples") {
-                val state = Native.audioCreate(48000)
+                val state = Native.noiseCreate()
+                check(state != 0L)
                 try {
                     var changed = false
                     val random = java.util.Random(42)
                     repeat(100) {
-                        val pcm = FloatArray(960) { (random.nextFloat() - 0.5f) * 0.1f }
-                        val before = pcm.copyOf()
-                        Native.audioProcess(state, pcm, 480, 1f, 0f, 0f, 1800f, 0f, 0f, 1f)
-                        check(pcm.all { it.isFinite() })
-                        if (!before.contentEquals(pcm)) changed = true
+                        val pcm = FloatArray(480) { (random.nextFloat() - .5f) * .1f }
+                        val result = Native.noiseProcess(state, pcm)!!
+                        check(result.all { it.isFinite() })
+                        if (!result.contentEquals(pcm)) changed = true
                     }
                     check(changed)
-                } finally {
-                    Native.audioDestroy(state)
-                }
+                } finally { Native.noiseFree(state) }
             }
+            val project = Project(clips = mutableListOf(ProjectStore.inspect(file)))
+            var recognized = emptyList<Caption>()
             test("Qwen captions transcribe speech offline") {
                 val began = android.os.SystemClock.elapsedRealtime()
-                val project = Project(clips = mutableListOf(ProjectStore.inspect(file)))
                 val result = captions.generate(project, "English") {}
+                recognized = result
                 val transcript = result.joinToString(" ") { it.text }
                 sendStatus(
                     0,
@@ -3433,6 +3492,11 @@ class DeviceTests : Instrumentation() {
                 )
                 val lower = transcript.lowercase()
                 check("test" in lower && "speech" in lower) { "Unexpected transcript: $transcript" }
+            }
+            test("Qwen retry reuses completed source words and preserves their original identities") {
+                val repeated = captions.generate(project, "English") {}
+                check(repeated == recognized && repeated.flatMap { it.words }.all { it.valid() })
+                check(repeated.flatMap { it.words }.zipWithNext().all { it.first.end <= it.second.start + .000001 })
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
         } catch (e: Throwable) {

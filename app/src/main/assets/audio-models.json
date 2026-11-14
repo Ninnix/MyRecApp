@@ -24,20 +24,24 @@
     ]
   },
   "voicefixer": {
-    "version": "voicefixer-v1-c-1",
-    "directory": "voicefixer-v1",
+    "version": "voicefixer-256-c-2",
+    "directory": "voicefixer-256",
     "files": [
       {
         "name": "analysis.onnx",
         "url": "https://huggingface.co/TigreGotico/audiosronnx-voicefixer/resolve/aa259fa578b9d5f4c76fda3cd967f73542b0e15b/analysis.onnx",
         "bytes": 282016051,
-        "sha256": "113d24062c5c9f87293a4e4771fbd4930136ccdff87ccbe6a6cb47726fc9cae9"
+        "sha256": "bada180e367d08fd43e70a87928070a72f3716b684e59505fa5b9b9987eb6718",
+        "downloadSha256": "113d24062c5c9f87293a4e4771fbd4930136ccdff87ccbe6a6cb47726fc9cae9",
+        "contextOffset": 282015972
       },
       {
         "name": "vocoder.onnx",
         "url": "https://huggingface.co/TigreGotico/audiosronnx-voicefixer/resolve/aa259fa578b9d5f4c76fda3cd967f73542b0e15b/vocoder.onnx",
         "bytes": 132905282,
-        "sha256": "51b513f2e5510bd7d1e61d255015d47e2fc7b5af95eb35f25b6e5030446c5310"
+        "sha256": "a80f621de759585d88c00d92d6989363af1ebd4064a112b9a37f056d08346df4",
+        "downloadSha256": "51b513f2e5510bd7d1e61d255015d47e2fc7b5af95eb35f25b6e5030446c5310",
+        "contextOffset": 132905242
       },
       {
         "name": "mel_filters.npy",

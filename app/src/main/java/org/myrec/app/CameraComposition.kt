@@ -220,11 +220,15 @@ class CameraComposition(
                     c=encodeHLG(clamp(s,0.,1.));
                 }
                 if(tone>.5){
-                    c=linearHLG(c)*3.;
+                    c=linearHLG(c);
+                    c*=pow(max(dot(c,vec3(.2627,.678,.0593)),0.),.2)*(1000./203.);
                     c=vec3(1.6605*c.r-.5876*c.g-.0728*c.b,
                         -.1246*c.r+1.1329*c.g-.0083*c.b,-.0182*c.r-.1006*c.g+1.1187*c.b);
-                    float luminance=max(dot(c,vec3(.2126,.7152,.0722)),0.);
-                    c=srgb(max(c,vec3(0.))/(1.+luminance));
+                    float y=max(1e-6,dot(c,vec3(.2126,.7152,.0722)));
+                    float mapped=y<=.75?y:.75+.25*(1.-exp(-(y-.75)/.25));c*=mapped/y;
+                    vec3 delta=c-mapped;float fit=1.;
+                    for(int i=0;i<3;i++){if(delta[i]>0.)fit=min(fit,(1.-mapped)/delta[i]);else if(delta[i]<0.)fit=min(fit,-mapped/delta[i]);}
+                    c=srgb(clamp(mapped+delta*max(0.,fit),0.,1.));
                 }
                 color=vec4(c,1.);
             }

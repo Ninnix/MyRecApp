@@ -22,11 +22,20 @@ for name in args.models:
     directory.mkdir(parents=True, exist_ok=True)
     for item in spec['files']:
         target = directory/item['name']
+        if not target.exists() and name == 'voicefixer':
+            original=ROOT/'.build/models/voicefixer-v1'/item['name']
+            if original.is_file() and hashlib.sha256(original.read_bytes()).hexdigest()==item.get('downloadSha256',item['sha256']):
+                shutil.copyfile(original,target)
         if not target.exists():
             partial = target.with_suffix(target.suffix+'.partial')
             with urllib.request.urlopen(item['url'], timeout=60) as source, partial.open('wb') as output:
                 shutil.copyfileobj(source, output)
             partial.rename(target)
+        digest=hashlib.sha256(target.read_bytes()).hexdigest()
+        if 'contextOffset' in item and digest==item['downloadSha256']:
+            with target.open('r+b') as output:
+                output.seek(item['contextOffset']);assert output.read(2)==bytes([0xf5,3])
+                output.seek(item['contextOffset']);output.write(bytes([0x80,2]))
         if target.stat().st_size != item['bytes'] or hashlib.sha256(target.read_bytes()).hexdigest() != item['sha256']:
             raise SystemExit('Checksum mismatch: '+str(target))
         print('Verified', name, item['name'])
