@@ -45,7 +45,7 @@ static void release(Person *p) {
     free(p);
 }
 
-JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_personLoad(JNIEnv *env, jobject self,
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_personLoad(JNIEnv *env, jobject self,
                                                               jstring path) {
     (void)self;
     Person *p = calloc(1, sizeof(*p));
@@ -68,7 +68,7 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_personLoad(JNIEnv *env, jobje
     }
     int64_t dims[] = {1, 3, SIDE, SIDE};
     int ok =
-        checked(env, p, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "yourec-person", &p->env)) &&
+        checked(env, p, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "myrec-person", &p->env)) &&
         checked(env, p, api->CreateSessionOptions(&options)) &&
         checked(env, p, api->SetIntraOpNumThreads(options, 2)) &&
         checked(env, p, api->SetInterOpNumThreads(options, 1)) &&
@@ -92,7 +92,7 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_personLoad(JNIEnv *env, jobje
     return (jlong)(intptr_t)p;
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_personFree(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_personFree(JNIEnv *env, jobject self,
                                                              jlong handle) {
     (void)env;
     (void)self;
@@ -103,7 +103,7 @@ static float clamp(float value, float low, float high) {
     return fmaxf(low, fminf(high, value));
 }
 
-JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_personMask(JNIEnv *env, jobject self,
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_personMask(JNIEnv *env, jobject self,
                                                                     jlong handle,
                                                                     jobject bitmap) {
     (void)self;
@@ -166,7 +166,7 @@ done:
     return result;
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_isolate(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_isolate(JNIEnv *env, jobject self,
                                                           jobject bitmap, jfloat strength,
                                                           jfloat hue, jfloat tolerance,
                                                           jfloat softness, jfloatArray person) {

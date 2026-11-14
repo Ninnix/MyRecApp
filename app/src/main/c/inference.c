@@ -31,7 +31,7 @@ int yr_inference_open(YrInference *s, const char *library, const char *directory
         return 0;
     }
     const OrtApi *api = s->api;
-    if (!yr_inference_check(s, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "yourec-audio", &s->env)) ||
+    if (!yr_inference_check(s, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "myrec-audio", &s->env)) ||
         !yr_inference_check(s, api->CreateSessionOptions(&options)) ||
         !yr_inference_check(s, api->SetIntraOpNumThreads(options, threads)) ||
         !yr_inference_check(s, api->SetInterOpNumThreads(options, 1)) ||

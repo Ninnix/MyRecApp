@@ -1,5 +1,5 @@
-#ifndef YOUREC_QUANTIZE_H
-#define YOUREC_QUANTIZE_H
+#ifndef MYREC_QUANTIZE_H
+#define MYREC_QUANTIZE_H
 #include <stdint.h>
 
 typedef struct {

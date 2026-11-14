@@ -1,17 +1,17 @@
 plugins { id("com.android.application") }
 
 android {
-    namespace = "org.yourec.app"
+    namespace = "org.myrec.app"
     compileSdk = 37
     ndkVersion = "28.2.13676358"
-    providers.gradleProperty("yourecNdkPath").orNull?.let { ndkPath = it }
+    providers.gradleProperty("myrecNdkPath").orNull?.let { ndkPath = it }
     defaultConfig {
-        applicationId = "org.yourec.app"
+        applicationId = "org.myrec.app"
         minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        testInstrumentationRunner = "org.yourec.app.DeviceTests"
+        testInstrumentationRunner = "org.myrec.app.DeviceTests"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
     }
@@ -34,7 +34,7 @@ android {
 
 tasks.register<JavaExec>("testEditor") {
     dependsOn("compileDebugUnitTestKotlin")
-    mainClass.set("org.yourec.app.EditorTestsKt")
+    mainClass.set("org.myrec.app.EditorTestsKt")
     classpath = files(tasks.named("compileDebugUnitTestKotlin"), tasks.named("compileDebugKotlin")) +
         configurations.getByName("debugUnitTestRuntimeClasspath")
 }

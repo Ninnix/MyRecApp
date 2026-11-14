@@ -34,6 +34,6 @@ for item in entries:
 if args.install:
     sdk = pathlib.Path(os.environ.get('ANDROID_HOME', pathlib.Path.home()/'Android/Sdk'))
     adb = os.environ.get('ADB', str(sdk/'platform-tools/adb'))
-    destination = '/sdcard/Android/data/org.yourec.app/files/models/studio-lava-v1'
+    destination = '/sdcard/Android/data/org.myrec.app/files/models/studio-lava-v1'
     subprocess.run([adb, 'shell', 'mkdir', '-p', destination], check=True)
     subprocess.run([adb, 'push', str(directory)+'/.', destination+'/'], check=True)

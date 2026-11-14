@@ -16,7 +16,7 @@ args.file.parent.mkdir(parents=True, exist_ok=True)
 if args.device:
     sdk = Path(os.environ.get('ANDROID_HOME', Path.home()/'Android/Sdk'))
     adb = os.environ.get('ADB', str(sdk/'platform-tools/adb'))
-    subprocess.run([adb, 'pull', '/sdcard/Android/data/org.yourec.app/files/hdr-color-roundtrip.mp4', str(args.file)], check=True)
+    subprocess.run([adb, 'pull', '/sdcard/Android/data/org.myrec.app/files/hdr-color-roundtrip.mp4', str(args.file)], check=True)
 probe = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(args.file)]))
 video = next(s for s in probe['streams'] if s['codec_type'] == 'video')
 assert video['profile'] == 'Main 10' and video['pix_fmt'] == 'yuv420p10le'

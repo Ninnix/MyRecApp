@@ -22,7 +22,7 @@ int main(int argc,char **argv) {
     if(count*sizeof(float)!=(size_t)bytes){fprintf(stderr,"Input shape mismatch\n");return 1;}
     OrtEnv *env=NULL;OrtSessionOptions *options=NULL;OrtSession *session=NULL;
     OrtMemoryInfo *memory=NULL;OrtAllocator *allocator=NULL;OrtValue *input=NULL,*output=NULL;
-    check(api->CreateEnv(ORT_LOGGING_LEVEL_WARNING,"yourec-research",&env));
+    check(api->CreateEnv(ORT_LOGGING_LEVEL_WARNING,"myrec-research",&env));
     check(api->CreateSessionOptions(&options));check(api->SetIntraOpNumThreads(options,atoi(argv[5])));
     check(api->SetInterOpNumThreads(options,1));check(api->SetSessionGraphOptimizationLevel(options,ORT_ENABLE_ALL));
     double load=now();check(api->CreateSession(env,argv[1],options,&session));load=now()-load;

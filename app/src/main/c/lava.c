@@ -79,7 +79,7 @@ YrLava *yr_lava_open(const char *library, const char *directory, int threads, ch
         goto failed;
     }
     const OrtApi *api = s->api;
-    if (!checked(s, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "yourec-lava", &s->env)) ||
+    if (!checked(s, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "myrec-lava", &s->env)) ||
         !checked(s, api->CreateSessionOptions(&options)) ||
         !checked(s, api->SetIntraOpNumThreads(options, threads)) ||
         !checked(s, api->SetInterOpNumThreads(options, 1)) ||

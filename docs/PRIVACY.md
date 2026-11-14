@@ -1,21 +1,24 @@
 # Privacy
 
-YouRec processes recordings, images, audio and captions locally. It has no
+MyRec processes video, images, sound, and captions on the phone. It has no
 advertising or analytics SDK and does not upload media for inference.
 
-Projects and preferences use Android app storage. Downloaded model files use
-the app's external-files directory. Processing files use app cache storage.
-Exports are saved through Android's media library in `Movies/YouRec`.
+Projects and preferences live in Android app storage. Downloaded models use the
+app's external-files directory; processing files use its cache. Exports go to
+the Android media library under `Movies/MyRec`.
 
-Camera and microphone permissions are used for capture. Bluetooth access supports
-accessory routing. Media import uses the system picker; sharing sends the
-selected export to the app you choose.
+Camera and microphone permissions are used for recording. Bluetooth access
+supports accessory routing. Import uses the system picker. Sharing sends the
+chosen export to the app you select.
 
-Optional model downloads contact Hugging Face, GitHub and their delivery
-providers. These services receive ordinary network request information such as
-an IP address. Recordings and transcripts are not included in model requests.
-Development preparation tools also contact runtime source hosts and Maven.
+Optional model downloads contact Hugging Face, GitHub, and their delivery
+providers. Those services receive ordinary request information, including an
+IP address. Model requests contain no recordings or transcripts. Development
+tools also contact runtime source hosts and Maven.
 
-Uninstalling the app removes its private data and model storage. Shared media
-exports remain in the Android media library. Original imported media is not
-deleted when an edit is removed.
+Uninstalling MyRec removes its private projects, models, and cache. Exported
+movies remain in the media library. Removing an edit does not delete the
+original imported media.
+
+MyRec uses `org.myrec.app`. The earlier `org.yourec.app` installation has separate
+storage; MyRec does not automatically read, move, or remove it.

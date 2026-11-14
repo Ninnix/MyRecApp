@@ -21,8 +21,10 @@ release.properties
 
 /resources/
 /research/
+/reference/
 /PARITY.md
 /PARITY_WORK.md
+/Porting.md
 
 /artifacts/*
 !/artifacts/validation.json

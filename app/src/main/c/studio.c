@@ -11,7 +11,7 @@ static void failure(JNIEnv *env, const char *message) {
         (*env)->ThrowNew(env, type, message);
 }
 
-JNIEXPORT jboolean JNICALL Java_org_yourec_app_Native_studioAvailable(JNIEnv *env,
+JNIEXPORT jboolean JNICALL Java_org_myrec_app_Native_studioAvailable(JNIEnv *env,
                                                                       jobject self) {
     (void)env;
     (void)self;
@@ -23,7 +23,7 @@ JNIEXPORT jboolean JNICALL Java_org_yourec_app_Native_studioAvailable(JNIEnv *en
     return ready;
 }
 
-JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_studioLoad(JNIEnv *env, jobject self,
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_studioLoad(JNIEnv *env, jobject self,
                                                               jstring path, jint threads) {
     (void)self;
     const char *directory = (*env)->GetStringUTFChars(env, path, NULL);
@@ -37,7 +37,7 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_studioLoad(JNIEnv *env, jobje
     return (jlong)(intptr_t)state;
 }
 
-JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_studioProcess(JNIEnv *env,
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_studioProcess(JNIEnv *env,
                                                                        jobject self,
                                                                        jlong handle,
                                                                        jfloatArray input) {
@@ -69,14 +69,14 @@ JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_studioProcess(JNIEnv *e
     return output;
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_studioFree(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_studioFree(JNIEnv *env, jobject self,
                                                              jlong handle) {
     (void)env;
     (void)self;
     yr_lava_close((YrLava *)(intptr_t)handle);
 }
 
-JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_neuralLoad(JNIEnv *env, jobject self,
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_neuralLoad(JNIEnv *env, jobject self,
     jstring path, jint kind, jint threads) {
     (void)self;
     const char *directory = (*env)->GetStringUTFChars(env, path, NULL);
@@ -88,7 +88,7 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_neuralLoad(JNIEnv *env, jobje
     return (jlong)(intptr_t)state;
 }
 
-JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_neuralProcess(JNIEnv *env,
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_neuralProcess(JNIEnv *env,
     jobject self, jlong handle, jfloatArray input) {
     (void)self;
     YrNeural *state = (YrNeural *)(intptr_t)handle;
@@ -108,7 +108,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_neuralProcess(JNIEnv *e
     return output;
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_neuralFree(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_neuralFree(JNIEnv *env, jobject self,
     jlong handle) {
     (void)env; (void)self;
     yr_neural_close((YrNeural *)(intptr_t)handle);

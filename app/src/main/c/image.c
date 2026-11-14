@@ -51,7 +51,7 @@ static void blur(uint8_t *p, int w, int h, int stride, int radius) {
     free(tmp);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_image(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_image(JNIEnv *env, jobject self,
                                                         jobject bitmap, jint kind,
                                                         jfloat amount, jfloat param,
                                                         jfloat smoothing, jboolean dither,
@@ -192,7 +192,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_image(JNIEnv *env, jobject sel
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_blend(JNIEnv *env, jobject self, jobject a,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_blend(JNIEnv *env, jobject self, jobject a,
                                                         jobject b, jobject out, jint kind,
                                                         jfloat progress, jfloat amount,
                                                         jfloat angle, jboolean soft) {
@@ -283,7 +283,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_blend(JNIEnv *env, jobject sel
 }
 
 // Edge differences ignore gradual exposure changes and prefer stable geometry.
-JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_motion(JNIEnv *env, jobject self,
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_motion(JNIEnv *env, jobject self,
                                                                 jobject a, jobject b) {
     (void)self;
     float result[2] = {0};
@@ -340,7 +340,7 @@ static float display_srgb(float value) {
     return value <= .0031308f ? 12.92f*value : 1.055f*powf(value,1/2.4f)-.055f;
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_yuv(JNIEnv *env, jobject self, jobject ybuf,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, jobject ybuf,
                                                       jobject ubuf, jobject vbuf, jint ys,
                                                       jint us, jint vs, jint up, jint vp,
                                                       jint left, jint top, jint width,
@@ -434,7 +434,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_yuv(JNIEnv *env, jobject self,
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT jfloatArray JNICALL Java_org_yourec_app_Native_similarity(JNIEnv *env, jobject self,
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_similarity(JNIEnv *env, jobject self,
                                                                     jobject a, jobject b) {
     (void)self;
     float transform[5] = {1, 0, 0, 0, 0};

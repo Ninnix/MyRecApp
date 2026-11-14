@@ -29,7 +29,7 @@ static void sample(const uint8_t *src, int stride, int width, int height, float 
                        dx * src[ny * stride + nx * 4 + c]);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_kaleidoscope(
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_kaleidoscope(
     JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jint segments,
     jfloat rotation, jfloat zoom, jfloat center_x, jfloat center_y) {
     (void)self;
@@ -80,7 +80,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_kaleidoscope(
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_rgbOffset(
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_rgbOffset(
     JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat distance, jfloat angle) {
     (void)self;
     AndroidBitmapInfo info;
@@ -109,7 +109,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_rgbOffset(
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_widescreen(
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_widescreen(
     JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat ratio,
     jint bars, jfloat flares, jint tint) {
     (void)self;

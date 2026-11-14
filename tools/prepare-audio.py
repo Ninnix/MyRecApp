@@ -33,6 +33,6 @@ for name in args.models:
     (directory/'ready').write_text(spec['version'])
     if args.install:
         adb = os.environ.get('ADB', str(Path(os.environ.get('ANDROID_HOME', Path.home()/'Android/Sdk'))/'platform-tools/adb'))
-        destination = '/sdcard/Android/data/org.yourec.app/files/models/'+spec['directory']
+        destination = '/sdcard/Android/data/org.myrec.app/files/models/'+spec['directory']
         subprocess.run([adb, 'shell', 'mkdir', '-p', destination], check=True)
         subprocess.run([adb, 'push', str(directory)+'/.', destination+'/'], check=True)

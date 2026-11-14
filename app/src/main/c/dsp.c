@@ -37,7 +37,7 @@ typedef struct {
     int rn_pos;
 } Audio;
 
-JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_audioCreate(JNIEnv *env, jobject self,
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioCreate(JNIEnv *env, jobject self,
                                                                jint rate) {
     (void)env;
     (void)self;
@@ -51,14 +51,14 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_audioCreate(JNIEnv *env, jobj
         a->rn = rn_create(NULL);
     return (jlong)(intptr_t)a;
 }
-JNIEXPORT jboolean JNICALL Java_org_yourec_app_Native_rnnoiseAvailable(JNIEnv *env,
+JNIEXPORT jboolean JNICALL Java_org_myrec_app_Native_rnnoiseAvailable(JNIEnv *env,
                                                                        jobject self) {
     (void)env;
     (void)self;
     pthread_once(&rn_once, load_rnnoise);
     return rn_create != NULL;
 }
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_audioDestroy(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioDestroy(JNIEnv *env, jobject self,
                                                                jlong handle) {
     (void)env;
     (void)self;
@@ -67,7 +67,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_audioDestroy(JNIEnv *env, jobj
         rn_destroy(a->rn);
     free(a);
 }
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_audioProcess(
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioProcess(
     JNIEnv *env, jobject self, jlong handle, jfloatArray data, jint frames, jfloat gain,
     jfloat highpass, jfloat eq, jfloat frequency, jfloat compressor, jfloat gate,
     jfloat denoise, jfloat limiter) {

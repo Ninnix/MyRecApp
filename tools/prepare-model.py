@@ -17,7 +17,7 @@ if target.exists() and target.stat().st_size==SIZE:
  raise SystemExit('Model is ready (SHA-256 verified)')
 parts=DEST/'parts';parts.mkdir(exist_ok=True)
 chunk=32*1024*1024
-prefix=pathlib.Path('/tmp/yourec-qwen-model.safetensors')
+prefix=pathlib.Path('/tmp/myrec-qwen-model.safetensors')
 if prefix.exists():
  with prefix.open('rb') as src:
   for i in range(prefix.stat().st_size//chunk):

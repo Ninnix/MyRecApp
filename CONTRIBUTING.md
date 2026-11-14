@@ -20,7 +20,7 @@ ANDROID_SERIAL=SERIAL python3 tools/test-device.py
 
 See [BUILD.md](docs/BUILD.md) for tools and [TESTING.md](docs/TESTING.md) for
 choosing a device suite. Use a dedicated test device, keep it unlocked during UI
-checks, and leave YouRec in the foreground. The runner installs both debug APKs
+checks, and leave MyRec in the foreground. The runner installs both debug APKs
 without clearing app storage. Test project metadata uses isolated cache folders.
 
 ## Processing comparisons

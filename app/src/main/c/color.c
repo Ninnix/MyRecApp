@@ -9,7 +9,7 @@ static float limit(float v, float lo, float hi) { return fmaxf(lo, fminf(hi, v))
 static uint8_t byte(float v) { return (uint8_t)limit(roundf(v), 0, 255); }
 static float luma(const uint8_t *p) { return .299f * p[0] + .587f * p[1] + .114f * p[2]; }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_colorCorrect(
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_colorCorrect(
     JNIEnv *env, jobject self, jobject bitmap, jfloat strength, jfloat exposure,
     jfloat contrast, jfloat saturation, jfloat temperature, jfloat tint) {
     (void)self;
@@ -40,7 +40,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_colorCorrect(
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_night(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_night(JNIEnv *env, jobject self,
                                                         jobject bitmap, jfloat strength,
                                                         jfloat cleanup) {
     (void)self;
@@ -94,7 +94,7 @@ JNIEXPORT void JNICALL Java_org_yourec_app_Native_night(JNIEnv *env, jobject sel
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_temporal(JNIEnv *env, jobject self,
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_temporal(JNIEnv *env, jobject self,
                                                            jobject bitmap, jobject previous,
                                                            jfloatArray motion,
                                                            jfloat strength) {

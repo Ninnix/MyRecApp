@@ -46,7 +46,7 @@ def native():
     run(clang, '-std=c11', '-O3', '-Wall', '-Wextra', '-Werror', '-fPIC', '-shared',
         '-I' + str(ROOT / '.build/runtime-sources/onnxruntime-current'),
         '-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384',
-        *sorted(ROOT.glob('app/src/main/c/*.c')), '-o', lib / 'libyourec.so',
+        *sorted(ROOT.glob('app/src/main/c/*.c')), '-o', lib / 'libmyrec.so',
         ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so',
         '-landroid', '-ljnigraphics', '-llog', '-lm', '-ldl')
     shutil.copyfile(ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so', lib / 'libonnxruntime.so')
@@ -73,7 +73,7 @@ def build():
     run(TOOLS / 'aapt2', 'compile', '--dir', ROOT / 'app/src/main/res', '-o', compiled)
     apk = BUILD / 'resources.apk'
     manifest = BUILD / 'AndroidManifest.xml'
-    source = (ROOT / 'app/src/main/AndroidManifest.xml').read_text().replace('<manifest ', '<manifest package="org.yourec.app" ', 1).replace('<application ', '<application android:debuggable="true" ', 1)
+    source = (ROOT / 'app/src/main/AndroidManifest.xml').read_text().replace('<manifest ', '<manifest package="org.myrec.app" ', 1).replace('<application ', '<application android:debuggable="true" ', 1)
     manifest.write_text(source)
     run(TOOLS / 'aapt2', 'link', '-o', apk, '-I', ANDROID, '--manifest', manifest,
         '-A', ROOT / 'app/src/main/assets',
@@ -94,14 +94,16 @@ def build():
     shutil.copyfile(apk, unsigned)
     with zipfile.ZipFile(unsigned, 'a', zipfile.ZIP_DEFLATED) as z:
         for path in dex.glob('*.dex'): z.write(path, path.name)
-        for path in (BUILD / 'lib').rglob('*.so'): z.write(path, path.relative_to(BUILD))
+        for name in ('myrec', 'onnxruntime', 'rnnoise', 'qwen_asr'):
+            path = BUILD / 'lib/arm64-v8a' / ('lib' + name + '.so')
+            if path.exists(): z.write(path, path.relative_to(BUILD))
     aligned = BUILD / 'aligned.apk'
     run(TOOLS / 'zipalign', '-f', '-P', '16', '4', unsigned, aligned)
     key = ROOT / '.build/debug.keystore'
     if not key.exists():
         run(JDK / 'bin/keytool', '-genkeypair', '-keystore', key, '-storepass', 'android', '-keypass', 'android',
             '-alias', 'androiddebugkey', '-dname', 'CN=Android Debug,O=Android,C=US', '-keyalg', 'RSA', '-validity', '10000')
-    out = BUILD / 'yourec-debug.apk'
+    out = BUILD / 'myrec-debug.apk'
     run(JDK / 'bin/java', '-jar', TOOLS / 'lib/apksigner.jar', 'sign', '--ks', key, '--ks-pass', 'pass:android',
         '--out', out, aligned)
     run(JDK / 'bin/java', '-jar', TOOLS / 'lib/apksigner.jar', 'verify', out)

@@ -1,67 +1,55 @@
 <p align="center">
-  <img src="app/src/main/res/mipmap-hdpi/ic_launcher.png" alt="YouRec" width="112">
+  <img src="docs/branding/myrec-icon.png" alt="MyRec hippopotamus" width="112">
 </p>
 
-**YouRec** is an Android video recorder and editor with local audio processing
-and captions. Record, pause, change cameras, edit and export from the same app.
-Your recordings stay on your phone.
+# MyRec
 
-The interface is native Kotlin and Android Canvas. Camera2 and Android media
-APIs handle capture and export; C11 handles image processing, stabilization and
-the bridges to external inference runtimes.
+MyRec is a video recorder and editor for Android. Record a take, pause, change
+cameras, cut the parts you do not want, fix the sound, and export. The recordings
+and the work stay on your phone.
 
-## Screenshots
+The project follows [YouRec for iPhone](https://github.com/antirez/YouRecApp),
+by Salvatore Sanfilippo (antirez). This is an independent Android implementation.
+There are still substantial differences in features and processing; this is
+not an official YouRec release or a claim of identical output.
 
-| Editor | Audio | Video effects |
-| --- | --- | --- |
-| <img src="docs/screenshots/editor.png" alt="YouRec editor with a synthetic test video" width="220"> | <img src="docs/screenshots/audio.png" alt="YouRec audio filter containers" width="220"> | <img src="docs/screenshots/video-effects.png" alt="YouRec quantization controls" width="220"> |
+## Recording and editing
 
-These captures use synthetic test media.
+You can switch cameras during a take, use a timed zoom, lock focus, and choose a
+microphone. Phones with the required camera support can record front and rear
+views together or capture 10-bit HLG video.
 
-## What you can do
+The editor has separate video and audio tracks. Split, trim, copy, paste, move,
+and arrange clips; add text, images, transitions, color effects, and stabilization.
+Audio filters run in order. Captions and neural audio restoration work offline
+after their models have been downloaded.
 
-* Pause and resume recording, switch cameras, control zoom speed, and lock focus.
-* Compose simultaneous front/rear video and record 10-bit HLG on supported hardware.
-* Select a microphone and keep an ordered list of preferred inputs.
-* Split, copy, paste, move and trim clips, with ranges, undo and redo.
-* Add text, images, transitions, color effects, framing and stabilization.
-* Shape audio with ordered filters, voice isolation and neural restoration.
-* Generate editable captions locally with Qwen ASR.
-* Export H.264 video with AAC audio to Android's media library.
+Edits leave the source files alone. Undo and redo work during the editing
+session; their history does not yet survive reopening a project. HDR recordings
+keep their original files, but editing and export currently produce SDR.
+Export writes H.264 video and AAC audio to `Movies/MyRec`.
 
-Edits are non-destructive. Recording appends to the current project unless you
-choose **Start new project**. Portrait and landscape have separate layouts.
+Read the [recording guide](docs/RECORDING.md) and
+[editing guide](docs/EDITING.md) for the controls and their limits.
 
-## Start here
+## Try it
 
-YouRec requires **Android 9 or later and an ARM64 device**. Build the APK below,
-install it, and allow camera and microphone access when recording. Open Projects
-to create a project, import video, continue recording or return to editing.
-The page also opens the privacy policy and Recently deleted, where projects can
-be restored or permanently removed.
+You need Android 9 or later and an ARM64 device. Build the APK, install it, and
+allow camera and microphone access when you start recording. Open Projects to
+start a project, import video, or continue an existing recording.
 
-Ordinary recording and editing work without downloading a model. Captions and
-neural audio effects offer their model downloads when needed. See the
-[recording guide](docs/RECORDING.md) and [editing guide](docs/EDITING.md).
+The app is now named **MyRec**, with package `org.myrec.app`. It installs beside
+the earlier `org.yourec.app` build. Android keeps their private projects, settings,
+and downloaded models separate. There is no automatic migration yet; keep the
+old app installed if it holds recordings or edits you need.
 
-## Models
-
-| Model | Use | Approximate download |
-| --- | --- | --- |
-| RNNoise | Legacy voice isolation | Included |
-| PPHumanSeg | Keep people in color | Included, 5.9 MB |
-| DeepFilterNet3 | Noise reduction | 8.6 MB |
-| VoiceFixer | Studio restoration | 415 MB |
-| LavaSR v2 | Speech detail | 56 MB |
-| Qwen3 ASR · 0.6B | Offline captions | 1.9 GB |
-
-Inference runs on the CPU through C APIs. Downloads are separate from your
-recordings. [MODELS.md](docs/MODELS.md) explains processing, storage and limits;
-file pins and checksums are in [data/models.json](data/models.json).
+This is development software. Physical checks have covered a OnePlus 15;
+other cameras, microphones, and phones need testing. A passing Android check
+does not establish the same behavior or output as the iOS app.
 
 ## Build
 
-Use JDK 17 or later, Android SDK 37, NDK 28.2.13676358, CMake 3.31.6 and Python 3.12.
+Use JDK 17+, Android SDK 37, NDK 28.2.13676358, CMake 3.31.6, and Python 3.12.
 
 ```sh
 python3 tools/prepare-runtimes.py
@@ -69,46 +57,78 @@ python3 tools/prepare-person.py
 ./tools/build.sh :app:assembleDebug
 ```
 
-The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
-The [build guide](docs/BUILD.md) covers SDK paths, runtime preparation and the
-alternative compiler script. The [release guide](docs/RELEASING.md) covers signing.
+The APK is `app/build/outputs/apk/debug/app-debug.apk`.
+See [Building](docs/BUILD.md) for SDK paths and
+[Releasing](docs/RELEASING.md) for signing.
+
+The interface uses Kotlin and Android Canvas. Camera2 and Android media APIs
+handle capture and export. C11 handles image processing, stabilization, and
+calls to the external inference runtimes through their C APIs.
+
+## Models
+
+Ordinary recording and editing need no model download. The app offers downloads
+when you choose captions or a neural audio filter.
+
+| Model | Use | Download |
+| --- | --- | --- |
+| RNNoise | Legacy voice isolation | Included |
+| PPHumanSeg | Keep people in color | Included, 5.9 MB |
+| DeepFilterNet3 | Noise reduction | 8.6 MB |
+| VoiceFixer | Studio restoration | 415 MB |
+| LavaSR v2 | Speech detail | 56 MB |
+| Qwen3-ASR-0.6B | Captions | 1.9 GB |
+
+Inference runs on the CPU. [Models](docs/MODELS.md) explains storage,
+processing, and licenses. Downloads are pinned in [data/models.json](data/models.json).
 
 ## Privacy
 
-Recording, editing, audio processing and transcription run locally. The app has
-no advertising or analytics SDK. Projects, settings, downloaded models and
-processing caches stay in Android app storage; exports go to `Movies/YouRec`.
+The app has no advertising or analytics SDK. Recording, editing, audio
+processing, and transcription run locally. Model downloads contact GitHub,
+Hugging Face, and their delivery providers; they do not send recordings or
+transcripts. Import and sharing use Android's picker and the app you choose.
+Read the [privacy notes](docs/PRIVACY.md).
 
-Model downloads contact GitHub, Hugging Face and their delivery providers.
-Recordings and transcripts are not part of those requests. Sharing or importing
-media uses the Android picker and the app you choose. Read the
-[privacy notes](docs/PRIVACY.md).
+## Acknowledgements
 
-## Status and documentation
+Thanks to **Salvatore Sanfilippo (antirez)** for
+[YouRec](https://github.com/antirez/YouRecApp): the original camera and video
+editor for iPhone, the design that started this project, and now the published
+source that makes a careful Android port possible. MyRec is independently
+maintained and is not an official YouRec release.
 
-YouRec is development software. Camera and microphone support follows Android's
-reported capabilities rather than a phone-model list. Physical device testing
-has covered the attached OnePlus 15; other phones and accessories still need
-validation. Effect quality and processing time vary with the media and hardware.
+Thanks also to the authors of [RNNoise](https://github.com/xiph/rnnoise),
+[Qwen ASR](https://github.com/antirez/qwen-asr),
+[ONNX Runtime](https://github.com/microsoft/onnxruntime),
+[DeepFilterNet](https://github.com/Rikorose/DeepFilterNet),
+[LavaSR](https://github.com/ysharma3501/LavaSR),
+[VoiceFixer](https://github.com/haoheliu/voicefixer), and
+[PPHumanSeg](https://github.com/opencv/opencv_zoo/tree/main/models/human_segmentation_pphumanseg).
+Runtime revisions are recorded in [runtimes.json](runtimes.json).
 
-* [Recording and microphones](docs/RECORDING.md)
-* [Editing and export](docs/EDITING.md)
-* [Models and inference](docs/MODELS.md)
-* [Building](docs/BUILD.md), [testing](docs/TESTING.md), and [releasing](docs/RELEASING.md)
+## Licenses and artwork
 
-## Credits
+MyRec's application source code and documentation are released under the
+[MIT License](LICENCE). It retains the copyright notices for Ninnix and the
+MyRec contributors, and for Salvatore Sanfilippo's upstream work. The same
+license is [bundled in the APK](app/src/main/assets/licenses/MyRec.txt).
 
-YouRec uses [RNNoise](https://github.com/xiph/rnnoise),
-[Qwen ASR](https://github.com/antirez/qwen-asr), and
-[ONNX Runtime](https://github.com/microsoft/onnxruntime). Their versions and
-source checksums are pinned in [runtimes.json](runtimes.json).
+YouRec's original code and documentation use the
+[MIT License](https://github.com/antirez/YouRecApp/blob/faf1815e82e1f2d5f03034a583363d3c3af464a2/LICENSE).
+That grant reserves the **YouRec name and icon** as branding. MyRec uses its own
+name and newly generated hippopotamus artwork: a left-facing camera-like
+silhouette, circular lens, and red recording eye. The MyRec name and icon are
+also excluded from the source-code license. The complete upstream notice is
+retained [in the app assets](app/src/main/assets/licenses/YouRec.txt).
 
-Models, runtime libraries and supplied artwork retain their own rights and
-notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the
-[bundled licenses](app/src/main/assets/licenses).
+Models and libraries keep their own licenses. VoiceFixer's code is MIT; its
+published model checkpoints are CC BY 4.0. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the
+[bundled license texts](app/src/main/assets/licenses).
 
-## Contributing
+## Development
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for build checks, device tests and useful
-bug reports. Keep application code in Kotlin or C11 and call external inference
-implementations through their C APIs.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [Testing](docs/TESTING.md).
+An optional local iOS checkout can live in `reference/YouRecApp/`; it is
+excluded from Git. See [Building](docs/BUILD.md) for the reference commands.

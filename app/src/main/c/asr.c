@@ -26,13 +26,13 @@ static void init(void) {
         library = NULL;
     }
 }
-JNIEXPORT jboolean JNICALL Java_org_yourec_app_Native_asrAvailable(JNIEnv *env, jobject self) {
+JNIEXPORT jboolean JNICALL Java_org_myrec_app_Native_asrAvailable(JNIEnv *env, jobject self) {
     (void)env;
     (void)self;
     pthread_once(&once, init);
     return library != NULL;
 }
-JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_asrLoad(JNIEnv *env, jobject self, jstring path,
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_asrLoad(JNIEnv *env, jobject self, jstring path,
                                                            jint threads) {
     (void)self;
     pthread_once(&once, init);
@@ -47,7 +47,7 @@ JNIEXPORT jlong JNICALL Java_org_yourec_app_Native_asrLoad(JNIEnv *env, jobject 
     (*env)->ReleaseStringUTFChars(env, path, dir);
     return (jlong)(intptr_t)ctx;
 }
-JNIEXPORT jbyteArray JNICALL Java_org_yourec_app_Native_asrTranscribe(JNIEnv *env, jobject self,
+JNIEXPORT jbyteArray JNICALL Java_org_myrec_app_Native_asrTranscribe(JNIEnv *env, jobject self,
                                                                       jlong handle,
                                                                       jfloatArray audio,
                                                                       jstring language) {
@@ -80,7 +80,7 @@ JNIEXPORT jbyteArray JNICALL Java_org_yourec_app_Native_asrTranscribe(JNIEnv *en
     free(text);
     return out;
 }
-JNIEXPORT void JNICALL Java_org_yourec_app_Native_asrFree(JNIEnv *env, jobject self, jlong handle) {
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_asrFree(JNIEnv *env, jobject self, jlong handle) {
     (void)env;
     (void)self;
     if (handle && library)
