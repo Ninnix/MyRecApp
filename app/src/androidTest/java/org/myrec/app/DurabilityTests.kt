@@ -213,6 +213,29 @@ object DurabilityTests {
             check(recovery.open(e.project.id).project.clips.isEmpty())
             check(recovery.open(e.project.id).originals.single().id == receipt.id)
         }
+        test("interrupted Record here and voice layers recover at their pinned time as undoable edits") {
+            for (layer in listOf(false, true)) {
+                val e = Editor(Project(clips = mutableListOf(source("base-$layer.mp4")), width = 720, height = 1280))
+                val before = e.project.duplicate()
+                store.save(e)
+                val file = File(store.media, "inserted-$layer.mp4")
+                val receipt = store.beginCapture(e.project, file, emptyList(), .5, layer)
+                instrumentation.context.assets.open("fixture.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
+                val clip = ProjectStore.inspect(file).copy(id = receipt.id, group = receipt.id,
+                    occurrence = receipt.id, video = !layer, linked = !layer)
+                store.finishCapture(receipt, clip)
+                val recovery = ProjectStore(root)
+                check(recovery.recoverCaptures() == 1)
+                val opened = recovery.editor(e.project)
+                val inserted = opened.project.clips.single { it.id == receipt.id }
+                check(kotlin.math.abs(inserted.start - .5) < .00001 && inserted.video == !layer)
+                check(opened.project.width == 720 && opened.project.height == 1280)
+                check(opened.canUndo && opened.session().captures.isEmpty())
+                opened.undo(); check(opened.project == before && File(inserted.path).isFile)
+                check(opened.session().originals.any { it.id == receipt.id })
+                check(recovery.recoverCaptures() == 0)
+            }
+        }
         test("relink verifies unchanged bytes and rewrites recordings originals undo and redo") {
             val clip = source("relink.mp4")
             val original = File(clip.path)

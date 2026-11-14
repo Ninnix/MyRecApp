@@ -46,15 +46,24 @@ class MainActivity : Activity() {
     private var captureMode = false
     private data class MediaImport(
         val project: String, val at: Double, val layer: Boolean, val audio: Boolean,
+        val base: Project? = null,
     )
     private var pendingImport: MediaImport? = null
+    private var recordingAt: MediaImport? = null
+    internal var voiceDraft: VoiceDraft? = null
+        private set
     private var pendingSave: File? = null
     private data class MediaRepair(val project: Project, val path: String)
     private var pendingRepair: MediaRepair? = null
     private var imageCallback: ((String) -> Unit)? = null
     private var importAsProject = false
     private var exporting: Export? = null
-    private var choices: PopupWindow? = null
+    internal var choices: PopupWindow? = null
+        private set
+    internal var linkDialog: AlertDialog? = null
+        private set
+    internal var importDialog: AlertDialog? = null
+        private set
     private var lastMessage = ""
     private var lastMessageAt = 0L
     private var saveWarning: TextView? = null
@@ -220,12 +229,32 @@ class MainActivity : Activity() {
                 editor.snap = !editor.snap
             }
             "link" -> {
-                if (editor.selected.isNotEmpty()) editor.unlink()
-                else {
-                    editor.linked = !editor.linked
-                    editorView.invalidate()
+                try {
+                    if (editor.selectionLinked) editor.unlink()
+                    else {
+                        val plan = editor.linkPlan()
+                        if (!plan.needsIntersection) editor.linkSelection()
+                        else {
+                            val original = editor.project.duplicate()
+                            val interval = plan.intersection!!
+                            linkDialog = AlertDialog.Builder(this).setTitle("Link shared interval?")
+                                .setMessage("Split at ${timeLabel(interval.start)} and ${timeLabel(interval.end)}, then link only the shared interval? Outside parts stay separate. Nothing is moved or deleted.")
+                                .setNegativeButton("Cancel", null)
+                                .setPositiveButton("Link intersection") { _, _ ->
+                                    try { editor.linkSelection(true, original) }
+                                    catch (e: Exception) { message(e.message ?: "Cannot link these parts") }
+                                }.create().also { dialog ->
+                                    dialog.setOnDismissListener { linkDialog = null }
+                                    dialog.show()
+                                }
+                        }
+                    }
+                } catch (e: Exception) {
+                    message(e.message ?: "Cannot link these parts")
                 }
             }
+            "restoreSync" -> editor.restoreSync()
+            "closeGap" -> editor.closeGap()
             "move" -> {
                 playback.pause()
                 editor.beginMove()
@@ -289,8 +318,21 @@ class MainActivity : Activity() {
             }
             "paste" -> {
                 playback.pause()
-                editor.paste()
-                editor.clearSelection()
+                val targets = editor.pasteTargets()
+                val original = editor.project.duplicate()
+                fun apply(index: Int?) {
+                    if (editor.project != original) { message("The timeline changed. Choose Paste again."); return }
+                    editor.paste(index?.let { targets[it] })
+                    editor.clearSelection()
+                    editorView.showPaste = true
+                    editorView.invalidate()
+                }
+                if (targets.size > 1) choose("Paste at this boundary", targets.map { it.label }) { apply(it) }
+                else apply(if (targets.isEmpty()) null else 0)
+            }
+            "cut" -> {
+                playback.pause()
+                editor.cutSelection()
                 editorView.showPaste = true
                 editorView.invalidate()
             }
@@ -329,8 +371,15 @@ class MainActivity : Activity() {
                     this,
                     store,
                     { clip ->
-                        if (editor.project.clips.isEmpty()) setProjectFormat(clip)
-                        editor.appendRecording(clip)
+                        val insertion = recordingAt
+                        if (insertion == null) {
+                            if (editor.project.clips.isEmpty()) setProjectFormat(clip)
+                            editor.appendRecording(clip)
+                        } else {
+                            recordingAt = null
+                            editor.insertBatch(listOf(clip), insertion.at)
+                            ui.post { capture?.suspendCamera(); showEditor() }
+                        }
                     },
                     ::showEditor,
                 )
@@ -341,6 +390,7 @@ class MainActivity : Activity() {
     }
 
     fun showEditor() {
+        if (capture?.recording != true) recordingAt = null
         captureMode = false
         capture?.visibility = View.GONE
         editorView.visibility = View.VISIBLE
@@ -355,8 +405,41 @@ class MainActivity : Activity() {
         grants: IntArray,
     ) {
         super.onRequestPermissionsResult(code, permissions, grants)
-        if (code == 10 && grants.all { it == PackageManager.PERMISSION_GRANTED }) showCapture()
-        else if (code == 10) message("Camera and microphone permissions are needed to record")
+        val granted = grants.isNotEmpty() && grants.all { it == PackageManager.PERMISSION_GRANTED }
+        if (code == 10 && granted) showCapture()
+        else if (code == 10) { recordingAt = null; message("Camera and microphone permissions are needed to record") }
+        if (code == 11 && granted) voiceover()
+        else if (code == 11) message("Microphone permission is needed for voiceover")
+    }
+
+    internal fun recordingInsertion(): Double? = recordingAt?.takeIf { it.project == editor.project.id }?.at
+
+    fun recordHere() {
+        if (editor.move != null) return
+        recordingAt = MediaImport(editor.project.id, editor.cursor, false, false, editor.project.duplicate())
+        showCapture()
+    }
+
+    fun voiceover() {
+        playback.pause(); panels.close()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 11); return
+        }
+        if (voiceDraft != null) return
+        val expected = editor.project.duplicate()
+        val position = editor.cursor
+        voiceDraft = VoiceDraft(this, { file ->
+            check(editor.project == expected) { "The project changed. Close this draft and choose Voiceover here again." }
+            val target = File(store.media, "voice-${uid()}.wav")
+            file.copyTo(target)
+            val receipt = store.beginCapture(editor.project, target, emptyList(), position, true)
+            val clip = ProjectStore.inspect(target).copy(id = receipt.id, group = receipt.id,
+                occurrence = receipt.id, video = false, linked = false)
+            store.finishCapture(receipt, clip)
+            store.registerMedia(expected.id, target.path)
+            editor.addLayer(clip, position)
+            if (saveProject()) store.acknowledgeCapture(receipt)
+        }, { voiceDraft = null }).also { it.show() }
     }
 
     fun saveProject(): Boolean {
@@ -628,10 +711,11 @@ class MainActivity : Activity() {
     }
 
     fun importVideo(layer: Boolean = false) {
-        pendingImport = MediaImport(editor.project.id, editor.cursor, layer, false)
+        pendingImport = MediaImport(editor.project.id, editor.cursor, layer, false, editor.project.duplicate())
         startActivityForResult(
             Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                type = "video/*"
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "image/*"))
                 addCategory(Intent.CATEGORY_OPENABLE)
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
             },
@@ -899,17 +983,14 @@ class MainActivity : Activity() {
             }
         }
         if (requestCode == 20) {
-            if (importAsProject) {
-                newProject()
-                importAsProject = false
-                pendingImport = pendingImport?.copy(project = editor.project.id, at = 0.0)
-            }
+            val asProject = importAsProject
+            importAsProject = false
             val target = pendingImport
             pendingImport = null
-            val clip = data.clipData
-            if (clip != null)
-                for (i in 0 until clip.itemCount) importUri(clip.getItemAt(i).uri, false, target)
-            else data.data?.let { importUri(it, false, target) }
+            val picked = data.clipData
+            val uris = if (picked == null) listOfNotNull(data.data)
+                else (0 until picked.itemCount).map { picked.getItemAt(it).uri }
+            reviewImport(uris, target, asProject)
         }
         if (requestCode == 22) {
             val target = pendingImport
@@ -917,6 +998,82 @@ class MainActivity : Activity() {
             data.data?.let { importUri(it, false, target) }
         }
         if (requestCode == 21) data.data?.let { importUri(it, true) }
+    }
+
+    private fun reviewImport(uris: List<Uri>, target: MediaImport?, asProject: Boolean) {
+        if (uris.isEmpty()) return
+        fun start(ordered: List<Uri>) {
+            var destination = target ?: MediaImport(editor.project.id, editor.cursor, false, false, editor.project.duplicate())
+            if (asProject) {
+                val previous = editor.project.id
+                newProject()
+                if (editor.project.id == previous) return
+                destination = destination.copy(project = editor.project.id, at = 0.0, base = editor.project.duplicate())
+            }
+            importBatch(ordered, destination)
+        }
+        if (uris.size == 1) { start(uris); return }
+        val ordered = uris.toMutableList()
+        val scroll = ScrollView(this)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(list)
+        fun update() {
+            list.removeAllViews()
+            for ((index, uri) in ordered.withIndex()) {
+                val row = LinearLayout(this)
+                row.addView(TextView(this).apply {
+                    text = "${index + 1}. ${documentName(uri)}"; setPadding(16, 12, 8, 12)
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+                for (direction in listOf(-1, 1)) row.addView(Button(this).apply {
+                    text = if (direction < 0) "↑" else "↓"
+                    contentDescription = "Move item ${index + 1} ${if (direction < 0) "up" else "down"}"
+                    isEnabled = index + direction in ordered.indices
+                    setOnClickListener {
+                        val item = ordered.removeAt(index); ordered.add(index + direction, item); update()
+                    }
+                }, LinearLayout.LayoutParams(64, -2))
+                list.addView(row)
+            }
+        }
+        update()
+        importDialog = AlertDialog.Builder(this).setTitle("Import order").setView(scroll)
+            .setNegativeButton("Cancel", null).setPositiveButton("Import") { _, _ -> start(ordered.toList()) }
+            .create().also { dialog -> dialog.setOnDismissListener { importDialog = null }; dialog.show() }
+    }
+
+    private fun importBatch(uris: List<Uri>, target: MediaImport) {
+        val expected = target.base ?: editor.project.duplicate()
+        panels.progress("Importing ${uris.size} items…", 0f, null)
+        worker.execute {
+            val files = mutableListOf<File>()
+            try {
+                val clips = uris.mapIndexed { index, uri ->
+                    val ext = android.webkit.MimeTypeMap.getSingleton()
+                        .getExtensionFromMimeType(contentResolver.getType(uri)) ?: "media"
+                    val file = File(store.media, "import-${uid()}.$ext")
+                    files.add(file)
+                    contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
+                    val clip = ProjectStore.inspect(file)
+                    ui.post { panels.progress("Importing ${uris.size} items…", (index + 1f) / uris.size, null) }
+                    clip
+                }
+                val shape = clips.firstOrNull { it.video }?.let { ProjectStore.shape(it.path) }
+                ui.post {
+                    panels.close()
+                    if (editor.project != expected) {
+                        files.forEach { it.delete() }
+                        message("Import cancelled because the project changed")
+                    } else try {
+                        for (file in files) store.registerMedia(target.project, file.path)
+                        editor.insertBatch(clips, target.at, target.layer, shape)
+                        playback.refresh()
+                    } catch (e: Exception) { message(e.message ?: "Cannot import these items") }
+                }
+            } catch (e: Exception) {
+                files.forEach { it.delete() }
+                ui.post { panels.close(); message(e.message ?: "Cannot import these items") }
+            }
+        }
     }
 
     private fun importUri(uri: Uri, image: Boolean, target: MediaImport? = null) {
@@ -1156,6 +1313,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        voiceDraft?.pause()
         super.onPause()
         playback.pause()
         capture?.suspendCamera()
@@ -1166,7 +1324,7 @@ class MainActivity : Activity() {
     override fun onBackPressed() {
         when {
             choices?.isShowing == true -> choices?.dismiss()
-            panels.isOpen -> panels.close()
+            panels.isOpen -> panels.cancel()
             editor.move != null -> editor.finishMove(true)
             editorView.fullscreen -> {
                 editorView.fullscreen = false
@@ -1182,6 +1340,9 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        voiceDraft?.close()
+        importDialog?.dismiss()
+        linkDialog?.dismiss()
         choices?.dismiss()
         playback.close()
         mediaIndex.close()

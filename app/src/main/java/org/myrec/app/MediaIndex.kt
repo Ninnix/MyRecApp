@@ -20,6 +20,14 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
     fun request(clip: Clip) {
         if (!requested.add(clip.path)) return
         worker.execute {
+            if (clip.photo) {
+                val image = try { PhotoSource.frame(clip.path, 192, 108) } catch (_: Exception) { null }
+                ui.post {
+                    if (image != null) thumbnails[clip.path] = listOf(image)
+                    durations[clip.path] = 3.0; waves[clip.path] = FloatArray(0); changed()
+                }
+                return@execute
+            }
             val reader = MediaMetadataRetriever()
             var duration = clip.sourceOut
             var hasAudio = clip.audio

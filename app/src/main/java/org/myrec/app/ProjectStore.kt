@@ -11,7 +11,8 @@ import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class CaptureReceipt(val id: String, val project: String, val filename: String)
+data class CaptureReceipt(val id: String, val project: String, val filename: String,
+                          val insertion: Double? = null, val layer: Boolean = false)
 
 class NewerProject : IOException("This project was saved by a newer MyRec. Its files have been kept.")
 
@@ -37,8 +38,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 8) throw NewerProject()
-        require(version in 1L..8L) { "Invalid project version" }
+        if (version > 9) throw NewerProject()
+        require(version in 1L..9L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -214,7 +215,7 @@ class ProjectStore(val root: File) {
             }
         }
         val o = JSONObject().apply {
-            put("version", 8); put("id", p.id); put("name", p.name)
+            put("version", 9); put("id", p.id); put("name", p.name)
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
@@ -276,12 +277,15 @@ class ProjectStore(val root: File) {
         return File(media, receipt.filename)
     }
 
-    fun beginCapture(project: Project, file: File, effects: List<Effect>): CaptureReceipt {
+    fun beginCapture(project: Project, file: File, effects: List<Effect>, insertion: Double? = null,
+                     layer: Boolean = false): CaptureReceipt {
         require(file.parentFile?.canonicalFile == media.canonicalFile)
+        require(insertion == null || insertion.isFinite() && insertion >= 0 && insertion <= 604800)
         if (!File(root, "${id(project.id)}.json").exists()) save(project)
-        val receipt = CaptureReceipt(uid(), project.id, file.name)
+        val receipt = CaptureReceipt(uid(), project.id, file.name, insertion, layer)
         val o = JSONObject().apply {
-            put("version", 1); put("id", receipt.id); put("project", receipt.project)
+            put("version", if (insertion == null) 1 else 2); put("id", receipt.id); put("project", receipt.project)
+            insertion?.let { put("insertion", it); put("layer", layer) }
             put("filename", receipt.filename); put("complete", false)
             put("recipe", clips(listOf(Clip(id = receipt.id, path = file.absolutePath,
                 sourceOut = 1.0, effects = effects.map { it.copyEffect(true) }.toMutableList()))))
@@ -331,8 +335,10 @@ class ProjectStore(val root: File) {
         for (entry in File(root, "pending").listFiles()?.filter { it.extension == "json" } ?: emptyList()) {
             try {
                 val o = JSONObject(String(bytes(entry), Charsets.UTF_8))
-                require(o.getInt("version") == 1) { "Unknown recording receipt version" }
-                val receipt = CaptureReceipt(id(o.getString("id")), id(o.getString("project")), o.getString("filename"))
+                require(o.getInt("version") in 1..2) { "Unknown recording receipt version" }
+                val receipt = CaptureReceipt(id(o.getString("id")), id(o.getString("project")), o.getString("filename"),
+                    if (o.getInt("version") >= 2) o.getDouble("insertion") else null, o.optBoolean("layer", false))
+                require(receipt.insertion == null || receipt.insertion.isFinite() && receipt.insertion in 0.0..604800.0)
                 require(entry.name == "${receipt.id}.json") { "Invalid recording receipt identity" }
                 val file = recordingFile(receipt)
                 val saved = open(receipt.project)
@@ -340,14 +346,18 @@ class ProjectStore(val root: File) {
                     acknowledgeCapture(receipt)
                     continue
                 }
-                val source = inspect(file).copy(id = receipt.id, group = receipt.id)
+                val source = inspect(file).copy(id = receipt.id, group = receipt.id, occurrence = receipt.id)
                 val recipe = clips(o.optJSONArray("recipe")).singleOrNull()
                 recipe?.let {
+                    if (o.optBoolean("complete")) {
+                        source.video = it.video; source.audio = it.audio; source.linked = it.linked
+                    }
                     source.effects.addAll(it.effects.map { fx -> fx.copyEffect() })
                     source.marks.addAll(it.marks.filter { mark -> mark < source.sourceOut })
                 }
                 val editor = Editor(saved.project).apply { load(saved.project, saved) }
-                editor.appendRecording(source)
+                if (receipt.insertion == null) editor.appendRecording(source)
+                else editor.insertBatch(listOf(source), receipt.insertion, receipt.layer)
                 save(editor, false)
                 acknowledgeCapture(receipt)
                 recovered++
@@ -637,6 +647,9 @@ class ProjectStore(val root: File) {
             "Invalid clip identities"
         }
         for (c in p.clips) {
+            id(c.occurrence)
+            c.link?.let(::id)
+            require(!c.photo || c.video && !c.audio) { "Invalid photo clip" }
             require(c.path.isNotBlank() && c.sourceIn.isFinite() && c.sourceOut.isFinite() &&
                 c.start.isFinite() && c.rate.isFinite() && c.gainDb.isFinite() &&
                 c.sourceIn >= 0 && c.sourceOut > c.sourceIn && c.start >= 0 &&
@@ -668,7 +681,7 @@ class ProjectStore(val root: File) {
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 8)
+            put("version", 9)
             put("captureCount", p.captureCount)
             put("id", p.id)
             put("name", p.name)
@@ -683,6 +696,9 @@ class ProjectStore(val root: File) {
                             JSONObject().apply {
                                 put("id", c.id)
                                 put("group", c.group)
+                                put("occurrence", c.occurrence)
+                                c.link?.let { put("link", it) }
+                                if (c.photo) put("photo", true)
                                 put("path", c.path)
                                 put("in", c.sourceIn)
                                 put("out", c.sourceOut)
@@ -789,6 +805,9 @@ class ProjectStore(val root: File) {
             if (renderVersion > 1) throw NewerProject()
             require(renderVersion >= 0) { "Invalid rendering order" }
             clip.group = c.optString("group", clip.id)
+            clip.occurrence = c.optString("occurrence", clip.group)
+            clip.link = if (c.has("link")) c.getString("link") else null
+            clip.photo = c.optBoolean("photo", false)
             c.optJSONArray("marks")?.let { marks ->
                 for (j in 0 until marks.length()) clip.marks.add(marks.getDouble(j))
             }
@@ -844,6 +863,7 @@ class ProjectStore(val root: File) {
 
     companion object {
         fun shape(path: String): Pair<Int, Int> {
+            PhotoSource.shape(path)?.let { return it }
             val r = MediaMetadataRetriever()
             try {
                 r.setDataSource(path)
@@ -863,6 +883,11 @@ class ProjectStore(val root: File) {
         }
 
         fun inspect(file: File): Clip {
+            if (PhotoSource.shape(file.path) != null)
+                return Clip(path = file.absolutePath, sourceOut = 3.0, audio = false, linked = false, photo = true)
+            PcmWave.duration(file)?.let {
+                return Clip(path = file.absolutePath, sourceOut = it, video = false, linked = false)
+            }
             val r = MediaMetadataRetriever()
             try {
                 r.setDataSource(file.absolutePath)

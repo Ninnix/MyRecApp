@@ -668,10 +668,7 @@ class Capture(
         if (device != null) startMeter()
     }
 
-    internal fun microphoneDevices() =
-        audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).filter {
-            MicrophoneInput(it).usable
-        }
+    internal fun microphoneDevices() = MicrophoneInput.devices(audioManager)
 
     private fun micKey(device: AudioDeviceInfo) = MicrophoneInput(device).key
 
@@ -891,7 +888,7 @@ class Capture(
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
         val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(activity) else MediaRecorder()
         try {
-            receipt = store.beginCapture(activity.editor.project, file, liveEffects)
+            receipt = store.beginCapture(activity.editor.project, file, liveEffects, activity.recordingInsertion())
             r.setAudioSource(
                 if (bluetooth(microphone)) MediaRecorder.AudioSource.VOICE_COMMUNICATION
                 else MediaRecorder.AudioSource.CAMCORDER
@@ -970,7 +967,7 @@ class Capture(
     private fun startHdr(microphone: AudioDeviceInfo) {
         val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
         try {
-            receipt = store.beginCapture(activity.editor.project, file, liveEffects)
+            receipt = store.beginCapture(activity.editor.project, file, liveEffects, activity.recordingInsertion())
             val renderer = composition ?: error("Waiting for HDR camera")
             recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
             recordingOrientation = cameraOrientation()
@@ -1241,14 +1238,15 @@ class Capture(
         if (file != null && file.length() > 0)
             try {
                 val inspected = ProjectStore.inspect(file)
-                val clip = if (completed == null) inspected else inspected.copy(id = completed.id, group = completed.id)
+                val clip = if (completed == null) inspected else inspected.copy(id = completed.id, group = completed.id, occurrence = completed.id)
                 clip.marks.addAll(recordingMarks.filter { it < clip.sourceOut })
                 effectHistory.forEach { clip.effects.add(it.copyEffect(true)) }
                 if (completed != null) store.finishCapture(completed, clip)
                 if (completed == null || completed.project == activity.editor.project.id) onClip(clip)
                 else {
                     val target = store.editor(Project(id = completed.project))
-                    target.appendRecording(clip)
+                    if (completed.insertion == null) target.appendRecording(clip)
+                    else target.insertBatch(listOf(clip), completed.insertion, completed.layer)
                     store.save(target, false)
                     activity.message("Take saved in ${target.project.name}")
                 }

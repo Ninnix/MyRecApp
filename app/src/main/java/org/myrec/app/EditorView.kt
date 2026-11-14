@@ -660,10 +660,9 @@ class EditorView(
             c,
             RectF(left, sy, left + rest, sy + h),
             "link",
-            if (editor.selected.isNotEmpty() && editor.targets().any { it.linked }) "Unlink"
-            else "Link",
+            if (editor.selectionLinked) "Unlink" else "Link",
             "link",
-            !moving,
+            !moving && editor.selected.isNotEmpty() && editor.range == null && editor.mark == null,
         )
         left += rest + 4
         button(
@@ -955,10 +954,15 @@ class EditorView(
         ) {
             icon(c, "copy", x + 5, y - 2, 7f, red)
             text(c, "Paste", x + 16, y, 8f, red)
-            text(c, "Inserts time", x + 45, y, 7f, grey)
+            text(c, if (editor.clipboardInsertsTime) "Inserts time" else "Adds a layer", x + 45, y, 7f, grey)
             icon(c, "close", x + 104, y - 3, 6f, red)
             hit(RectF(x, y - 13, x + 92, y + 10), "paste")
             hit(RectF(x + 94, y - 13, x + 118, y + 10), "dismissPaste")
+            return true
+        }
+        if (editor.selected.isEmpty() && editor.range == null && TimelineRules.gap(editor.project, editor.cursor) != null) {
+            text(c, "Close gap", x + 8, y, 9f, red)
+            hit(RectF(x, y - 15, x + 70, y + 12), "closeGap")
             return true
         }
         if (editor.selected.isNotEmpty() || editor.range != null) {
@@ -978,12 +982,16 @@ class EditorView(
             val audio = targets.count { it.audio }
             text(c, "$video video + $audio audio part${if (targets.size == 1) "" else "s"}",
                 x, y + 5, 6f, Color.rgb(125, 47, 53))
-            x += if (landscape) 95f else 100f
+            x += if (landscape) 95f else 82f
             for ((symbol, id) in
-                listOf("copy" to "copy", "delete" to "delete", "close" to "clear")) {
+                listOf("copy" to "copy", "split" to "cut", "delete" to "delete", "close" to "clear")) {
                 icon(c, symbol, x, y - 2, 8f, if (id == "clear") grey else red)
                 hit(RectF(x - 12, y - 13, x + 12, y + 10), id)
                 x += 25
+            }
+            editor.syncOffset()?.takeIf { abs(it) > .000001 }?.let {
+                text(c, "Sync", x + 6, y + 1, 8f, red)
+                hit(RectF(x - 8, y - 15, x + 40, y + 12), "restoreSync")
             }
         } else {
             val active =

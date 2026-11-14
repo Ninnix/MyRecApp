@@ -14,22 +14,39 @@ finishes, including a draft that changes the timeline length.
 
 Drag to scrub; pinch to zoom. The scale control offers fixed spans and Whole
 project. Tap a clip to select it, or mark the start and end of a range. Drag the
-range handles to adjust it. The yellow magnet turns snapping on or off.
+range handles to adjust it. The yellow Snap to cuts button turns snapping on or off.
 
 The + button offers Insert video, Add video layer, and Add audio. Insert video
-makes room at the playhead. Layers start there on separate tracks and leave
-existing clips in place. Add audio opens the system picker, copies the sound
-into the project media, and gives it a waveform of its own.
+accepts videos and photos together. Review the numbered order and use the arrows
+to reorder before importing. The batch makes room at the playhead as one undoable
+edit; photos start at three seconds and honor their stored orientation. Layers
+start on separate tracks and leave existing clips in place. Add audio gives the
+imported sound a waveform of its own.
 
-Select a clip or range, then Copy. Paste · Inserts time appears beneath the
-timeline; scrub to a destination and tap it. You can paste repeatedly until you
-dismiss the clipboard. Copies own their effect settings.
+Select a clip or range, then Copy or Cut. Copies omit wholly unselected gaps;
+a marked range preserves its timing. Paste can insert linked picture and sound
+or overlay independent clips. At coincident cuts, choose the destination. Pasting
+into a picture gap fills it before inserting extra time. Copies own their effect
+settings and link identities. Independent music keeps its position when production
+footage inserts or removes time. Close gap removes only time empty on every track.
 
 Move lets you drag the selection in time or between tracks. Drag above the top
 video lane to add a higher layer, or below the audio lanes to add an audio track.
 Done keeps the move; Cancel restores it. Higher video tracks cover lower ones.
 When videos overlap, Placement lets you arrange, crop, and reorder the pictures.
-Unlink separates sound from picture. Link joins matching parts again.
+Unlink separates sound from picture. Select contiguous parts and Link to join
+them. For unequal spans, confirm linking only their shared interval; the outside
+fragments stay independent. Restore sync returns detached sound to its original
+picture timing without moving the picture.
+
+Tools → Record here opens the camera with insertion pinned to the playhead.
+Tools → Voiceover here opens Voice recording. Choose a microphone, tap Record,
+then Stop; Record more appends another pass without the pause. Play auditions the
+take. Done inserts independent sound at the original playhead as one undoable
+edit. Start over and Cancel confirm before discarding recorded audio. Backgrounding
+or losing the selected microphone pauses recording. Original takes remain in the
+project when either insertion is undone, and completed recordings can recover
+after interruption before saving the edit.
 
 Yellow flags are recording marks. Use bookmark navigation to jump between them.
 They follow the source through splits, moves, copies, and speed changes.

@@ -250,7 +250,7 @@ object TimelineMoveTests {
             val e = Editor(Project(clips = mutableListOf(first, second)))
             e.select(first)
             check(e.targets() == listOf(first))
-            e.unlink(); e.clearSelection(); e.select(first); e.unlink()
+            e.unlink(); e.clearSelection(); e.select(first); e.toggleSelection(e.project.clips.last()); e.linkSelection()
             check(e.targets().size == 2 && second.id !in e.selected)
             check(second.video && second.audio)
             checkRows(e.project)

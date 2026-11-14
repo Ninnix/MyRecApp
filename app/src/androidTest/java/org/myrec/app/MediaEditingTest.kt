@@ -242,6 +242,84 @@ object MediaEditingTest {
                 tap("moveCancel")
                 check(a.editor.project == before && !a.editor.canUndo)
             }
+            test("$name Link confirms only the shared interval and persists independent outside fragments") {
+                val video = Clip(path = source.path, sourceOut = 2.0, rate = .5, audio = false, linked = false)
+                val sound = Clip(path = wave.path, sourceOut = 3.0, start = 2.0, video = false, linked = false)
+                onMain {
+                    a.editor.load(Project(clips = mutableListOf(video, sound)))
+                    a.editor.cursor = 2.0; a.editor.scale = 10.0
+                }
+                Thread.sleep(200)
+                gesture(center(card(video.id))); hold(card(sound.id, true))
+                check(a.editor.selected == setOf(video.id, sound.id))
+                val before = a.editor.project.duplicate()
+                fun dialog(label: String) {
+                    Thread.sleep(150)
+                    onMain {
+                        val dialog = a.linkDialog ?: error("No link dialog")
+                        val button = if (label == "Cancel") android.app.AlertDialog.BUTTON_NEGATIVE
+                            else android.app.AlertDialog.BUTTON_POSITIVE
+                        check(dialog.getButton(button).performClick())
+                    }
+                    Thread.sleep(200)
+                }
+                tap("link"); dialog("Cancel")
+                check(a.editor.project == before && !a.editor.canUndo)
+                tap("link"); dialog("Link intersection")
+                check(a.editor.targets().size == 2)
+                check(a.editor.targets().all { abs(it.start - 2.0) < .00001 && abs(it.end - 4.0) < .00001 })
+                check(a.editor.project.clips.filter { it.id !in a.editor.selected }.all { it.link == null })
+                val saved = a.store.currentSession()
+                val reopened = Editor(saved.project).apply { load(saved.project, saved) }
+                reopened.select(reopened.project.clips.first { it.link != null })
+                check(reopened.targets().size == 2)
+                onMain { a.editor.undo() }
+                check(a.editor.project == before)
+            }
+            test("$name Cut and Paste preserve independent music and Close gap only removes empty time") {
+                val music = Clip(path = wave.path, sourceOut = 3.0, video = false, linked = false)
+                onMain {
+                    a.editor.load(Project(clips = (0..2).map {
+                        Clip(path = source.path, sourceOut = 1.0, start = it.toDouble())
+                    }.toMutableList().apply { add(music) }))
+                    a.editor.cursor = 1.5; a.editor.scale = 5.0
+                    a.editor.select(a.editor.project.clips[1])
+                }
+                Thread.sleep(200); tap("cut")
+                check(a.editor.project.clips.single { it.id == music.id } == music)
+                check(a.editor.project.clips.count { it.video } == 2)
+                tap("paste")
+                check(a.editor.project.clips.count { it.video } == 3)
+                check(a.editor.project.clips.single { it.id == music.id } == music)
+                onMain {
+                    a.editorView.showPaste = false
+                    a.editor.load(Project(clips = mutableListOf(
+                        Clip(path = source.path, sourceOut = 1.0, start = 2.0, audio = false, linked = false))))
+                    a.editor.cursor = 1.0
+                }
+                Thread.sleep(200); tap("closeGap")
+                check(abs(a.editor.project.clips.single().start) < .00001)
+                onMain { a.editor.undo() }
+                check(abs(a.editor.project.clips.single().start - 2.0) < .00001)
+            }
+            test("$name Restore sync uses the original occurrence without moving the picture") {
+                onMain {
+                    a.editor.load(Project(clips = mutableListOf(ProjectStore.inspect(source))))
+                    a.editor.cursor = .5; a.editor.scale = 10.0
+                    a.editor.select(a.editor.project.clips.single())
+                }
+                Thread.sleep(200); tap("link")
+                val sound = a.editor.project.clips.single { it.audio && !it.video }
+                onMain { a.editor.clearSelection(); a.editor.select(sound) }
+                Thread.sleep(150); tap("move"); tap("moveNext"); tap("moveDone")
+                onMain { a.editor.select(a.editor.project.clips.first { it.id == sound.id }) }
+                Thread.sleep(150)
+                check(abs(a.editor.syncOffset()!!) > .01)
+                val picture = a.editor.project.clips.first { it.video }.duplicate()
+                tap("restoreSync")
+                check(abs(a.editor.syncOffset()!!) < .00001)
+                check(a.editor.project.clips.first { it.video } == picture)
+            }
             test("$name Snap to cuts applies only after scrub release and uses the final finger position") {
                 onMain {
                     a.editor.load(Project(clips = mutableListOf(
@@ -354,6 +432,164 @@ object MediaEditingTest {
                     instrumentation.removeMonitor(monitor)
                 }
             }
+        }
+        test("mixed import reviews numbered order, reads photo orientation and commits one undo") {
+            val photo = File(folder, "batch-photo.jpg")
+            val bitmap = Bitmap.createBitmap(240, 160, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            val paint = Paint()
+            for ((rect, color) in listOf(Rect(0, 0, 120, 80) to Color.RED,
+                Rect(120, 0, 240, 80) to Color.GREEN, Rect(0, 80, 120, 160) to Color.BLUE,
+                Rect(120, 80, 240, 160) to Color.YELLOW)) {
+                paint.color = color; canvas.drawRect(rect, paint)
+            }
+            photo.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }; bitmap.recycle()
+            android.media.ExifInterface(photo.path).apply {
+                setAttribute(android.media.ExifInterface.TAG_ORIENTATION, "6"); saveAttributes()
+            }
+            val before = Project(name = "Batch import")
+            onMain { a.editor.load(before.duplicate()) }
+            val data = android.content.ClipData.newRawUri("Video", Uri.fromFile(source)).apply {
+                addItem(android.content.ClipData.Item(Uri.fromFile(photo)))
+            }
+            val filter = IntentFilter(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addDataType("*/*"); addCategory(Intent.CATEGORY_OPENABLE)
+            }
+            val monitor = instrumentation.addMonitor(filter, Instrumentation.ActivityResult(
+                Activity.RESULT_OK, Intent().apply { clipData = data }), true)
+            try {
+                onMain { a.importVideo() }
+                Thread.sleep(250)
+                onMain {
+                    val dialog = a.importDialog ?: error("No import-order review")
+                    check(a.editor.project == before)
+                    (find(dialog.window!!.decorView, "Move item 2 up") ?: error("No reorder control")).performClick()
+                    dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+                }
+                val deadline = SystemClock.uptimeMillis() + 10000
+                while (a.editor.project.clips.size != 2 && SystemClock.uptimeMillis() < deadline) Thread.sleep(100)
+                check(monitor.hits == 1 && a.editor.project.clips.size == 2)
+                val edit = a.editor.project.duplicate()
+                check(edit.clips.first().photo && !edit.clips.first().audio)
+                check(abs(edit.clips.first().duration - 3.0) < .00001)
+                check(abs(edit.clips.last().start - 3.0) < .00001)
+                check(edit.width == 160 && edit.height == 240)
+                val restored = a.store.current()
+                check(restored == edit)
+                Frames().use { frames ->
+                    val image = frames.render(restored, 1.0, 160, 240)
+                    val color = image.getPixel(40, 60); image.recycle()
+                    check(Color.blue(color) > 200 && Color.red(color) < 50) { "Photo orientation $color" }
+                }
+                val exported = File(folder, "photo-batch.mp4")
+                Export(a.audioCache).run(restored, exported, 160, 240) {}
+                VideoDecoder(exported.path).use { decoder ->
+                    val image = decoder.frame(1.0, 160, 240) ?: error("No exported photo")
+                    val color = image.getPixel(40, 60); image.recycle()
+                    check(Color.blue(color) > 180 && Color.red(color) < 70)
+                }
+                onMain { a.editor.undo() }
+                check(a.editor.project == before && !a.editor.canUndo)
+                check(edit.clips.all { File(it.path).isFile })
+                check(a.editor.session().originals.size == 2)
+                onMain { a.editor.redo() }
+                check(a.editor.project == edit)
+            } finally { instrumentation.removeMonitor(monitor) }
+        }
+        test("Voiceover records PCM passes without pause gaps, saves an independent layer and undoes once") {
+            val before = Project(name = "Voiceover", clips = mutableListOf(ProjectStore.inspect(source)))
+            onMain { a.editor.load(before.duplicate()); a.editor.cursor = .5; a.voiceover() }
+            fun voice(label: String) {
+                onMain {
+                    val view = a.root.also { check(a.voiceDraft != null) { "No voiceover draft" } }
+                    check((find(view, label) ?: error("No voiceover control $label")).performClick())
+                }
+            }
+            Thread.sleep(150)
+            voice("Choose microphone")
+            onMain {
+                val work = a.voiceDraft!!
+                val devices = work.microphoneDevices()
+                val labels = MicrophoneInput.labels(devices.map { MicrophoneInput(it) })
+                val menu = a.choices?.contentView ?: error("No microphone menu")
+                val shown = mutableListOf<String>()
+                fun collect(view: View) {
+                    if (view is TextView) view.contentDescription?.toString()?.let { shown.add(it) }
+                    if (view is ViewGroup) for (i in 0 until view.childCount) collect(view.getChildAt(i))
+                }
+                collect(menu)
+                check(shown == labels && shown.distinct().size == shown.size) { "Microphone menu $shown, expected $labels" }
+                check(devices.all { MicrophoneInput(it).usable })
+                val selected = devices.indexOfFirst { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC }.coerceAtLeast(0)
+                (find(menu, labels[selected]) ?: error("No physical microphone")).performClick()
+                check(work.inputName == labels[selected])
+            }
+            for ((orientation, name) in listOf(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT to "portrait",
+                                               ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE to "landscape")) {
+                onMain { a.requestedOrientation = orientation }
+                Thread.sleep(500)
+                val screenshot = instrumentation.uiAutomation.takeScreenshot() ?: error("No voiceover screenshot")
+                File(folder, "voiceover-$name.png").outputStream().use { screenshot.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                screenshot.recycle()
+                check(a.voiceDraft != null)
+            }
+            voice("Record"); Thread.sleep(650); voice("Stop")
+            val first = a.voiceDraft!!.file.length()
+            Thread.sleep(250)
+            check(a.voiceDraft!!.file.length() == first)
+            voice("Record more"); Thread.sleep(650); voice("Stop"); Thread.sleep(150)
+            val draft = a.voiceDraft!!.file
+            val duration = PcmWave.duration(draft) ?: error("No sample-exact PCM duration")
+            check(duration > .7 && duration < 2.0)
+            voice("Play"); Thread.sleep(150); voice("Stop playback")
+            voice("Done")
+            Thread.sleep(200)
+            check(a.voiceDraft == null)
+            val added = a.editor.project.clips.single { it.path != source.path }
+            check(!added.video && added.audio && !added.linked && added.start == .5)
+            check(abs(added.duration - duration) < .000001)
+            check(!draft.exists())
+            val decoded = a.audioCache.get(added.path)
+            check(decoded.length() / 8 == ((duration * 48000).roundToLong()))
+            val edit = a.editor.project.duplicate()
+            check(a.store.current() == edit)
+            onMain { a.editor.undo() }
+            check(a.editor.project == before && !a.editor.canUndo && File(added.path).isFile)
+            onMain { a.editor.redo() }
+            check(a.editor.project == edit)
+            check(File(a.store.root, "pending").listFiles()?.none { it.extension == "json" } != false)
+        }
+        test("cancelling a recorded voice draft preserves the project and removes only its unpublished file") {
+            val before = a.editor.project.duplicate()
+            onMain { a.voiceover() }
+            Thread.sleep(150)
+            onMain {
+                val view = a.root
+                (find(view, "Record") ?: error("No Record control")).performClick()
+            }
+            Thread.sleep(350)
+            val file = a.voiceDraft!!.file
+            onMain { (find(a.root, "Cancel") ?: error("No Cancel control")).performClick() }
+            onMain {
+                val dialog = a.voiceDraft!!.discardDialog ?: error("No discard confirmation")
+                dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).performClick()
+            }
+            onMain {
+                check(a.voiceDraft != null && file.exists() && a.editor.project == before)
+                (find(a.root, "Start over") ?: error("No Start over control")).performClick()
+                a.voiceDraft!!.discardDialog!!.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            }
+            onMain {
+                check(a.voiceDraft != null && PcmWave.duration(file) == null)
+                (find(a.root, "Record") ?: error("No Record control")).performClick()
+            }
+            Thread.sleep(300)
+            onMain {
+                (find(a.root, "Cancel") ?: error("No Cancel control")).performClick()
+                a.voiceDraft!!.discardDialog!!.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            }
+            onMain {}
+            check(a.voiceDraft == null && !file.exists() && a.editor.project == before)
         }
         test("Move and Placement keep foreground colors consistent in preview, persistence and export") {
             fun colored(name: String, color: Int): Clip {

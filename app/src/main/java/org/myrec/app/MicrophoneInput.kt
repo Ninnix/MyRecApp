@@ -1,6 +1,7 @@
 package org.myrec.app
 
 import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import java.net.URLEncoder
 
 data class MicrophoneInput(val id: Int, val type: Int, val product: String, val address: String) {
@@ -57,6 +58,9 @@ data class MicrophoneInput(val id: Int, val type: Int, val product: String, val 
         }
 
     companion object {
+        fun devices(manager: AudioManager) =
+            manager.getDevices(AudioManager.GET_DEVICES_INPUTS).filter { MicrophoneInput(it).usable }
+
         fun labels(inputs: List<MicrophoneInput>): List<String> =
             inputs.map { input ->
                 if (inputs.count { it.label == input.label } == 1) input.label

@@ -23,6 +23,7 @@ fun main() {
     PreviewModelTests.run(::test)
     TimelineMoveTests.run(::test)
     TimelineSnapTests.run(::test)
+    TimelineRulesTests.run(::test)
     test("new recordings remain through undo redo and restored editing sessions") {
         val e = Editor()
         val first = Clip(path = "first.mp4", sourceOut = 5.0)
@@ -227,7 +228,8 @@ fun main() {
         val audio = e.project.clips.last()
         e.clearSelection()
         e.select(copy)
-        e.unlink()
+        e.toggleSelection(audio)
+        e.linkSelection()
         check(e.targets().toSet() == setOf(copy, audio))
         check(original.audio && original.video)
         e.clearSelection()
@@ -537,7 +539,8 @@ fun main() {
         val video = e.project.clips.single { it.video }
         e.clearSelection()
         e.select(video)
-        e.unlink()
+        e.toggleSelection(e.project.clips.single { !it.video })
+        e.linkSelection()
         check(e.project.clips.all { it.linked })
         e.clearSelection()
         e.select(video)
@@ -583,20 +586,17 @@ fun main() {
             .forEach { (a, b) -> near(a, b) }
         near(e.project.duration, 9.0)
     }
-    test("insertion inside a blend preserves both sides and the original phase") {
+    test("insertion inside a blend restores source handles and opens picture time as one undo") {
         val e = blend()
         val before = e.project.duplicate()
         e.clipboard = listOf(Clip(path = "insert.mp4", sourceOut = 2.0))
         e.cursor = 4.25
         e.paste()
-        near(e.project.duration, 11.0)
-        check(e.project.transitions.size == 2)
-        for (time in listOf(4.1, 4.7, 4.9)) {
-            val after = if (time < 4.25) time else time + 2
-            sample(before, time).zip(sample(e.project, after)).forEach { (a, b) -> near(a, b) }
-        }
-        val piece = e.project.transitionSource(e.project.transitions.last().leftId, 6.4)!!
-        near(TimelineLayout.interval(e.project, piece).endInclusive, 6.5)
+        near(e.project.duration, 12.0)
+        check(e.project.transitions.isEmpty())
+        near(e.project.clips.filter { it.path == "fixture.mp4" }.sumOf { it.duration }, 10.0)
+        val inserted = e.project.clips.single { it.path == "insert.mp4" }
+        near(inserted.start, 4.25)
         e.undo()
         check(e.project == before)
     }

@@ -172,6 +172,8 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
     private var tenBit = false
     private val decoders = linkedMapOf<String, VideoDecoder>()
     private val failed = mutableSetOf<String>()
+    private val photoPaths = mutableMapOf<String, Boolean>()
+    private val photos = linkedMapOf<String, Bitmap>()
     private var preserveHdr = false
     private val readers = linkedMapOf<String, MediaMetadataRetriever>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -186,6 +188,16 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
         }
 
     fun frame(path: String, time: Double, width: Int, height: Int, stream: String = path, rawColor: Boolean = false): Bitmap? {
+        if (photoPaths.getOrPut(path) { PhotoSource.shape(path) != null }) {
+            val key = "$path:$width:$height"
+            val original = photos.getOrPut(key) {
+                if (photos.size >= 2) photos.remove(photos.keys.first())?.recycle()
+                PhotoSource.frame(path, width, height)
+            }
+            return if (extended) WorkingColor.bitmap(original.width, original.height).also {
+                Canvas(it).drawBitmap(original, 0f, 0f, null)
+            } else original.copy(Bitmap.Config.ARGB_8888, true)
+        }
         val key = "$stream:$rawColor:$extended:$tenBit"
         val failure = "$path:$rawColor:$extended:$tenBit"
         if (failure !in failed)
@@ -332,7 +344,7 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
 
     private fun sequenceFrame(clip: Clip, effects: List<Effect>, source: Double, width: Int, height: Int, raw: Boolean): Bitmap? {
         val step = effects.firstOrNull { it.kind == "Step Printing" }
-        if (step == null || clip.frozen != null) return frame(clip.path, source, width, height,
+        if (step == null || clip.frozen != null || clip.photo) return frame(clip.path, source, width, height,
             "${clip.path}:${clip.sourceIn}:${clip.start}", raw)
         val original = clip.effects.first { it.id == step.id }
         val index = VideoFrameIndex.get(clip.path, onAnalysis)
@@ -659,6 +671,8 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
     }
 
     override fun close() {
+        photos.values.forEach { it.recycle() }
+        photos.clear(); photoPaths.clear()
         decoders.values.forEach { it.close() }
         decoders.clear()
         readers.values.forEach { it.release() }

@@ -131,5 +131,46 @@ object StorageUITests {
             check(a.store.open(p.id).project.clips.any { it.id == take.id })
             check(File(a.store.root, "pending").listFiles()?.none { it.extension == "json" } != false)
         }
+        test("Record here inserts a real paused take as one undo without changing the canvas") {
+            val before = Project(name = "Record here", clips = mutableListOf(ProjectStore.inspect(source)), width = 720, height = 1280)
+            onMain {
+                a.editor.load(before.duplicate()); a.editor.cursor = .5
+                a.recordHere()
+            }
+            Thread.sleep(2000)
+            lateinit var capture: Capture
+            onMain {
+                capture = (0 until a.root.childCount).map { a.root.getChildAt(it) }.filterIsInstance<Capture>().single()
+                capture.start()
+            }
+            Thread.sleep(1000)
+            onMain { check(capture.recording); capture.addMark(); capture.pause() }
+            Thread.sleep(200)
+            onMain { capture.pause() }
+            Thread.sleep(700)
+            val screens = File(a.getExternalFilesDir(null), "storage-ui-checks").apply { mkdirs() }
+            onMain {
+                val image = Bitmap.createBitmap(a.root.width, a.root.height, Bitmap.Config.ARGB_8888)
+                a.root.draw(Canvas(image))
+                File(screens, "record-here-preview.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                image.recycle(); capture.stop()
+            }
+            Thread.sleep(300)
+            val edit = a.editor.project.duplicate()
+            val added = edit.clips.single { it.path != source.path }
+            check(kotlin.math.abs(added.start - .5) < .00001 && added.duration > 1.0)
+            check(edit.width == 720 && edit.height == 1280)
+            check(a.editor.session().captures.isEmpty() && a.editor.session().originals.any { it.id == added.id })
+            val image = android.media.MediaMetadataRetriever().let { reader ->
+                try { reader.setDataSource(added.path); reader.getFrameAtTime(300000) } finally { reader.release() }
+            } ?: error("The recorded insertion has no picture")
+            File(screens, "record-here-saved.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            image.recycle()
+            onMain { a.editor.undo() }
+            check(a.editor.project == before && !a.editor.canUndo && File(added.path).isFile)
+            onMain { a.editor.redo() }
+            check(a.editor.project == edit)
+            check(File(a.store.root, "pending").listFiles()?.none { it.extension == "json" } != false)
+        }
     }
 }

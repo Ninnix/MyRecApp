@@ -31,8 +31,12 @@ class TimelineMove(val base: Project, val picked: Set<String>, val cursor: Doubl
             .map(::time).filter { it in earliest..latest }.distinct().sorted()
     }
 
-    fun available(scope: MoveScope): Boolean = scope == MoveScope.SELECTED ||
-        choices.getValue(scope) != picked
+    fun available(scope: MoveScope): Boolean = when (scope) {
+        MoveScope.SELECTED -> true
+        MoveScope.BOTH -> choices.getValue(scope) != choices.getValue(MoveScope.LEFT) &&
+            choices.getValue(scope) != choices.getValue(MoveScope.RIGHT)
+        else -> choices.getValue(scope) != choices.getValue(MoveScope.SELECTED)
+    }
 
     fun resolve(requested: Double, pointsPerSecond: Double, snapping: Boolean): MoveResult =
         snapped(base, members, requested, pointsPerSecond, if (snapping) snap else null,
@@ -44,11 +48,19 @@ class TimelineMove(val base: Project, val picked: Set<String>, val cursor: Doubl
 
         fun linked(project: Project, ids: Set<String>): Set<String> {
             val result = ids.toMutableSet()
-            for (clip in project.clips.filter { it.id in ids && it.linked }) {
-                project.clips.filter {
-                    it.linked && it.path == clip.path && it.group == clip.group &&
-                        time(it.start) == time(clip.start) && time(it.duration) == time(clip.duration)
-                }.forEach { result.add(it.id) }
+            val pending = ArrayDeque(ids)
+            while (pending.isNotEmpty()) {
+                val id = pending.removeFirst()
+                val clip = project.clips.firstOrNull { it.id == id } ?: continue
+                for (other in project.clips) if (other.id !in result &&
+                    (clip.link != null && clip.link == other.link ||
+                        clip.linked && other.linked && clip.path == other.path &&
+                        clip.occurrence == other.occurrence && time(clip.start) == time(other.start) &&
+                        clip.sourceIn == other.sourceIn && clip.sourceOut == other.sourceOut &&
+                        clip.frozen == other.frozen && clip.playbackSpans == other.playbackSpans &&
+                        time(clip.duration) == time(other.duration))) {
+                    result.add(other.id); pending.addLast(other.id)
+                }
             }
             return result
         }
@@ -69,7 +81,7 @@ class TimelineMove(val base: Project, val picked: Set<String>, val cursor: Doubl
                     val incoming = starts[cut]?.toMutableList() ?: continue
                     val unmatched = mutableListOf<Clip>()
                     for (a in outgoing) {
-                        val b = incoming.firstOrNull { it.group == a.group }
+                        val b = incoming.firstOrNull { it.occurrence == a.occurrence }
                         if (b == null) unmatched.add(a)
                         else { join(a.id, b.id); incoming.remove(b) }
                     }

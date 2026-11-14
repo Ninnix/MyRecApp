@@ -58,7 +58,7 @@ Read the [recording guide](docs/RECORDING.md) and
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.0](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.0), install it, and
+[release 0.1.1](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.1), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 

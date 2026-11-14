@@ -71,6 +71,9 @@ class Panels(private val a: MainActivity) {
     private var captureSheet = false
     private var captureExpanded = false
     private var reflowControls: (() -> Unit)? = null
+    private var panelClosed: (() -> Unit)? = null
+    private var cancelPanel: (() -> Unit)? = null
+    private var headerDone: TextView? = null
     val isOpen
         get() = panel != null
 
@@ -436,6 +439,11 @@ class Panels(private val a: MainActivity) {
     }
 
     fun close(refresh: Boolean = true) {
+        val cleanup = panelClosed
+        panelClosed = null
+        cancelPanel = null
+        headerDone = null
+        cleanup?.invoke()
         captureDraft?.let { chain -> captureDone?.invoke(chain.map { it.copyEffect() }) }
         captureSheet = false
         panel?.let { a.root.removeView(it) }
@@ -477,6 +485,10 @@ class Panels(private val a: MainActivity) {
         progressText = null
         a.playback.previewProject = null
         if (refresh) a.playback.refresh()
+    }
+
+    fun cancel() {
+        cancelPanel?.invoke() ?: close()
     }
 
     private fun setup(
@@ -595,11 +607,11 @@ class Panels(private val a: MainActivity) {
                 )
                 root.layoutParams =
                     root.layoutParams.apply { this.height = captureHeight(a.root.height) }
-            } else close()
+            } else cancel()
         }
         val done =
             text(
-                    if (tools || captureSheet) "Done" else "Apply",
+                    if (tools || captureSheet || name == "Voice recording") "Done" else "Apply",
                     10f,
                     if (captureSheet) Color.WHITE else RED,
                 )
@@ -607,6 +619,7 @@ class Panels(private val a: MainActivity) {
                     gravity = Gravity.CENTER
                     if (!plain) background = shape(Color.rgb(37, 37, 39), 15f)
                 }
+        headerDone = done
         val dlp =
             FrameLayout.LayoutParams(px(55f), px(28f), Gravity.RIGHT or Gravity.CENTER_VERTICAL)
         dlp.rightMargin = px(if (landscape) if (tools) 28f else if (plain) 48f else 28f else 10f)
@@ -630,6 +643,15 @@ class Panels(private val a: MainActivity) {
 
     fun relayout() {
         if (panel == null) return
+        if (title == "Voice recording") {
+            val oldBody = body ?: return
+            val scroll = oldBody.getChildAt(oldBody.childCount - 1)
+            oldBody.removeView(scroll)
+            panel?.let { a.root.removeView(it) }
+            add(createPanel(title, applyPanel, toolsPanel), scroll, -1f)
+            reflowControls?.invoke()
+            return
+        }
         if (title == "Add audio") {
             addAudio(draftOrigin)
             return
@@ -1423,13 +1445,15 @@ class Panels(private val a: MainActivity) {
             a.importVideo(layer = true)
         }
         toolRow(content, "Add audio", "Volume", TEAL) { addAudio() }
+        toolRow(content, "Record here", "Camera", RED) { close(); a.recordHere() }
+        toolRow(content, "Voiceover here", "Volume", TEAL) { close(); a.voiceover() }
         toolRow(content, "Censor audio", "Volume", TEAL) { censor() }
         toolRow(content, "Transition", "Transition", Effects.color("Transition")) { transition() }
         hint(content, "Select a clip boundary, the start, or the end.")
         if (editor.clipboard.isNotEmpty())
             button(content, "Paste", RED) {
-                editor.paste()
                 close()
+                a.editorView.action("paste")
             }
         label(content, "Overlays")
         hint(content, rangeLabel())
@@ -1515,6 +1539,92 @@ class Panels(private val a: MainActivity) {
             LinearLayout.LayoutParams(0, px(72f), 1f),
         )
         add(content, settings)
+    }
+
+    fun voiceover(work: VoiceDraft) {
+        val content = setup("Voice recording", { work.commit() })
+        panelClosed = { work.close() }
+        cancelPanel = { work.discard(true) }
+        val scroll = ScrollView(a).apply { isFillViewport = true }
+        add(content, scroll, -1f)
+        val frame = FrameLayout(a)
+        scroll.addView(frame)
+        fun build() {
+            frame.removeAllViews()
+            val controls = column().apply { setPadding(px(16f), px(12f), px(16f), px(20f)) }
+            frame.addView(controls, FrameLayout.LayoutParams(min(a.root.width, px(336f)), -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+            val microphone = row().apply {
+                gravity = Gravity.CENTER
+                contentDescription = "Choose microphone"
+                setOnClickListener { work.chooseInput() }
+            }
+            microphone.addView(Glyph(a, "Microphone", TEAL), LinearLayout.LayoutParams(px(18f), px(18f)))
+            val input = text(work.inputName, 10f, Color.WHITE, true).apply { setPadding(px(7f), 0, px(7f), 0) }
+            microphone.addView(input)
+            microphone.addView(Glyph(a, "Chevron down", MUTED), LinearLayout.LayoutParams(px(10f), px(12f)))
+            add(controls, microphone, 44f)
+            space(controls, 12f)
+            val clock = text(timeLabel(work.clock), 28f).apply {
+                gravity = Gravity.CENTER
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                fontFeatureSettings = "tnum"
+                contentDescription = "Elapsed time"
+            }
+            add(controls, clock, 44f)
+            val meter = ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 1000
+                progressTintList = android.content.res.ColorStateList.valueOf(TEAL)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(40, 40, 43))
+            }
+            val meterFrame = FrameLayout(a)
+            meterFrame.addView(meter, FrameLayout.LayoutParams(px(96f), px(4f), Gravity.CENTER))
+            add(controls, meterFrame, 12f)
+            space(controls, 16f)
+            val transport = row()
+            fun transportButton(color: Int, weight: Float, action: () -> Unit): Pair<LinearLayout, TextView> {
+                val control = row().apply {
+                    gravity = Gravity.CENTER
+                    background = shape(color, 7f)
+                    setOnClickListener { action() }
+                }
+                val caption = text("", 11f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
+                control.addView(caption)
+                transport.addView(control, LinearLayout.LayoutParams(0, px(44f), weight))
+                return control to caption
+            }
+            val (record, recordText) = transportButton(RED, 1f) { work.record() }
+            transport.addView(View(a), LinearLayout.LayoutParams(px(10f), 1))
+            val (play, playText) = transportButton(Color.rgb(37, 37, 39), .55f) { work.play() }
+            add(controls, transport)
+            space(controls, 12f)
+            val reset = text("Start over", 10f, MUTED).apply {
+                gravity = Gravity.CENTER
+                contentDescription = "Start over"
+                setOnClickListener { work.discard(false) }
+            }
+            add(controls, reset, 44f)
+            work.changed = {
+                input.text = work.inputName
+                microphone.isEnabled = !work.recording
+                microphone.alpha = if (work.recording) .4f else 1f
+                clock.text = timeLabel(work.clock)
+                meter.progress = (work.level * 1000).toInt()
+                meter.alpha = if (work.recording) 1f else 0f
+                val recordTitle = if (work.recording) "Stop" else if (work.hasAudio) "Record more" else "Record"
+                recordText.text = "${if (work.recording) "■" else "●"}  $recordTitle"
+                record.contentDescription = recordTitle
+                playText.text = if (work.playing) "■  Stop" else "▶  Play"
+                play.contentDescription = if (work.playing) "Stop playback" else "Play"
+                play.isEnabled = work.hasAudio && !work.recording
+                play.alpha = if (play.isEnabled) 1f else .35f
+                reset.visibility = if (work.hasAudio) View.VISIBLE else View.INVISIBLE
+                headerDone?.isEnabled = work.hasAudio
+                headerDone?.alpha = if (work.hasAudio) 1f else .35f
+            }
+            work.changed()
+        }
+        reflowControls = { build() }
+        build()
     }
 
     fun addAudio(at: Double = editor.cursor) {
