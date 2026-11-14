@@ -26,6 +26,10 @@ stay separately selectable. Move offers Selected only, With left, With right,
 and Both sides; connected neighbors stop at gaps. Drag with edge snapping or
 choose an exact cut, then Done or Cancel. Use Placement to arrange overlapping
 pictures and change their front/back order. Long-press clips to extend a selection.
+The Snap to cuts button remembers its setting. Scrubbing
+snaps to nearby clip edges or bookmarks when released. Selection marks align to
+cuts, quiet waveform points and the 30 fps edit grid; marks within a transition
+align to its join.
 Audio filters run in order. Clip speed preserves pitch; Volume offers separate
 edge fades, and Censor audio replaces selected sound with a generated tone.
 Captions and neural audio restoration work offline after their models have been

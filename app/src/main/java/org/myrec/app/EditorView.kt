@@ -71,6 +71,8 @@ class EditorView(
     private var downY = 0f
     private var moved = false
     private var downCursor = 0.0
+    private var downSpan = 10.0
+    private var scrubbing = false
     private var downMoveOffset = 0.0
     private var chipScroll = 0f
     private var chipLimit = 0f
@@ -91,6 +93,7 @@ class EditorView(
             context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                    finishScrub()
                     moved = true
                     panAnchored = false
                     return true
@@ -155,6 +158,27 @@ class EditorView(
     }
 
     internal fun boundaryPosition(time: Double): Float = (xFor(time) + ox) * unit
+
+    val pointsPerSecond get() = timeline.width() / span
+
+    fun wavePeak(clip: Clip, sourceTime: Double): Float? {
+        val peaks = index.waves[clip.path] ?: return null
+        if (peaks.isEmpty()) return null
+        val duration = indexedDuration(clip.path)
+        if (sourceTime < 0 || sourceTime >= duration) return 0f
+        return peaks[(sourceTime / duration * peaks.size).toInt().coerceIn(0, peaks.lastIndex)]
+    }
+
+    private fun scrubTime(x: Float): Double = if (editor.wholeProject)
+        (x - timeline.left) / timeline.width() * downSpan
+        else downCursor - (x - downX) / timeline.width() * downSpan
+
+    private fun finishScrub() {
+        if (!scrubbing) return
+        scrubbing = false
+        seek(editor.snapTime(editor.cursor, timeline.width() / downSpan))
+        invalidate()
+    }
 
     private fun button(
         c: Canvas,
@@ -586,7 +610,8 @@ class EditorView(
                 c,
                 RectF(x + cell + gap, y, x + 2 * cell + gap, y + first),
                 "mark",
-                if (editor.mark != null) "${if(landscape)"End" else "Mark end"}"
+                if (editor.range != null) "Move end"
+                else if (editor.mark != null) "${if(landscape)"End" else "Mark end"}"
                 else if (landscape) "Start" else "Mark start",
                 "mark",
                 editor.project.duration > 0 && !moving,
@@ -1060,6 +1085,8 @@ class EditorView(
                 downY = y
                 moved = false
                 downCursor = editor.cursor
+                downSpan = span
+                scrubbing = false
                 downChipScroll = chipScroll
                 gainChanged = false
                 gestureClip = clipAt(x, y)
@@ -1101,7 +1128,7 @@ class EditorView(
                         val t =
                             editor.snapTime(
                                 start + (x - timeline.left) / timeline.width() * span,
-                                span / timeline.width() * 5,
+                                pointsPerSecond,
                             )
                         editor.range =
                             if (rangeHandle < 0)
@@ -1116,11 +1143,13 @@ class EditorView(
                             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     } else if (abs(dy) > abs(dx) * 1.4f && laneScrollMax > 0 &&
                         (gestureClip == null || !audioGesture || moving)) {
+                        scrubbing = false
                         laneScroll = (downLaneScroll - dy).coerceIn(0f, laneScrollMax)
                         invalidate()
                     } else if (
                         !moving && abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
                     ) {
+                        scrubbing = false
                         if (!gainChanged) {
                             if (gestureClip!!.id !in editor.selected) editor.select(gestureClip!!)
                             gainChanged = true
@@ -1128,8 +1157,8 @@ class EditorView(
                         gestureClip!!.gainDb = (downGain - dy * 0.25f).coerceIn(-60f, 24f)
                         invalidate()
                     } else {
-                        val t = downCursor - dx / timeline.width() * span
-                        seek(editor.snapTime(t, span / timeline.width() * 6))
+                        scrubbing = true
+                        seek(scrubTime(x))
                         invalidate()
                     }
                 }
@@ -1148,6 +1177,11 @@ class EditorView(
                 if (moved && moving) {
                     if (!pickingMoveBoundary && gestureClip?.id in editor.selected)
                         editor.updateMove(downMoveOffset + (x - downX) / timeline.width() * span, timeline.width() / span)
+                    return true
+                }
+                if (scrubbing) {
+                    seek(scrubTime(x))
+                    finishScrub()
                     return true
                 }
                 if (moved) return true
@@ -1179,13 +1213,15 @@ class EditorView(
                     val clip = clipAt(x, y)
                     previousPosition = editor.cursor
                     val marking = editor.mark != null || editor.range != null
-                    if (clip != null && !marking) editor.select(clip)
-                    seek(
-                        editor.snapTime(
-                            start + (x - timeline.left) / timeline.width() * span,
-                            span / timeline.width() * 5,
-                        )
-                    )
+                    if (clip != null && !marking && y >= timeline.top + 16) editor.select(clip)
+                    else {
+                        val time = start + (x - timeline.left) / timeline.width() * span
+                        if (y < timeline.top + 16) {
+                            val bookmark = editor.project.markers().minByOrNull { abs(it - time) }
+                                ?.takeIf { abs(it - time) * pointsPerSecond < 10 }
+                            seek(bookmark ?: editor.snapTime(time, pointsPerSecond))
+                        } else seek(time)
+                    }
                     invalidate()
                 } else if (previewBounds.contains(x, y)) {
                     action("play")
@@ -1199,6 +1235,7 @@ class EditorView(
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
+                scrubbing = false
                 if (moving && moved && gestureClip?.id in editor.selected)
                     editor.updateMove(downMoveOffset, timeline.width() / span, snapping = false)
             }

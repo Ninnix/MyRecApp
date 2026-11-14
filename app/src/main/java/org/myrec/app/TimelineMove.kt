@@ -2,7 +2,8 @@ package org.myrec.app
 
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.round
+import kotlin.math.floor
+import kotlin.math.sign
 
 enum class MoveScope(val title: String) {
     SELECTED("Selected only"), LEFT("With left"), RIGHT("With right"), BOTH("Both sides")
@@ -39,7 +40,7 @@ class TimelineMove(val base: Project, val picked: Set<String>, val cursor: Doubl
 
     companion object {
         // This is the reference edit clock, separate from original source PTS.
-        fun time(seconds: Double): Double = round(seconds * 240000) / 240000
+        fun time(seconds: Double): Double = sign(seconds) * floor(abs(seconds) * 240000 + .5) / 240000
 
         fun linked(project: Project, ids: Set<String>): Set<String> {
             val result = ids.toMutableSet()
@@ -103,10 +104,7 @@ class TimelineMove(val base: Project, val picked: Set<String>, val cursor: Doubl
             val delta = time(requested.coerceIn(minimum, maximum))
             if (!enabled) return MoveResult(delta)
             val edges = parts.flatMap { listOf(time(it.start), time(it.end)) }.distinct().sorted()
-            val targets = (project.clips.filter { it.id !in selected }.flatMap { c ->
-                listOf(c.start, c.end) + c.marks.filter { mark -> c.keptIntervals().any { mark >= it.start && mark < it.end } }
-                    .map { c.start + c.timelineOffset(it) }
-            } + extra + 0.0).map(::time).distinct().sorted()
+            val targets = TimelineSnap.targets(project, selected, extra)
             var best: MoveSnap? = null
             var distance = Double.POSITIVE_INFINITY
             val points = max(.000001, scale)

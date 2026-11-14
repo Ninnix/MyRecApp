@@ -6,6 +6,8 @@ import android.os.Handler
 import android.os.Looper
 import java.io.File
 import java.util.concurrent.Executors
+import kotlin.math.ceil
+import kotlin.math.max
 
 class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit) {
     private val worker = Executors.newFixedThreadPool(2)
@@ -19,13 +21,17 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
         if (!requested.add(clip.path)) return
         worker.execute {
             val reader = MediaMetadataRetriever()
+            var duration = clip.sourceOut
+            var hasAudio = clip.audio
             try {
                 reader.setDataSource(clip.path)
-                val duration = Mp4Audio.presentedDuration(File(clip.path)) ?:
+                duration = Mp4Audio.presentedDuration(File(clip.path)) ?:
                     (reader
                         .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                         ?.toDoubleOrNull() ?: 0.0) / 1000
-                ui.post { durations[clip.path] = duration }
+                hasAudio = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
+                val sourceDuration = duration
+                ui.post { durations[clip.path] = sourceDuration }
                 if (clip.video) {
                     val hdr =
                         reader
@@ -73,7 +79,8 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
             }
             val waveform =
                 try {
-                    if (clip.audio) cache.waveform(clip.path) else FloatArray(0)
+                    // Original-source 10 ms peaks also guide quiet-point selection after AV unlinking.
+                    if (hasAudio) cache.waveform(clip.path, max(1, ceil(duration * 100).toInt())) else FloatArray(0)
                 } catch (_: Exception) {
                     FloatArray(0)
                 }

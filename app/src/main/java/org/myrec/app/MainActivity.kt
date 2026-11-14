@@ -81,6 +81,8 @@ class MainActivity : Activity() {
         store.recoverCaptures()
         val saved = store.currentSession()
         editor = Editor(saved.project).apply { load(saved.project, saved) }
+        val editorSettings = getSharedPreferences(if (testSession) "editor-test-$testSessionId" else "editor", MODE_PRIVATE)
+        editor.snap = editorSettings.getBoolean("snapToCuts", true)
         Studio.directory = File(getExternalFilesDir(null), "models/studio-lava-v1")
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
         AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
@@ -91,6 +93,10 @@ class MainActivity : Activity() {
         setContentView(root)
         mediaIndex = MediaIndex(audioCache) { editorView.invalidate() }
         editorView = EditorView(this, editor, mediaIndex, ::action) { playback.seek(it) }
+        editor.onSnapChange = {
+            editorSettings.edit().putBoolean("snapToCuts", it).apply()
+            editorView.invalidate()
+        }
         playback =
             Playback(
                 editor,
@@ -192,7 +198,11 @@ class MainActivity : Activity() {
                 playback.pause()
                 editor.split()
             }
-            "mark" -> editor.markRange()
+            "mark" -> {
+                playback.pause()
+                editor.markRange(editorView.pointsPerSecond, editorView::wavePeak)?.let(::message)
+                playback.seek(editor.cursor)
+            }
             "tools" -> {
                 playback.pause()
                 panels.tools()
@@ -208,8 +218,6 @@ class MainActivity : Activity() {
             }
             "snap" -> {
                 editor.snap = !editor.snap
-                editor.move?.snap = null
-                editorView.invalidate()
             }
             "link" -> {
                 if (editor.selected.isNotEmpty()) editor.unlink()

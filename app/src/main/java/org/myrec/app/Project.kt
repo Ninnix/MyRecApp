@@ -362,7 +362,14 @@ class Editor(var project: Project = Project()) {
     val canRedo
         get() = redo.isNotEmpty()
 
+    var onSnapChange: (Boolean) -> Unit = {}
     var snap = true
+        set(value) {
+            if (field == value) return
+            field = value
+            move?.snap = null
+            onSnapChange(value)
+        }
     var matchLoudness = true
     var linked = true
     var scale = 10.0
@@ -560,25 +567,34 @@ class Editor(var project: Project = Project()) {
         onChange()
     }
 
-    fun markRange() {
-        if (mark == null) {
+    fun markRange(pointsPerSecond: Double = 60.0, peak: (Clip, Double) -> Float? = { _, _ -> null }): String? {
+        cursor = TimelineSnap.mark(project, cursor, pointsPerSecond, snap, peak)
+        val r = range
+        if (r != null) {
+            if (cursor - r.start < TimelineSnap.FRAME - .00001) {
+                onChange()
+                return "Place the end after the start"
+            }
+            range = r.start..cursor
+        } else if (mark == null) {
             mark = cursor
             range = null
         } else {
+            if (abs(cursor - mark!!) < TimelineSnap.FRAME - .00001) {
+                onChange()
+                return "Choose an end at least one frame away"
+            }
             range = min(mark!!, cursor)..max(mark!!, cursor)
             mark = null
             selected.clear()
         }
         onChange()
+        return null
     }
 
-    fun snapTime(t: Double, tolerance: Double = 0.12): Double {
+    fun snapTime(t: Double, pointsPerSecond: Double = 60.0): Double {
         val bounded = t.coerceIn(0.0, project.duration)
-        if (!snap) return bounded
-        return project
-            .events()
-            .minByOrNull { abs(it - bounded) }
-            ?.takeIf { abs(it - bounded) < tolerance } ?: bounded
+        return if (snap) TimelineSnap.snap(project, bounded, pointsPerSecond) else bounded
     }
 
     fun jump(forward: Boolean) {

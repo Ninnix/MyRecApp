@@ -27,6 +27,8 @@ object MediaEditingTest {
         instrumentation.context.assets.open("fixture.mp4").use { input ->
             source.outputStream().use { input.copyTo(it) }
         }
+        val snapSource = File(a.store.media, "snap-video.mp4")
+        source.copyTo(snapSource, overwrite = true)
         val wave = File(a.cacheDir, "import-audio.wav")
         val samples = 48000 * 3
         val data = ByteBuffer.allocate(44 + samples * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -240,6 +242,86 @@ object MediaEditingTest {
                 tap("moveCancel")
                 check(a.editor.project == before && !a.editor.canUndo)
             }
+            test("$name Snap to cuts applies only after scrub release and uses the final finger position") {
+                onMain {
+                    a.editor.load(Project(clips = mutableListOf(
+                        Clip(path = snapSource.path, sourceOut = 2.0, audio = false),
+                        Clip(path = snapSource.path, sourceOut = 2.0, start = 2.0, audio = false))))
+                    a.editor.cursor = 2.0; a.editor.scale = 4.0; a.editor.snap = true
+                }
+                Thread.sleep(250)
+                for (whole in listOf(false, true)) for (enabled in listOf(true, false)) {
+                    onMain { a.editor.wholeProject = whole; a.editor.cursor = 2.0; a.editorView.invalidate() }
+                    Thread.sleep(150)
+                    if (a.editor.snap != enabled) tap("snap")
+                    val r = card(a.editor.project.clips.first().id)
+                    val from = center(r)
+                    val mid = if (whole) boundary(2.0) - (boundary(1.0) - boundary(0.0)) *
+                        (6 / a.editorView.pointsPerSecond).toFloat() else
+                        from.x + (boundary(1.0) - boundary(0.0)) * (6 / a.editorView.pointsPerSecond).toFloat()
+                    val end = if (whole) boundary(2.0) - (boundary(1.0) - boundary(0.0)) *
+                        (7 / a.editorView.pointsPerSecond).toFloat() else
+                        from.x + (boundary(1.0) - boundary(0.0)) * (7 / a.editorView.pointsPerSecond).toFloat()
+                    val expectedMid = 2.0 - 6 / a.editorView.pointsPerSecond
+                    val expectedEnd = if (enabled) 2.0 else 2.0 - 7 / a.editorView.pointsPerSecond
+                    onMain {
+                        val now = SystemClock.uptimeMillis()
+                        fun send(action: Int, x: Float, delay: Long) {
+                            val event = MotionEvent.obtain(now, now + delay, action, x, from.y, 0)
+                            a.editorView.dispatchTouchEvent(event); event.recycle()
+                        }
+                        send(MotionEvent.ACTION_DOWN, from.x, 0)
+                        send(MotionEvent.ACTION_MOVE, mid, 30)
+                        check(abs(a.editor.cursor - expectedMid) < .00001) { "Snapped before release: ${a.editor.cursor}" }
+                        send(MotionEvent.ACTION_UP, end, 60)
+                        check(abs(a.editor.cursor - expectedEnd) < .00001) { "Release: ${a.editor.cursor} vs $expectedEnd" }
+                    }
+                }
+                onMain { a.editor.wholeProject = false; a.editor.snap = true }
+            }
+            test("$name ruler snaps to bookmarks and cuts while effects and clip selection do not attract the playhead") {
+                onMain {
+                    a.editor.cursor = 2.0; a.editor.scale = 4.0
+                    a.editor.project.clips.first().effects.add(Effect(kind = "Noir", from = .7, to = .8))
+                    a.editor.project.clips.first().marks.add(1.5)
+                    a.editorView.invalidate()
+                }
+                Thread.sleep(150)
+                val r = card(a.editor.project.clips.first().id)
+                gesture(center(r))
+                check(abs(a.editor.cursor - 2.0) < .00001)
+                val y = point(0f, if (name == "landscape") 137f else 393f).y
+                gesture(PointF(boundary(.75), y))
+                check(abs(a.editor.cursor - .75) < .00001)
+                gesture(PointF(boundary(1.975), y))
+                check(abs(a.editor.cursor - 2.0) < .00001)
+                tap("snap")
+                gesture(PointF(boundary(1.975), y))
+                check(abs(a.editor.cursor - 1.975) < .00001)
+                gesture(PointF(boundary(1.52), y))
+                check(abs(a.editor.cursor - 1.5) < .00001)
+                tap("snap")
+            }
+            test("$name Mark aligns cuts, rejects subframe ranges, moves the end and keeps frame rounding with Off") {
+                onMain { a.editor.clearSelection(); a.editor.cursor = 1.975; a.editorView.invalidate() }
+                Thread.sleep(150)
+                tap("mark")
+                check(a.editor.mark == 2.0)
+                onMain { a.editor.cursor = 2.01; a.editorView.invalidate() }
+                Thread.sleep(100); tap("mark")
+                check(a.editor.mark == 2.0 && a.editor.range == null)
+                onMain { a.editor.cursor = 3.0; a.editorView.invalidate() }
+                Thread.sleep(100); tap("mark")
+                check(a.editor.range == 2.0..3.0)
+                onMain { a.editor.cursor = 3.5; a.editorView.invalidate() }
+                Thread.sleep(100); tap("mark")
+                check(a.editor.range == 2.0..3.5 && a.editor.mark == null)
+                onMain { a.editor.clearSelection(); a.editor.cursor = 1.975; a.editorView.invalidate() }
+                Thread.sleep(100); tap("snap"); tap("mark")
+                check(abs(a.editor.mark!! - 59.0 / 30) < .00001)
+                check(!a.editor.canUndo)
+                onMain { a.editor.clearSelection(); a.editor.snap = true }
+            }
             test("$name audio picker adds an independent waveform at the requested cursor") {
                 val before = a.editor.project.duplicate()
                 onMain { a.playback.seek(.75); a.panels.addAudio() }
@@ -261,7 +343,7 @@ object MediaEditingTest {
                     check(a.editor.project.clips.dropLast(1) == before.clips)
                     check(added.audio && !added.video && !added.linked)
                     check(abs(added.start - .75) < .01 && abs(added.duration - 3.0) < .01)
-                    check(added.track > before.clips.maxOf { it.track })
+                    check(added.track > (before.clips.filter { it.audio }.maxOfOrNull { it.track } ?: -1))
                     check(File(added.path).readBytes().contentEquals(wave.readBytes()))
                     check(a.store.current().clips.last() == added)
                     check(a.audioCache.waveform(added.path).any { it > .01f })
@@ -313,6 +395,43 @@ object MediaEditingTest {
             }
             edit.undo()
             check(edit.project.active(1.5).last().id == red.id)
+        }
+        test("Snap to cuts and Tools share a preference retained by a fresh editor activity") {
+            val id = "snap-" + uid()
+            fun launch(): MainActivity = instrumentation.startActivitySync(
+                Intent(instrumentation.targetContext, MainActivity::class.java)
+                    .putExtra("testSession", true).putExtra("testSessionId", id)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)) as MainActivity
+            var current: MainActivity? = null
+            try {
+                val first = launch(); current = first
+                Thread.sleep(250)
+                onMain {
+                    check(first.editor.snap)
+                    val r = first.editorView.controlBounds("snap") ?: error("No Snap to cuts button")
+                    val now = SystemClock.uptimeMillis()
+                    for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                        val event = MotionEvent.obtain(now, now + 30, action, r.centerX(), r.centerY(), 0)
+                        first.editorView.dispatchTouchEvent(event); event.recycle()
+                    }
+                    check(!first.editor.snap)
+                    first.finish()
+                }
+                val second = launch(); current = second
+                Thread.sleep(250)
+                onMain {
+                    check(!second.editor.snap)
+                    second.panels.tools()
+                    (find(second.root, "Snap to cuts") ?: error("No Snap setting")).performClick()
+                    check(second.editor.snap)
+                    second.panels.close(); second.finish()
+                }
+                val third = launch(); current = third
+                onMain { check(third.editor.snap) }
+            } finally {
+                current?.let { onMain { it.finish() } }
+                instrumentation.targetContext.deleteSharedPreferences("editor-test-$id")
+            }
         }
         onMain { a.panels.close(); a.playback.pause() }
     }
