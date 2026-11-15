@@ -43,14 +43,15 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
+        if (suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {
                 val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
                     .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
                 activity = a
-                if (suite == "responsive-layout") ResponsiveLayoutTests.run(this,a,::onMain,::test)
+                if (suite == "microphone") MicrophoneTests.run(this,a,::onMain,::test)
+                else if (suite == "responsive-layout") ResponsiveLayoutTests.run(this,a,::onMain,::test)
                 else if (suite == "stabilization") StabilizationDeviceTests.run(this,a,::onMain,::test)
                 else if (suite == "scene") SceneTests.run(this, a, ::test)
                 else if (suite == "restoration") RestorationTests.run(this, a, ::test)
@@ -903,6 +904,11 @@ class DeviceTests : Instrumentation() {
                     },
                 )
                 tapCameraControl("mic")
+                onMain {
+                    val popup=Capture::class.java.getDeclaredField("routeReadout").apply { isAccessible=true }.get(camera) as android.widget.TextView
+                    popup.performClick()
+                }
+                Thread.sleep(250)
                 screenshot("microphones-portrait", activity, true)
                 for (label in labels) check(
                     uiAutomation.rootInActiveWindow
@@ -912,6 +918,7 @@ class DeviceTests : Instrumentation() {
                     "Missing microphone label $label"
                 }
                 onMain { activity.onBackPressed() }
+                sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
             }
             test("portrait camera records correctly oriented playable video") {
                 onMain { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }

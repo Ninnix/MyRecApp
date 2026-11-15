@@ -43,20 +43,8 @@ object DirectHdrTest {
                 activity.windowManager.defaultDisplay.rotation * 90,
                 false,
             )
-        val recorder =
-            HdrRecorder(
-                activity,
-                target,
-                1920,
-                1080,
-                30,
-                rotation,
-                microphone,
-                MediaRecorder.AudioSource.CAMCORDER,
-                1,
-            ) {
-                failure.set(it)
-            }
+        val recorder=CaptureRecorder(target,1920,1080,30,rotation,true,activity.audioCache) { failure.set(it) }
+        val input=TestMicrophone(recorder,microphone,failure)
         try {
             manager.openCamera(
                 id,
@@ -161,6 +149,7 @@ object DirectHdrTest {
         } finally {
             session?.close()
             device?.close()
+            input.close()
             recorder.close()
             thread.quitSafely()
         }

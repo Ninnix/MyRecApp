@@ -32,6 +32,11 @@ data class MicrophoneInput(val id: Int, val type: Int, val product: String, val 
         get() =
             "$type:${URLEncoder.encode(product, "UTF-8")}:${URLEncoder.encode(address.ifBlank { "route-$id" }, "UTF-8")}"
 
+    fun gainKey(discovered: List<MicrophoneInput>): String =
+        if (address.isBlank() && discovered.count { it.type==type && it.product==product }<=1)
+            "$type:${URLEncoder.encode(product,"UTF-8")}:default"
+        else key
+
     val label: String
         get() {
             if (type == AudioDeviceInfo.TYPE_BUILTIN_MIC)

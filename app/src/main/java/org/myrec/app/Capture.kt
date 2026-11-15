@@ -58,8 +58,7 @@ class Capture(
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var request: CaptureRequest.Builder? = null
-    private var recorder: MediaRecorder? = null
-    private var hdrRecorder: HdrRecorder? = null
+    @Volatile private var recorder: CaptureRecorder? = null
     private var hdr = false
     private val hdrColor = HdrColor(activity)
     private var colorGeneration = 0
@@ -102,10 +101,22 @@ class Capture(
     private var markedUntil = 0L
     private var since = 0L
     private var amplitude = 0f
-    private var meter: AudioRecord? = null
-    private var meterGeneration = 0
-    private val meterWorker = Executors.newSingleThreadExecutor()
     private var micId = prefs.getInt("mic", -1)
+    private val microphoneRoute = RecordingMicrophoneRoute()
+    private var microphoneRecheck: Runnable? = null
+    private var microphoneRecoveryAt = 0L
+    private var recordingRequestedAt = 0L
+    private var gainPopup: PopupWindow? = null
+    private var gainReadout: TextView? = null
+    private var signalReadout: TextView? = null
+    private var signalMeter: ProgressBar? = null
+    private var routeReadout: TextView? = null
+    private var gainSlider: SeekBar? = null
+    private val microphone = LiveMicrophone(ui,
+        changed = { microphoneChanged() },
+        failure = { microphoneFailed(it) },
+        gainForDevice = { recordingGain(it) },
+        sample = { pcm,time -> recorder?.appendAudio(pcm,time) })
     private var communicationRoute = -1
     private var previousAudioMode = AudioManager.MODE_NORMAL
     internal var latestResult: TotalCaptureResult? = null
@@ -127,6 +138,8 @@ class Capture(
     private var lightWidth = prefs.getFloat("lightWidth", .085f).coerceIn(.015f, .35f)
     private var lightTone = prefs.getString("lightTone", "White") ?: "White"
     private var lightCustom = prefs.getInt("lightCustom", Color.rgb(255, 179, 201))
+    private var lightColorPicker: FrontLightColorPicker? = null
+    private var customLightSwatch: View? = null
     private var lightOpacity = prefs.getFloat("lightOpacity", 1f).coerceIn(0f, 1f)
     private var previousBrightness: Float? = null
     private var zoom = 1f
@@ -149,19 +162,14 @@ class Capture(
     private val audioDevices =
         object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-                if (!recording) choosePriority()
+                resolveMicrophone()
                 overlay.invalidate()
             }
 
             override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
-                if (removedDevices.any { it.id == micId }) {
-                    if (recording && !paused) {
-                        pause()
-                        activity.message("No microphone available, recording paused.")
-                    }
-                    micId = -1
-                    choosePriority()
-                }
+                microphoneRoute.disconnected(removedDevices.map { MicrophoneInput(it).key })
+                if (removedDevices.any { it.id == micId } && recording) microphoneRecoveryAt = System.nanoTime()
+                resolveMicrophone()
                 overlay.invalidate()
             }
         }
@@ -174,11 +182,9 @@ class Capture(
                     Build.VERSION.SDK_INT >= 29 &&
                         recording &&
                         !paused &&
+                        (microphoneRecoveryAt==0L || System.nanoTime()-microphoneRecoveryAt>3_000_000_000) &&
                         configs.any {
-                            it.clientAudioSessionId ==
-                                (recorder?.activeRecordingConfiguration
-                                        ?: hdrRecorder?.configuration)
-                                    ?.clientAudioSessionId && it.isClientSilenced
+                            it.clientAudioSessionId == microphone.sessionId && it.isClientSilenced
                         }
                 ) {
                     pause()
@@ -190,13 +196,19 @@ class Capture(
         object : Runnable {
             override fun run() {
                 if (closed) return
-                if (recording && !paused)
-                    amplitude =
-                        try {
-                            (recorder?.maxAmplitude ?: hdrRecorder?.amplitude ?: 0) / 32767f
-                        } catch (_: Exception) {
-                            0f
-                        }
+                val now = System.nanoTime()
+                val arriving = microphone.readings.arriving(now)
+                amplitude = if (arriving) ((microphone.readings.peakDB + 60) / 60).coerceIn(0f,1f) else 0f
+                updateRecordingAudioControls(now)
+                if (arriving && microphone.running && microphone.readings.lastAudio>=microphoneRecoveryAt) microphoneRecoveryAt=0
+                if (recording && !paused && !pendingStart && !arriving && now-recordingRequestedAt>1_000_000_000) {
+                    val last=microphone.readings.lastAudio.takeIf { it!=Long.MIN_VALUE } ?: recordingRequestedAt
+                    val expired=if (microphoneRecoveryAt>0) now-microphoneRecoveryAt>3_000_000_000 else now-last>1_000_000_000
+                    if (expired) {
+                        pause()
+                        activity.message("No microphone audio is arriving. Recording paused; check the microphone before resuming.")
+                    }
+                }
                 if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && !rendering)
                     updateLiveFrame()
                 overlay.invalidate()
@@ -247,6 +259,7 @@ class Capture(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        lightColorPicker?.resize()
         if (settingsPopup?.isShowing == true) {
             settingsPopup?.dismiss()
             post { if (!closed) settings() }
@@ -260,7 +273,8 @@ class Capture(
     fun resumeCamera() {
         closed = false
         updateLight()
-        selectedMicrophone()?.let { routeMicrophone(it) }
+        microphoneRoute.retry()
+        startMeter()
         if (texture.isAvailable) openDefault()
         ui.removeCallbacks(ticker)
         ui.post(ticker)
@@ -487,13 +501,12 @@ class Capture(
                             pendingStart = false
                             try {
                                 recorder?.start()
-                                hdrRecorder?.start()
                                 since = SystemClock.elapsedRealtime()
                             } catch (e: Exception) {
                                 ui.post {
                                     recording = false
                                     closeRecordingSurface()
-                                    recorder?.release()
+                                    recorder?.close()
                                     recorder = null
                                     recordingFile?.takeIf { it.length() == 0L }?.delete()
                                     receipt?.let { runCatching { store.abandonCapture(it) } }
@@ -742,22 +755,81 @@ class Capture(
             }
     }
 
-    private fun choosePriority() {
-        if (recording) return
+    private fun choosePriority() { resolveMicrophone() }
+
+    private fun recordingGain(device: AudioDeviceInfo): Float {
+        val input = MicrophoneInput(device)
+        return RecordingGain.normalized(prefs.getFloat("recordingGain." + input.gainKey(microphoneDevices().map { MicrophoneInput(it) }),0f))
+    }
+
+    internal fun setRecordingGain(value: Float) {
+        val device = microphone.actual ?: return
+        val input = MicrophoneInput(device)
+        val gain = RecordingGain.normalized(value)
+        prefs.edit().putFloat("recordingGain." + input.gainKey(microphoneDevices().map { MicrophoneInput(it) }),gain).apply()
+        microphone.gain.set(gain)
+        microphone.readings.clearLevel()
+        updateRecordingAudioControls(System.nanoTime())
+    }
+
+    private fun microphoneChanged() {
+        microphone.actual?.let { device ->
+            micId = device.id
+            prefs.edit().putInt("mic",micId).apply()
+        }
+        resolveMicrophone()
+        updateRecordingAudioControls(System.nanoTime())
+        overlay.invalidate()
+    }
+
+    private fun microphoneFailed(error: Throwable) {
+        if (closed) return
+        if (recording && microphoneRecoveryAt==0L) microphoneRecoveryAt=System.nanoTime()
+        resolveMicrophone()
+        if (!recording) activity.message(error.message ?: "Microphone is unavailable")
+    }
+
+    private fun resolveMicrophone() {
+        if (closed || activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) return
+        microphoneRecheck?.let { ui.removeCallbacks(it) }
+        microphoneRecheck = null
         val devices = microphoneDevices()
-        val priorities = prefs.getString("priorities", "")!!.split(',')
-        val chosen =
-            priorities.firstNotNullOfOrNull { key ->
-                devices.firstOrNull {
-                    val input = MicrophoneInput(it)
-                    input.key == key || input.legacyKey == key
+        val inputs = devices.map { MicrophoneInput(it) }
+        val actual = microphone.actual?.let { MicrophoneInput(it).key }
+        val saved = prefs.getString("priorities","").orEmpty().split(',').filter { it.isNotEmpty() }
+        val canonical = saved.map { key ->
+            inputs.firstOrNull { it.key==key }?.key
+                ?: inputs.firstOrNull { it.legacyKey==key && it.key==actual }?.key
+                ?: inputs.firstOrNull { it.legacyKey==key }?.key ?: key
+        }
+        val priorities = RecordingMicrophoneRoute.priority(canonical,inputs.map { it.key },actual)
+        val edit = prefs.edit()
+        if (priorities!=saved) edit.putString("priorities",priorities.joinToString(","))
+        for (input in inputs) edit.putString("microphoneName."+input.key,input.label)
+        edit.apply()
+        val ranked = priorities.mapNotNull { key -> inputs.firstOrNull { it.key==key || it.legacyKey==key }?.key }.distinct()
+        val decision = microphoneRoute.resolve(ranked,actual,microphone.requested?.let { MicrophoneInput(it).key },recording,System.nanoTime()/1e9)
+        if (decision.request!=null) {
+            devices.firstOrNull { MicrophoneInput(it).key==decision.request }?.let { device ->
+                if (recording && microphoneRecoveryAt==0L) microphoneRecoveryAt=System.nanoTime()
+                if (routeMicrophone(device)) runCatching {
+                    microphone.start(device,if (bluetooth(device)) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.CAMCORDER)
                 }
             }
-        if (chosen != null) micId = chosen.id
-        else if (devices.none { it.id == micId })
-            micId = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }?.id ?: -1
-        prefs.edit().putInt("mic", micId).apply()
-        if (device != null) startMeter()
+        }
+        if (decision.disconnected!=null) {
+            val old = prefs.getString("microphoneName."+decision.disconnected,"Microphone")
+            activity.message("$old disconnected. Using ${micName()}.")
+        }
+        if (decision.failed!=null) {
+            val desired = prefs.getString("microphoneName."+decision.failed,"the selected microphone")
+            activity.message("Could not switch to $desired. Using ${micName()}.")
+        }
+        decision.recheck?.let { delay ->
+            val next = Runnable { resolveMicrophone() }
+            microphoneRecheck=next
+            ui.postDelayed(next,(delay*1000).roundToLong().coerceAtLeast(50))
+        }
     }
 
     internal fun microphoneDevices() = MicrophoneInput.devices(audioManager)
@@ -862,12 +934,17 @@ class Capture(
                             }
                         }
                     }
+                    if (tone=="Custom") customLightSwatch=swatch
                     addView(swatch, LinearLayout.LayoutParams(u.px(24f), u.px(24f)))
                     addView(u.text(tone, 8f).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, u.px(18f)))
                     setOnClickListener {
                         if (tone == "Custom") {
                             setFrontLight(tone = tone); render()
-                            u.pickColor("Front light color", lightCustom, false) { color -> setFrontLight(color = color); render() }
+                            lightColorPicker?.dismiss()
+                            lightColorPicker=FrontLightColorPicker(activity,lightCustom,u.scale) { color -> setFrontLight(color = color); customLightSwatch?.invalidate() }.apply {
+                                setOnDismissListener { lightColorPicker=null }
+                                show()
+                            }
                         }
                         else { setFrontLight(tone = tone); render() }
                     }
@@ -975,80 +1052,15 @@ class Capture(
     }
 
     private fun micName(): String =
-        selectedMicrophone()?.let { MicrophoneInput(it).label } ?: "Default microphone"
+        microphone.actual?.let { MicrophoneInput(it).label } ?: "Microphone unavailable"
 
-    private fun startMeter() {
-        stopMeter()
-        if (
-            recording ||
-                activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
-                    PackageManager.PERMISSION_GRANTED
-        )
-            return
-        val selected = selectedMicrophone()
-        if (selected != null && !routeMicrophone(selected)) return
-        val ticket = ++meterGeneration
-        meterWorker.execute {
-            var input: AudioRecord? = null
-            try {
-                val size =
-                    max(
-                        4096,
-                        AudioRecord.getMinBufferSize(
-                            48000,
-                            AudioFormat.CHANNEL_IN_MONO,
-                            AudioFormat.ENCODING_PCM_16BIT,
-                        ),
-                    )
-                input =
-                    AudioRecord.Builder()
-                        .setAudioSource(
-                            if (selected != null && bluetooth(selected))
-                                MediaRecorder.AudioSource.VOICE_COMMUNICATION
-                            else MediaRecorder.AudioSource.MIC
-                        )
-                        .setAudioFormat(
-                            AudioFormat.Builder()
-                                .setSampleRate(48000)
-                                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .build()
-                        )
-                        .setBufferSizeInBytes(size)
-                        .build()
-                if (ticket != meterGeneration) {
-                    input.release()
-                    return@execute
-                }
-                meter = input
-                audioManager
-                    .getDevices(AudioManager.GET_DEVICES_INPUTS)
-                    .firstOrNull { it.id == micId }
-                    ?.let { check(input.setPreferredDevice(it)) { "Microphone is unavailable" } }
-                input.startRecording()
-                val buffer = ShortArray(1024)
-                while (ticket == meterGeneration && !recording && !closed) {
-                    val n = input.read(buffer, 0, buffer.size)
-                    if (n <= 0) break
-                    var peak = 0
-                    for (i in 0 until n) peak = max(peak, abs(buffer[i].toInt()))
-                    amplitude = peak / 32768f
-                }
-            } catch (_: Exception) {} finally {
-                try {
-                    input?.stop()
-                } catch (_: Exception) {}
-                input?.release()
-                if (meter === input) meter = null
-            }
-        }
-    }
+    private fun startMeter() { if (!closed) resolveMicrophone() }
 
     private fun stopMeter() {
-        meterGeneration++
-        try {
-            meter?.stop()
-        } catch (_: Exception) {}
+        microphoneRecheck?.let { ui.removeCallbacks(it) }
+        microphoneRecheck=null
+        microphone.stop()
+        releaseMicrophoneRoute()
     }
 
     internal val readyToRecord get() = !matchingColor && (device != null || dualReady)
@@ -1063,158 +1075,57 @@ class Capture(
             activity.message("Waiting for camera")
             return
         }
-        val microphone = selectedMicrophone()
-        if (microphone == null || !routeMicrophone(microphone)) {
+        val selected = selectedMicrophone()
+        if (selected == null || !routeMicrophone(selected)) {
             activity.message("The selected microphone is unavailable. Choose another microphone.")
             return
         }
         if (
-            bluetooth(microphone) &&
+            bluetooth(selected) &&
                 Build.VERSION.SDK_INT >= 31 &&
-                audioManager.communicationDevice?.type != microphone.type
+                audioManager.communicationDevice?.type != selected.type
         ) {
             activity.message("Waiting for the selected microphone")
             return
         }
         if (!activity.saveProject()) return
-        stopMeter()
-        if (hdr) {
-            startHdr(microphone)
+        if (!microphone.running || !microphone.readings.arriving(System.nanoTime())) {
+            startMeter()
+            activity.message("Waiting for the selected microphone")
             return
         }
-        session?.close()
-        session = null
-        val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
-        val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(activity) else MediaRecorder()
+        microphone.actual?.let { microphoneRoute.select(MicrophoneInput(it).key) }
+        if (composition==null) { session?.close(); session=null }
+        val file=File(store.media,"recording-${System.currentTimeMillis()}.mp4")
+        var next: CaptureRecorder?=null
         try {
-            receipt = store.beginCapture(activity.editor.project, file, liveEffects, activity.recordingInsertion())
-            r.setAudioSource(
-                if (bluetooth(microphone)) MediaRecorder.AudioSource.VOICE_COMMUNICATION
-                else MediaRecorder.AudioSource.CAMCORDER
-            )
-            r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setOutputFile(file.absolutePath)
-            r.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            r.setVideoSize(videoSize.width, videoSize.height)
-            r.setVideoFrameRate(prefs.getInt("fps", 30))
-            r.setVideoEncodingBitRate(videoSize.width * videoSize.height * 8)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioSamplingRate(48000)
-            r.setAudioChannels(if (bluetooth(microphone)) 1 else 2)
-            r.setAudioEncodingBitRate(192000)
-            recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
-            recordingOrientation = cameraOrientation()
-            r.setOrientationHint(recordingOrientation)
-            check(r.setPreferredDevice(microphone)) { "The selected microphone is unavailable" }
-            r.setOnErrorListener { _, _, _ ->
+            receipt=store.beginCapture(activity.editor.project,file,liveEffects,activity.recordingInsertion())
+            recordingDisplayRotation=activity.windowManager.defaultDisplay.rotation
+            recordingOrientation=cameraOrientation()
+            val r=CaptureRecorder(file,videoSize.width,videoSize.height,prefs.getInt("fps",30),recordingOrientation,hdr,activity.audioCache) { error ->
                 ui.post {
-                    if (recording) {
-                        stop()
-                        activity.message("Recording interrupted. Completed footage has been kept.")
-                    }
+                    if (recording) stop()
+                    activity.message(error.message ?: "Recording interrupted. Completed footage has been kept.")
                 }
             }
-            r.prepare()
-            if (composition != null) {
-                composition!!.record(
-                    r.surface,
-                    videoSize.width,
-                    videoSize.height,
-                    recordingOrientation,
-                )
-            } else
-                recordingSurface =
-                    CameraRecordingSurface(r.surface, videoSize.width, videoSize.height) { error ->
-                        ui.post {
-                            if (recording) {
-                                stop()
-                                activity.message(error.message ?: "Camera frame processing failed")
-                            }
-                        }
-                    }
-            recorder = r
-            recordingFile = file
-            recording = true
-            recordingMarks.clear()
-            effectHistory.clear()
-            effectSince = 0.0
-            paused = false
-            duration = 0
-            since = SystemClock.elapsedRealtime()
-            if (composition != null) {
-                r.start()
-                since = SystemClock.elapsedRealtime()
-            } else {
-                pendingStart = true
-                createSession()
-            }
+            next=r; recorder=r
+            if (composition!=null) composition!!.record(r.surface,videoSize.width,videoSize.height,recordingOrientation,prefs.getInt("fps",30),r::videoFrame)
+            else recordingSurface=CameraRecordingSurface(r.surface,videoSize.width,videoSize.height,
+                r::videoFrame) { error -> ui.post { if (recording) stop(); activity.message(error.message ?: "Camera frame processing failed") } }
+            recordingFile=file
+            recording=true; paused=false; duration=0
+            recordingMarks.clear(); effectHistory.clear(); effectSince=0.0
+            since=SystemClock.elapsedRealtime()
+            recordingRequestedAt=System.nanoTime(); microphoneRecoveryAt=0
+            if (composition!=null) { r.start(); since=SystemClock.elapsedRealtime() }
+            else { pendingStart=true; createSession() }
         } catch (e: Exception) {
-            closeRecordingSurface()
-            r.release()
-            if (file.length() == 0L) file.delete()
-            receipt?.let { runCatching { store.abandonCapture(it) } }
-            receipt = null
-            recorder = null
-            recording = false
-            createSession()
+            recorder=null; next?.close(); closeRecordingSurface()
+            if (file.length()==0L) file.delete()
+            receipt?.let { runCatching { store.abandonCapture(it) } }; receipt=null
+            recording=false; pendingStart=false
+            createSession(); startMeter()
             activity.message(e.message ?: "Cannot start recording")
-        }
-        overlay.invalidate()
-    }
-
-    private fun startHdr(microphone: AudioDeviceInfo) {
-        val file = File(store.media, "recording-${System.currentTimeMillis()}.mp4")
-        try {
-            receipt = store.beginCapture(activity.editor.project, file, liveEffects, activity.recordingInsertion())
-            val renderer = composition ?: error("Waiting for HDR camera")
-            recordingDisplayRotation = activity.windowManager.defaultDisplay.rotation
-            recordingOrientation = cameraOrientation()
-            val r =
-                HdrRecorder(
-                    activity,
-                    file,
-                    videoSize.width,
-                    videoSize.height,
-                    prefs.getInt("fps", 30),
-                    recordingOrientation,
-                    microphone,
-                    if (bluetooth(microphone)) MediaRecorder.AudioSource.VOICE_COMMUNICATION
-                    else MediaRecorder.AudioSource.CAMCORDER,
-                    if (bluetooth(microphone)) 1 else 2,
-                ) { error ->
-                    ui.post {
-                        if (recording) stop()
-                        activity.message(error.message ?: "HDR recording failed")
-                    }
-                }
-            hdrRecorder = r
-            renderer.record(
-                r.surface,
-                videoSize.width,
-                videoSize.height,
-                recordingOrientation,
-                prefs.getInt("fps", 30),
-            )
-            r.start()
-            recordingFile = file
-            recording = true
-            recordingMarks.clear()
-            paused = false
-            duration = 0
-            effectHistory.clear()
-            effectSince = 0.0
-            since = SystemClock.elapsedRealtime()
-        } catch (e: Exception) {
-            composition?.record(null)
-            hdrRecorder?.close()
-            hdrRecorder = null
-            if (file.length() == 0L) file.delete()
-            receipt?.let { runCatching { store.abandonCapture(it) } }
-            receipt = null
-            recording = false
-            startMeter()
-            activity.message(e.message ?: "Cannot start HDR recording")
         }
         overlay.invalidate()
     }
@@ -1393,13 +1304,13 @@ class Capture(
                     )
                     return
                 }
+                if (!microphone.running) { microphoneRoute.retry(); startMeter(); activity.message("Waiting for the selected microphone"); return }
+                recordingRequestedAt=System.nanoTime(); microphoneRecoveryAt=recordingRequestedAt
                 recorder?.resume()
-                hdrRecorder?.resume()
                 since = SystemClock.elapsedRealtime()
                 paused = false
             } else {
                 recorder?.pause()
-                hdrRecorder?.pause()
                 duration += SystemClock.elapsedRealtime() - since
                 paused = true
             }
@@ -1416,23 +1327,22 @@ class Capture(
         session = null
         pendingStart = false
         val r = recorder
-        val hr = hdrRecorder
-        recorder = null
-        hdrRecorder = null
         finishEffectRange(elapsedSeconds())
         recording = false
         paused = false
-        // Stop feeding the encoder before MediaRecorder disconnects its surface.
+        // Detach the camera before closing the encoder surface.
         runCatching { composition?.record(null) }
+        var stopFailure: Exception?=null
         try {
             r?.stop()
-            hr?.stop()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            stopFailure=e
+            android.util.Log.w("MyRec","Capture stopped before merging",e)
             // Probe any completed media below even when the encoder reports failure.
         } finally {
+            recorder = null
             closeRecordingSurface()
-            r?.release()
-            hr?.close()
+            r?.close()
         }
         val file = recordingFile
         recordingFile = null
@@ -1467,13 +1377,14 @@ class Capture(
         else {
             file?.delete()
             completed?.let { runCatching { store.abandonCapture(it) } }
-            activity.message("Recording was too short to save")
+            activity.message(stopFailure?.message ?: "Recording was too short to save")
         }
         activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         if (dualLayout == 4 && dualCamera != null) {
             closeCamera()
             openDefault()
         } else createSession()
+        microphoneRoute.reset()
         startMeter()
         overlay.invalidate()
     }
@@ -1617,6 +1528,83 @@ class Capture(
         }
     }
 
+    private fun recordingAudioControls() {
+        gainPopup?.dismiss()
+        val landscape=width>height
+        val scale=min(width/(if (landscape) 640f else 294f),height/(if (landscape) 294f else 640f))
+        val u=InspectorUi(activity,scale)
+        val body=u.column().apply { setPadding(u.px(18f),u.px(14f),u.px(18f),u.px(14f)); background=u.shape(Color.rgb(22,22,24),14f) }
+        val header=u.row()
+        header.addView(u.text("Recording volume",14f,bold=true),LinearLayout.LayoutParams(0,u.px(44f),1f))
+        val about=u.text("ⓘ",17f,Panels.RED).apply {
+            gravity=Gravity.CENTER; contentDescription="About recording volume"; isFocusable=true
+        }
+        header.addView(about,LinearLayout.LayoutParams(u.px(38f),u.px(44f)))
+        u.add(body,header)
+        val values=u.row()
+        gainReadout=u.text("",15f,bold=true).also { values.addView(it,LinearLayout.LayoutParams(0,u.px(40f),1f)) }
+        values.addView(u.action("Reset to 0") { setRecordingGain(0f) },LinearLayout.LayoutParams(u.px(90f),u.px(38f)))
+        u.add(body,values)
+        gainSlider=ReferenceSlider(activity,scale).apply {
+            max=104; progress=((microphone.gain.db+40)*2).roundToInt()
+            contentDescription="Recording gain"; minimumHeight=u.px(44f)
+            progressTintList=android.content.res.ColorStateList.valueOf(Color.CYAN)
+            setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(view: SeekBar, value: Int, user: Boolean) { if (user) setRecordingGain(value*.5f-40) }
+                override fun onStartTrackingTouch(view: SeekBar) {}
+                override fun onStopTrackingTouch(view: SeekBar) {}
+            })
+        }.also { u.add(body,it,44f) }
+        val signal=u.row()
+        signalMeter=ProgressBar(activity,null,android.R.attr.progressBarStyleHorizontal).apply {
+            max=600; progressBackgroundTintList=android.content.res.ColorStateList.valueOf(Color.DKGRAY)
+            contentDescription="Microphone level"
+        }.also { signal.addView(it,LinearLayout.LayoutParams(0,u.px(6f),1f).apply { rightMargin=u.px(10f) }) }
+        signalReadout=u.text("No signal",10f).apply { gravity=Gravity.RIGHT or Gravity.CENTER_VERTICAL }
+            .also { signal.addView(it,LinearLayout.LayoutParams(u.px(75f),u.px(30f))) }
+        u.add(body,signal)
+        routeReadout=u.text(micName()+"  ›",11f,Panels.RED).apply {
+            contentDescription="Choose recording microphone"; isFocusable=true; setOnClickListener { microphones() }
+        }.also { u.add(body,it,44f) }
+        val explanation=u.text("Changes the volume of new recordings, including during a take. Remembered for each microphone. Red means the signal may distort; lowering gain cannot repair distortion already present in the microphone.",10f,Color.LTGRAY).apply { visibility=View.GONE }
+        about.setOnClickListener {
+            explanation.visibility=if (explanation.visibility==View.GONE) View.VISIBLE else View.GONE
+            gainPopup?.let { popup ->
+                popup.contentView.measure(MeasureSpec.makeMeasureSpec(popup.width,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(height-u.px(48f),MeasureSpec.AT_MOST))
+                popup.update(popup.width,popup.contentView.measuredHeight)
+            }
+        }
+        u.add(body,explanation)
+        val scroll=ScrollView(activity).apply { addView(body) }
+        val popupWidth=min(width-u.px(24f),u.px(310f))
+        scroll.measure(MeasureSpec.makeMeasureSpec(popupWidth,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(height-u.px(48f),MeasureSpec.AT_MOST))
+        gainPopup=PopupWindow(scroll,popupWidth,scroll.measuredHeight,true).apply {
+            setBackgroundDrawable(u.shape(Color.rgb(22,22,24),14f)); elevation=u.px(12f).toFloat()
+            setOnDismissListener { gainPopup=null; gainReadout=null; signalReadout=null; signalMeter=null; routeReadout=null; gainSlider=null }
+            showAtLocation(this@Capture,Gravity.CENTER,0,0)
+        }
+        updateRecordingAudioControls(System.nanoTime())
+    }
+
+    private fun updateRecordingAudioControls(now: Long) {
+        val clipping=microphone.readings.clipping(now)
+        val gain=microphone.gain.db
+        gainReadout?.text="%+.1f dB".format(gain)
+        gainReadout?.setTextColor(if (clipping) Panels.RED else Color.WHITE)
+        gainSlider?.let {
+            it.isEnabled=microphone.actual!=null
+            if (!it.isPressed) it.progress=((gain+40)*2).roundToInt()
+            it.progressTintList=android.content.res.ColorStateList.valueOf(if (clipping) Panels.RED else Color.CYAN)
+        }
+        signalMeter?.let {
+            it.progress=if (microphone.readings.arriving(now)) ((microphone.readings.peakDB+60)*10).roundToInt().coerceIn(0,600) else 0
+            it.progressTintList=android.content.res.ColorStateList.valueOf(if (clipping) Panels.RED else Color.rgb(60,200,120))
+        }
+        signalReadout?.text=if (clipping) "Clipping" else if (microphone.readings.arriving(now)) "%.0f dBFS".format(microphone.readings.peakDB) else "No signal"
+        signalReadout?.setTextColor(if (clipping) Panels.RED else Color.LTGRAY)
+        routeReadout?.text=micName()+"  ›"
+    }
+
     private fun microphones() {
         val devices = microphoneDevices()
         activity.choose(
@@ -1629,50 +1617,31 @@ class Capture(
                 return@choose
             }
             val previous = selectedMicrophone()
+            if (recording) microphoneRecoveryAt=System.nanoTime()
             if (!routeMicrophone(devices[i])) {
                 previous?.let { routeMicrophone(it) }
                 activity.message("The selected microphone is unavailable")
                 return@choose
             }
-            if (recording) {
-                if (
-                    !(recorder?.setPreferredDevice(devices[i])
-                        ?: hdrRecorder?.microphone(devices[i])
-                        ?: false)
-                ) {
-                    previous?.let { routeMicrophone(it) }
-                    activity.message("This microphone cannot be selected during recording")
-                    return@choose
-                }
-            }
-            micId = devices[i].id
-            prefs.edit().putInt("mic", micId).apply()
-            if (!recording) startMeter()
+            microphoneRoute.select(MicrophoneInput(devices[i]).key)
+            resolveMicrophone()
             overlay.invalidate()
         }
     }
 
     private fun priority(devices: List<AudioDeviceInfo>) {
-        val keys =
-            prefs
-                .getString("priorities", "")!!
-                .split(',')
-                .filter { it.isNotBlank() }
-                .toMutableList()
-        val labels = MicrophoneInput.labels(devices.map { MicrophoneInput(it) })
-        activity.choose(
-            "Tap a microphone to give it highest priority",
-            devices.map { d ->
-                val input = MicrophoneInput(d)
-                val pos = keys.indexOfFirst { it == input.key || it == input.legacyKey }
-                "${if(pos>=0)pos+1 else "–"}. ${labels[devices.indexOf(d)]}"
-            },
-        ) { i ->
-            val key = micKey(devices[i])
-            keys.remove(key)
-            keys.remove(MicrophoneInput(devices[i]).legacyKey)
-            keys.add(0, key)
-            prefs.edit().putString("priorities", keys.joinToString(",")).apply()
+        val inputs=devices.map { MicrophoneInput(it) }
+        val saved=prefs.getString("priorities","").orEmpty().split(',').filter { it.isNotBlank() }
+        val keys=RecordingMicrophoneRoute.priority(saved,inputs.map { it.key },microphone.actual?.let { MicrophoneInput(it).key }).toMutableList()
+        val labels=MicrophoneInput.labels(inputs)
+        activity.choose("Tap a microphone to give it highest priority",keys.mapIndexed { index,key ->
+            val at=inputs.indexOfFirst { it.key==key || it.legacyKey==key }
+            val name=if (at>=0) labels[at] else prefs.getString("microphoneName."+key,"Disconnected microphone")+" · Disconnected"
+            "${index+1}. $name"
+        }) { index ->
+            val key=keys.removeAt(index); keys.add(0,key)
+            prefs.edit().putString("priorities",keys.joinToString(",")).apply()
+            if (!recording) microphoneRoute.reset()
             choosePriority()
         }
     }
@@ -1988,37 +1957,41 @@ class Capture(
         dualCamera = null
         composition?.close()
         composition = null
-        releaseMicrophoneRoute()
         session?.close()
         session = null
         device?.close()
         device = null
         previewSurface?.release()
         previewSurface = null
-        stopMeter()
     }
 
     fun suspendCamera() {
+        lightColorPicker?.dismiss()
         settingsPopup?.dismiss()
         lightPopup?.dismiss()
+        gainPopup?.dismiss()
         if (recording && !paused) pause()
         closed = true
+        stopMeter()
         closeCamera()
         ui.removeCallbacks(ticker)
     }
 
     fun destroy() {
+        lightColorPicker?.dismiss()
         settingsPopup?.dismiss()
         lightPopup?.dismiss()
+        gainPopup?.dismiss()
         if (recording) stop()
         closed = true
+        stopMeter()
         closeCamera()
         audioManager.unregisterAudioDeviceCallback(audioDevices)
         audioManager.unregisterAudioRecordingCallback(recordingCallback)
         displays.unregisterDisplayListener(displayListener)
         ui.removeCallbacks(ticker)
         handlerThread.quitSafely()
-        meterWorker.shutdown()
+        microphone.close()
         receiptWorker.shutdown()
         imageWorker.shutdown()
         liveFrame?.recycle()
@@ -2095,7 +2068,7 @@ class Capture(
                 c.restore()
                 for (i in 0..7) {
                     paint.color =
-                        if (amplitude > i / 8f) if (i > 5) Color.rgb(255, 75, 60) else Color.WHITE
+                        if (amplitude > i / 8f) if (microphone.readings.clipping(System.nanoTime())) Color.rgb(255, 75, 60) else Color.WHITE
                         else Color.argb(150, 100, 100, 100)
                     val x = r.left + 24 + i * 3.2f
                     val center = if (portrait) r.top + 10 else r.centerY()
@@ -2688,7 +2661,7 @@ class Capture(
                             suspendCamera()
                             onEdit()
                         }
-                        "mic" -> microphones()
+                        "mic" -> recordingAudioControls()
                         "camera" -> cameras()
                         "flip" -> {
                             val facing =

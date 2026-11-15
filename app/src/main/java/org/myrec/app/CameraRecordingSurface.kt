@@ -18,6 +18,7 @@ class CameraRecordingSurface(
     private val output: Surface,
     private val width: Int,
     private val height: Int,
+    private val onFrame: (Long) -> Unit = {},
     private val onError: (Throwable) -> Unit,
 ) : Closeable {
     private val thread = HandlerThread("camera-encoder").apply { start() }
@@ -308,6 +309,7 @@ class CameraRecordingSurface(
                 else System.nanoTime() - stamp
         val timestamp = (stamp + input.offset!!).coerceAtLeast(lastTimestamp + 1_000)
         lastTimestamp = timestamp
+        onFrame(timestamp)
         EGLExt.eglPresentationTimeANDROID(display, window, timestamp)
         check(EGL14.eglSwapBuffers(display, window)) { "Cannot submit camera frame" }
     }

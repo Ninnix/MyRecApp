@@ -43,6 +43,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 
 | Option | Checks |
 | --- | --- |
+| `--microphone` | Encoded AAC gain/stereo/priming, remembered input gain, portrait/landscape volume controls and clipping hold, one input across camera switches, read-failure recovery, SDR/HDR pause/resume, missing-audio pause/restart and one-minute SDR timing |
 | `--responsive-layout` | Actual screen pixels for Projects headings with cards and after scrolling, portrait/landscape/portrait navigation, inset-aware editor controls, five compact/tall screen sizes, unchanged project and recorder visibility |
 | `--hdr-graphics` | Missing HDR graphics requirements despite camera/codec support, exact extension names, actual ten-bit EGL probe, and preservation of an existing context/framebuffer |
 | `--stabilization` | Actual 60 fps/VFR presentation times, held frames at trims/seeks, rendered shake reduction, bounded crops and rotation, reference reuse through split/trim/speed/freeze/copy/history/ZIP, checked cache reuse/corruption/source replacement, Off and legacy stability, cancellation, decoded export with unchanged audio/duration/source, portrait/landscape inspector comparison/apply/cancel/remove |
@@ -73,7 +74,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--composition` | Encoded pixels for five dual layouts, round masks, swaps, normal framing, four rotations |
 | `--camera-gaps` | Real concurrent capture, layout changes, pause/resume, timing, Main10 HLG metadata, HDR decode/SDR export, live effect ranges |
 | `--live-rotation` | Display rotation during one SDR, HDR, or dual take; UI reflow and saved-frame comparison |
-| `--capture-controls` | Simplified toolbar, Camera settings and color/setup locks, lower-strip Layout, Mark/Pause positions, saved marks, torch, front-light width/color/opacity/custom picker, rounded border/resize, brightness restoration and saved-edge pixels, PiP movement/resize/swaps |
+| `--capture-controls` | Simplified toolbar, Camera settings and color/setup locks, lower-strip Layout, Mark/Pause positions, saved marks, torch, front-light width/color/opacity, custom Grid/Spectrum/RGB sheet with immediate persistence and close in both orientations, rounded border/resize, brightness restoration and saved-edge pixels, PiP movement/resize/swaps |
 | `--media-editing` | Portrait/landscape copy/paste, horizontal overlaps and lower-card selection, release-position snapping, free scrubbing until release, snap targets and Off, frame/cut-aligned marks, minimum selection length and Move end, shared Snap to cuts/Tools preference across fresh activities, neighbor modes, long-press selection, stable Move rows, exact boundary picking, Cancel/Done, Placement, audio import and ordered mixed photo/video import/export, persistence, foreground pixels and decoded sound, real voiceover passes/audition/discard and rotation |
 | `--playback` | Moving frames in a fifth take after seeking earlier takes |
 | `--camera-preview` | All independent selfie preview/save mirror combinations in portrait/landscape, saved-switch lock during a take and Kaleidoscope framing |

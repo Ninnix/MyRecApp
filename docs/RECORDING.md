@@ -56,6 +56,11 @@ in 5% steps. These choices are remembered. Drag the border to adjust its thickne
 continuously. Nonzero opacity raises window brightness to full; zero opacity
 restores the previous brightness without closing the controls.
 
+Custom opens a dark color sheet with Grid, Spectrum, and RGB Sliders tabs and
+hexadecimal input. Changes update the light immediately; close the sheet to
+return to the front-light controls. Color stays opaque because the light has
+its own opacity setting.
+
 Brightness returns to its previous setting when the light is switched off,
 the camera closes, or only a rear view remains. Split view can use the screen
 light while its front camera is visible. The border is not recorded.
@@ -118,16 +123,30 @@ implementation.
 
 ## Choose a microphone
 
-Tap the microphone name to choose an input. The list shows physical recording
-routes and omits system-only routes. USB, Bluetooth, wired, and phone inputs
-have distinct labels. Phone locations appear when Android reports them;
-otherwise route labels avoid guessing where a microphone sits.
+Tap the microphone name to open Recording volume. Gain ranges from −40 to
++12 dB in half-decibel steps, with Reset to 0. MyRec remembers gain for each
+input and applies changes smoothly to the saved audio, including during a take.
+The live meter reports dBFS, holds a clipping warning briefly after a peak, and
+distinguishes missing samples from a quiet signal. Lowering gain cannot repair
+distortion already introduced by the microphone.
 
-Microphone priority remembers separate routes, even when they share a product
-name. Before recording, the highest available preferred input is selected.
-Disconnecting the chosen microphone or losing recording access pauses capture.
-This differs from iOS's independent microphone engine and automatic fallback.
-A physical microphone array may appear as one route, rather than separate
-selectable elements. A live peak meter works before and during recording.
-Per-microphone recording gain and the iOS clipping/no-signal diagnostics are
-still missing.
+Tap the input name inside Recording volume to choose a microphone. The list
+shows physical recording routes and omits system-only routes. USB, Bluetooth,
+wired, and phone inputs have distinct labels. Phone locations appear when
+Android reports them; otherwise labels avoid guessing where a microphone sits.
+The displayed name follows the input Android actually supplies.
+
+Microphone priority remembers separate routes, including disconnected inputs
+and routes sharing a product name. Before recording, the highest available
+preferred input is requested. A manual choice stays selected until Stop and
+does not reorder the saved priorities. Connecting a preferred input during a
+take does not automatically switch away from the current microphone.
+
+The audio engine stays open across camera switches and SDR/HDR setup changes.
+During a take, a disconnected input triggers bounded attempts to obtain a
+fallback; its name is announced only after Android confirms the route. Missing
+audio or lost recording access pauses capture if recovery fails. Check the
+input before resuming. A physical array may appear as one route, rather than
+separate selectable elements. Accessory routing depends on Android and the
+connected device; Bluetooth and USB disconnect acceptance still needs physical
+accessory testing.

@@ -31,6 +31,7 @@ object HdrColorTest {
                 test.context.assets.open("hdr-colors.json").bufferedReader().use { it.readText() }
             )
         val result = JSONObject()
+        main { (0 until activity.root.childCount).map { activity.root.getChildAt(it) }.filterIsInstance<Capture>().forEach { it.suspendCamera() } }
         val manager = activity.getSystemService(android.hardware.camera2.CameraManager::class.java)
         val chars = manager.getCameraCharacteristics(manager.cameraIdList.first())
         val profiles =
@@ -144,7 +145,8 @@ object HdrColorTest {
                                 android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
                         )
                         .build()
-                var recording: HdrRecorder? = null
+                var recording: CaptureRecorder? = null
+                var microphoneInput: TestMicrophone? = null
                 if (hdr && !full) {
                     val manager = activity.getSystemService(android.media.AudioManager::class.java)
                     val mic =
@@ -152,8 +154,7 @@ object HdrColorTest {
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC
                         }
                     recording =
-                        HdrRecorder(
-                            activity,
+                        CaptureRecorder(
                             File(
                                 test.targetContext.getExternalFilesDir(null),
                                 if (primaries == 0) "hdr-color-roundtrip.mp4"
@@ -163,15 +164,14 @@ object HdrColorTest {
                             180,
                             30,
                             0,
-                            mic,
-                            android.media.MediaRecorder.AudioSource.CAMCORDER,
-                            1,
+                            true,
+                            activity.audioCache,
                         ) {
                             failure.set(it)
                         }
                     renderer.record(recording.surface, 320, 180, 0)
                     recording.start()
-                    check(recording.microphone(mic)) { "HDR microphone route cannot be selected" }
+                    microphoneInput=TestMicrophone(recording,mic,failure)
                 }
                 try {
                     repeat(3) {
@@ -323,6 +323,7 @@ object HdrColorTest {
                         }
                     }
                 } finally {
+                    microphoneInput?.close()
                     recording?.close()
                     writer.close()
                 }

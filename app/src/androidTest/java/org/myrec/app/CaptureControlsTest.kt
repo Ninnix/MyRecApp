@@ -45,7 +45,7 @@ object CaptureControlsTest {
                 .map { a.root.getChildAt(it) }
                 .filterIsInstance<Capture>()
                 .single()
-        fun control(title: String, enabled: Boolean = true, clickable: Boolean = true): android.view.accessibility.AccessibilityNodeInfo {
+        fun control(title: String, enabled: Boolean = true, clickable: Boolean = true, range: Boolean = false): android.view.accessibility.AccessibilityNodeInfo {
             val deadline = SystemClock.uptimeMillis() + 4000
             val visible = StringBuilder()
             while (SystemClock.uptimeMillis() < deadline) {
@@ -55,7 +55,7 @@ object CaptureControlsTest {
                 while (nodes.isNotEmpty()) {
                     val node = nodes.removeFirst()
                     visible.append("${node.text} / ${node.contentDescription} (click=${node.isClickable}, enabled=${node.isEnabled})\n")
-                    if ((node.contentDescription?.toString() == title || node.text?.toString()?.equals(title, ignoreCase = true) == true) && (!clickable || node.isClickable) && node.isEnabled == enabled) return node
+                    if ((node.contentDescription?.toString() == title || node.text?.toString()?.equals(title, ignoreCase = true) == true) && (!clickable || node.isClickable) && node.isEnabled == enabled && (!range || node.rangeInfo!=null)) return node
                     for (i in 0 until node.childCount) node.getChild(i)?.let { nodes.add(it) }
                 }
                 Thread.sleep(100)
@@ -302,7 +302,37 @@ object CaptureControlsTest {
                     render("$name-light-zero", true).also { image -> check(Color.alpha(image.getPixel(1, image.height / 2)) == 0); image.recycle() }
                     opacity(20)
                     check(a.window.attributes.screenBrightness == 1f)
-                    click("Custom"); click("Cancel")
+                    click("Custom")
+                    click("Color #FF0000")
+                    check(prefs.getInt("lightCustom",0)==Color.RED)
+                    fun screenshot(suffix: String) {
+                        Thread.sleep(150)
+                        instrumentation.uiAutomation.takeScreenshot()?.let { image ->
+                            File(folder,"$name-light-color-$suffix.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) }
+                            image.recycle()
+                        }
+                    }
+                    screenshot("grid")
+                    click("Spectrum")
+                    val spectrum=android.graphics.Rect().also { control("Color spectrum",clickable=false).getBoundsInScreen(it) }
+                    val now=SystemClock.uptimeMillis()
+                    for (action in intArrayOf(MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP)) {
+                        val event=MotionEvent.obtain(now,now+30,action,spectrum.exactCenterX(),spectrum.exactCenterY(),0)
+                        instrumentation.sendPointerSync(event); event.recycle()
+                    }
+                    val cyan=prefs.getInt("lightCustom",0)
+                    check(Color.red(cyan)<10 && Color.green(cyan)>245 && Color.blue(cyan)>245)
+                    screenshot("spectrum")
+                    click("Sliders")
+                    for ((channel,progress) in listOf("Red" to 125f,"Green" to 500f,"Blue" to 875f)) {
+                        val args=Bundle().apply { putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE,progress) }
+                        check(control(channel,clickable=false,range=true).performAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id,args))
+                        Thread.sleep(100)
+                    }
+                    check(prefs.getInt("lightCustom",0)==Color.rgb(32,128,223))
+                    screenshot("sliders")
+                    click("Close front light color")
+                    check(prefs.getInt("lightCustom",0)==Color.rgb(32,128,223))
                     click("Close front light controls")
                     onMain { a.editor.load(Project(name = "Front light source check")); capture.start() }
                     Thread.sleep(1100); check(capture.recording)

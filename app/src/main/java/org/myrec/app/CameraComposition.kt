@@ -33,6 +33,7 @@ class CameraComposition(
     private var orientation = 0
     private var fps = 30
     private var nextFrame = 0L
+    private var recordingClock: ((Long) -> Unit)? = null
     private val encoderTick =
         object : Runnable {
             override fun run() {
@@ -449,9 +450,10 @@ class CameraComposition(
         w: Int = 0,
         h: Int = 0,
         hint: Int = 0,
-        framesPerSecond: Int = 30,
+        framesPerSecond: Int = 30, clock: ((Long) -> Unit)? = null,
     ) = call {
         handler.removeCallbacks(encoderTick)
+        recordingClock=clock
         if (encoder != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, encoder)
         encoder = EGL14.EGL_NO_SURFACE
         if (surface != null) {
@@ -598,8 +600,11 @@ class CameraComposition(
             GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "image"), 0)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
-        if (target === encoder)
-            EGLExt.eglPresentationTimeANDROID(display, target, System.nanoTime())
+        if (target === encoder) {
+            val timestamp=System.nanoTime()
+            recordingClock?.invoke(timestamp)
+            EGLExt.eglPresentationTimeANDROID(display, target, timestamp)
+        }
         check(EGL14.eglSwapBuffers(display, target)) { "Cannot submit composition" }
     }
 
