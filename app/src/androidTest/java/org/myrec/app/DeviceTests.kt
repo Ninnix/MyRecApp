@@ -113,6 +113,7 @@ class DeviceTests : Instrumentation() {
         }
         if (
             suite == "references" ||
+                suite == "showcase" ||
                 suite == "camera-preview" ||
                 suite == "playback" ||
                 suite == "capture-controls" ||
@@ -2458,7 +2459,8 @@ class DeviceTests : Instrumentation() {
                 )
                     as MainActivity
             activity = a
-            if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
+            if (suite == "showcase") ShowcaseScreens.run(this, a, ::onMain, ::test)
+            else if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
             else if (suite == "media-editing") MediaEditingTest.run(this, a, ::onMain, ::test)
             else if (suite == "tool-workspaces") ToolWorkspaceTests.run(this, a, ::onMain, ::test)
             else if (suite == "live-rotation") RecordingRotationTest.run(this, a, ::onMain, ::test)

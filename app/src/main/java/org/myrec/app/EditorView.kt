@@ -281,22 +281,19 @@ class EditorView(
                 }
             }
             "back" -> path(0.5f, -1f, -0.5f, 0f, 0.5f, 1f)
+            "text" -> text(c, "Aa", x, y + size * .35f, size, color, Paint.Align.CENTER)
             "undo",
             "redo" -> {
                 val sign = if (name == "redo") -1 else 1
-                path(
-                    -1f * sign,
-                    -0.1f,
-                    0.5f * sign,
-                    -0.1f,
-                    1f * sign,
-                    0.4f,
-                    0.5f * sign,
-                    1f,
-                    0f,
-                    1f,
-                )
-                path(-0.4f * sign, -0.8f, -1f * sign, -0.1f, -0.4f * sign, 0.5f)
+                val curve = Path().apply {
+                    moveTo(x - s * sign, y)
+                    lineTo(x + s * .35f * sign, y)
+                    cubicTo(x + s * 1.6f * sign, y, x + s * 1.6f * sign, y + s * 1.6f,
+                        x + s * .35f * sign, y + s * 1.6f)
+                    lineTo(x, y + s * 1.6f)
+                }
+                c.drawPath(curve, p)
+                path(-.4f * sign, -.7f, -1f * sign, 0f, -.4f * sign, .7f)
             }
             "snap" -> {
                 p.strokeWidth = size * 0.23f
@@ -662,7 +659,7 @@ class EditorView(
             "link",
             if (editor.selectionLinked) "Unlink" else "Link",
             "link",
-            !moving && editor.selected.isNotEmpty() && editor.range == null && editor.mark == null,
+            !moving,
         )
         left += rest + 4
         button(
@@ -697,14 +694,8 @@ class EditorView(
         rect(c, timeline, Color.rgb(13, 13, 14))
         c.save()
         c.clipRect(timeline)
-        val tick =
-            when {
-                span <= 2 -> 0.1
-                span <= 10 -> 1.0
-                span <= 60 -> 5.0
-                span <= 300 -> 30.0
-                else -> 60.0
-            }
+        val tick = listOf(.1, .2, .5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0)
+            .firstOrNull { it * timeline.width() / span >= 30 } ?: 3600.0
         var t = max(0.0, ceil(start / tick) * tick)
         while (t <= min(editor.project.duration, start + span)) {
             val x = xFor(t)
@@ -712,7 +703,7 @@ class EditorView(
                 c,
                 if (span <= 2) "%.1f".format(java.util.Locale.US, t)
                 else if (span < 60) t.toInt().toString() else timeLabel(t, false),
-                x,
+                max(x, timeline.left + 3.5f),
                 timeline.top + 9,
                 7f,
                 grey,
@@ -720,7 +711,11 @@ class EditorView(
             )
             t += tick
         }
-        for ((n, clip) in editor.project.clips.withIndex()) {
+        var videoNumber = 0
+        var audioNumber = 0
+        for (clip in editor.project.clips) {
+            if (clip.video) videoNumber++
+            if (clip.audio) audioNumber++
             val interval = TimelineLayout.interval(editor.project, clip, !moving)
             if (interval.endInclusive - interval.start < .000001) continue
             if (interval.endInclusive < start || interval.start > start + span) continue
@@ -767,7 +762,7 @@ class EditorView(
                         ),
                         Color.argb(75, 0, 0, 0),
                     )
-                    text(c, "V${n+1}", max(left, timeline.left) + 3, min(bottom - 1, top + 9), 7f)
+                    text(c, "V$videoNumber", max(left, timeline.left) + 3, min(bottom - 1, top + 9), 7f)
                     if (clip.linked) icon(c, "link", max(left, timeline.left) + 23, top + 5, 4f)
                 } else {
                     val audioTop = top + 1
@@ -796,7 +791,7 @@ class EditorView(
                     val labelLeft = max(left, timeline.left)
                     rect(c, RectF(labelLeft + 1, max(top, bottom - 13),
                         min(labelLeft + 31, right), bottom - 1), Color.argb(125, 0, 0, 0), 2f)
-                    text(c, "♪${n+1}", labelLeft + 3, clipR.bottom - 3, 7f)
+                    text(c, "♪$audioNumber", labelLeft + 3, clipR.bottom - 3, 7f)
                     if (clip.linked) icon(c, "link", labelLeft + 23, bottom - 7, 4f)
                 }
                 p.color = Color.rgb(80, 80, 83)
@@ -972,7 +967,10 @@ class EditorView(
                 if (editor.range != null)
                     "Video + audio · ${timeLabel(editor.range!!.start)}–${timeLabel(editor.range!!.endInclusive)}"
                 else
-                    "${editor.targets().joinToString(" + "){(if(it.video)"V"else"♪") + (editor.project.clips.indexOf(it)+1)}}",
+                    "${editor.targets().joinToString(" + ") { clip ->
+                        (if (clip.video) "V" else "♪") + (editor.project.clips.takeWhile { it.id != clip.id }
+                            .count { if (clip.video) it.video else it.audio } + 1)
+                    }}",
                 x,
                 y - 4,
                 7f,
@@ -1023,29 +1021,6 @@ class EditorView(
                 if (touch.intersect(left, y - 17, right, y + 17)) hit(touch, id)
                 x += width + 5
             }
-            for (fx in active) {
-                val title =
-                    when (fx.kind) {
-                        "Text" -> fx.values["text"] ?: "Text"
-                        "Crop" -> "%.1f×".format(java.util.Locale.US, fx.number("zoom", 1f))
-                        "Color LUTs" -> fx.values["lut"] ?: "Natural"
-                        else -> fx.kind
-                    }
-                chip(title.take(24), Effects.color(fx.kind), "effect:${fx.id}")
-            }
-            val sound = editor.project.clips.filter { it.audio && it.contains(editor.cursor) }
-            for (region in sound.flatMap { clip -> clip.censors.filter { editor.cursor - clip.start >= it.from && editor.cursor - clip.start < it.to } }.distinctBy { it.id })
-                chip("Censor audio", cyan, "censor:${region.id}")
-            if (sound.any { it.fadeIn != null || it.fadeOut != null }) chip("Audio fades", cyan, "volume")
-            val overlapping = editor.project.active(editor.cursor).size > 1
-            if (overlapping && active.none { it.kind == "Placement" })
-                chip("Placement · default", Effects.color("Placement"), "placement")
-            val gain =
-                editor.project.clips.firstOrNull {
-                    it.audio && it.contains(editor.cursor) && it.gainDb != 0f
-                }
-            if (gain != null)
-                chip("%+.1f dB".format(java.util.Locale.US, gain.gainDb), cyan, "volume", "volume")
             val tr =
                 editor.project.transitions.firstOrNull {
                     abs(it.at - editor.cursor) < max(0.2, it.duration)
@@ -1061,6 +1036,29 @@ class EditorView(
                     "transition",
                     if (tr == null) "add" else null,
                 )
+            for (fx in active) {
+                val title =
+                    when (fx.kind) {
+                        "Text" -> fx.values["text"] ?: "Text"
+                        "Crop" -> "%.1f×".format(java.util.Locale.US, fx.number("zoom", 1f))
+                        "Color LUTs" -> fx.values["lut"] ?: "Natural"
+                        else -> fx.kind
+                    }
+                chip(title.take(24), Effects.color(fx.kind), "effect:${fx.id}", if (fx.kind == "Text") "text" else null)
+            }
+            val sound = editor.project.clips.filter { it.audio && it.contains(editor.cursor) }
+            for (region in sound.flatMap { clip -> clip.censors.filter { editor.cursor - clip.start >= it.from && editor.cursor - clip.start < it.to } }.distinctBy { it.id })
+                chip("Censor audio", cyan, "censor:${region.id}")
+            if (sound.any { it.fadeIn != null || it.fadeOut != null }) chip("Audio fades", cyan, "volume")
+            val overlapping = editor.project.active(editor.cursor).size > 1
+            if (overlapping && active.none { it.kind == "Placement" })
+                chip("Placement · default", Effects.color("Placement"), "placement")
+            val gain =
+                editor.project.clips.firstOrNull {
+                    it.audio && it.contains(editor.cursor) && it.gainDb != 0f
+                }
+            if (gain != null)
+                chip("%+.1f dB".format(java.util.Locale.US, gain.gainDb), cyan, "volume", "volume")
             previousPosition?.let { chip("Back to ${timeLabel(it)}", red, "backPoint") }
             c.restore()
             chipLimit = max(0f, x + chipScroll - 5 - right)

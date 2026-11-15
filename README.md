@@ -13,6 +13,24 @@ by Salvatore Sanfilippo (antirez). This is an independent Android implementation
 Features and processing are being aligned with the released iPhone source.
 The guides describe current behavior and limits.
 
+## Editing a video in MyRec
+
+The timeline shows three clips of **The Colosseum**, with their audio underneath.
+Use **Split** to make a cut, then reopen a title or transition from its timeline
+chip to adjust it.
+
+[![MyRec landscape editor showing the Colosseum, three linked clips, audio waveforms, and title and transition controls.](docs/screenshots/timeline.webp)](docs/screenshots/timeline.webp)
+
+Use **Text** to place a title and set its duration. In **Color LUTs**, choose a
+look and compare **Before** and **After** on the same frame.
+
+<p align="center">
+  <a href="docs/screenshots/text-overlay.webp"><img src="docs/screenshots/text-overlay.webp" width="330" alt="MyRec portrait Text editor placing The Colosseum over the picture for 3.5 seconds, with appearance and font controls."></a>
+  <a href="docs/screenshots/color-luts.webp"><img src="docs/screenshots/color-luts.webp" width="330" alt="MyRec portrait Color LUTs editor with the Colosseum, comparison controls, strength and highlights sliders, and real look previews."></a>
+</p>
+
+[Footage credit and capture recipe](docs/screenshots/README.md).
+
 ## Recording and editing
 
 You can switch cameras during a take, use a timed zoom, lock focus, and choose a

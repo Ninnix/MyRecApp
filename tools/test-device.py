@@ -17,6 +17,7 @@ suite.add_argument('--storage-ui',action='store_true')
 suite.add_argument('--media-editing',action='store_true')
 suite.add_argument('--tool-workspaces',action='store_true')
 suite.add_argument('--capture-controls',action='store_true')
+suite.add_argument('--showcase',action='store_true')
 suite.add_argument('--hdr-scene',action='store_true')
 suite.add_argument('--hdr-color',action='store_true')
 suite.add_argument('--live-rotation',action='store_true')
@@ -71,6 +72,7 @@ if args.storage_ui:command+=['-e','suite','storage-ui']
 if args.media_editing:command+=['-e','suite','media-editing']
 if args.tool_workspaces:command+=['-e','suite','tool-workspaces']
 if args.capture_controls:command+=['-e','suite','capture-controls']
+if args.showcase:command+=['-e','suite','showcase']
 if args.hdr_scene:command+=['-e','suite','hdr-scene']
 if args.hdr_color:command+=['-e','suite','hdr-color']
 if args.live_rotation:command+=['-e','suite','live-rotation']
@@ -105,13 +107,14 @@ except subprocess.TimeoutExpired:
     '--ez','testSession','true','--es','testSessionId',session)
  output,_=process.communicate()
 result=subprocess.CompletedProcess(command,process.returncode,output)
-subprocess.run([adb,'shell','am','start','-S','-W','-f','0x10008000','-n','org.myrec.app/.MainActivity'],stdout=subprocess.DEVNULL,check=True)
-print(result.stdout)
-name='hdr-full-test.txt' if args.hdr_full else 'scene-test.txt' if args.scene else 'restoration-test.txt' if args.restoration else 'time-effects-test.txt' if args.time_effects else 'hdr-pipeline-test.txt' if args.hdr_pipeline else 'audio-editing-test.txt' if args.audio_editing else 'preview-test.txt' if args.preview else 'effect-contracts-test.txt' if args.effect_contracts else 'storage-ui-test.txt' if args.storage_ui else 'archives-test.txt' if args.archives else 'storage-test.txt' if args.storage else 'tool-workspaces-test.txt' if args.tool_workspaces else 'media-editing-test.txt' if args.media_editing else 'capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
+print(result.stdout,flush=True)
+restore=subprocess.run([adb,'shell','am','start','-S','-W','-f','0x10008000','-n','org.myrec.app/.MainActivity'],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True)
+if restore.returncode:print('Could not return to the normal app:',restore.stderr.strip(),flush=True)
+name='showcase-test.txt' if args.showcase else 'hdr-full-test.txt' if args.hdr_full else 'scene-test.txt' if args.scene else 'restoration-test.txt' if args.restoration else 'time-effects-test.txt' if args.time_effects else 'hdr-pipeline-test.txt' if args.hdr_pipeline else 'audio-editing-test.txt' if args.audio_editing else 'preview-test.txt' if args.preview else 'effect-contracts-test.txt' if args.effect_contracts else 'storage-ui-test.txt' if args.storage_ui else 'archives-test.txt' if args.archives else 'storage-test.txt' if args.storage else 'tool-workspaces-test.txt' if args.tool_workspaces else 'media-editing-test.txt' if args.media_editing else 'capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
 (root/'artifacts'/name).write_text(result.stdout)
 if result.returncode or any(text in result.stdout for text in ['FAIL ', 'Process crashed', 'INSTRUMENTATION_FAILED']) or 'PASS ' not in result.stdout:sys.exit(1)
 if args.parity:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/parity-screens/.',str(root/'artifacts/parity/android')],check=True)
-elif not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
+elif not args.showcase and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-screens/.',str(root/'artifacts/screens')],check=True)
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-export.mp4',str(root/'artifacts/test-export.mp4')],check=True)
