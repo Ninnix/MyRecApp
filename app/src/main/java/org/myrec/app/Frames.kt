@@ -114,6 +114,7 @@ object Effects {
             "Studio clarity",
             "Low-cut filter",
             "Voice EQ",
+            "Output gain",
             "Compressor",
             "Noise gate",
             "Limiter",

@@ -51,6 +51,7 @@ object Native {
     external fun noiseFree(handle: Long)
 
     external fun audioCreate(rate: Int): Long
+    external fun audioDirect(handle: Long, pcm: FloatArray, frames: Int, kind: Int, frequency: Double, gain: Double)
 
     external fun audioProcess(
         handle: Long,

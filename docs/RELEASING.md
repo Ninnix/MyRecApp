@@ -1,6 +1,6 @@
 # Releasing MyRec
 
-Release 0.1.2 targets ARM64 devices running Android 9 or later. GitHub releases
+Release 0.1.3 targets ARM64 devices running Android 9 or later. GitHub releases
 contain a signed APK, a signed Android App Bundle and SHA-256 checksums. Build
 products and private signing material stay outside Git.
 

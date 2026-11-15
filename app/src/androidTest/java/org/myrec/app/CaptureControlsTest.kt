@@ -44,30 +44,37 @@ object CaptureControlsTest {
                 .map { a.root.getChildAt(it) }
                 .filterIsInstance<Capture>()
                 .single()
+        fun control(title: String, enabled: Boolean = true): android.view.accessibility.AccessibilityNodeInfo {
+            val deadline = SystemClock.uptimeMillis() + 4000
+            val visible = StringBuilder()
+            while (SystemClock.uptimeMillis() < deadline) {
+                visible.clear()
+                val nodes = java.util.ArrayDeque<android.view.accessibility.AccessibilityNodeInfo>()
+                instrumentation.uiAutomation.rootInActiveWindow?.let { nodes.add(it) }
+                while (nodes.isNotEmpty()) {
+                    val node = nodes.removeFirst()
+                    visible.append("${node.text} / ${node.contentDescription} (click=${node.isClickable}, enabled=${node.isEnabled})\n")
+                    if ((node.contentDescription?.toString() == title || node.text?.toString() == title) && node.isClickable && node.isEnabled == enabled) return node
+                    for (i in 0 until node.childCount) node.getChild(i)?.let { nodes.add(it) }
+                }
+                Thread.sleep(100)
+            }
+            instrumentation.uiAutomation.takeScreenshot()?.let { image ->
+                File(folder, "missing-control.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                image.recycle()
+            }
+            error("Missing $title control (enabled=$enabled)\n$visible")
+        }
+        fun click(title: String) {
+            check(control(title).performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
+            Thread.sleep(200)
+        }
         fun tap(id: String) {
             if (id == "torch") {
                 onMain { check(capture.controlBounds("torch") == null) }
                 tap("settings")
-                var item: android.view.accessibility.AccessibilityNodeInfo? = null
-                val deadline = SystemClock.uptimeMillis() + 3000
-                while (item == null && SystemClock.uptimeMillis() < deadline) {
-                    item =
-                        instrumentation.uiAutomation.rootInActiveWindow
-                            ?.findAccessibilityNodeInfosByText("Torch")
-                            ?.firstOrNull {
-                                it.text?.startsWith("Torch ·") == true &&
-                                    it.packageName?.toString() == a.packageName
-                            }
-                    if (item == null) Thread.sleep(100)
-                }
-                check(
-                    item?.performAction(
-                        android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK
-                    ) == true
-                ) {
-                    "Recording settings did not expose the torch option"
-                }
-                Thread.sleep(150)
+                click(if (capture.front || capture.concurrentInputSizes().isNotEmpty()) "Front light" else "Torch")
+                click("Camera settings done")
                 return
             }
             var bounds: RectF? = null
@@ -145,11 +152,34 @@ object CaptureControlsTest {
                 Thread.sleep(700)
                 onMain { capture.switchCamera(front) }
                 Thread.sleep(1100)
+                test("$name simplified recording toolbar exposes color and cameras in settings") {
+                    onMain {
+                        val mic = capture.controlBounds("mic") ?: error("No microphone")
+                        val time = capture.controlBounds("time") ?: error("No timer")
+                        val effects = capture.controlBounds("effects") ?: error("No effects")
+                        val settings = capture.controlBounds("settings") ?: error("No settings")
+                        check(mic.right < time.left && time.right < effects.left && effects.right < settings.left)
+                        if (name == "portrait") check(abs(time.centerX() - capture.width / 2f) < 2)
+                        check(capture.controlBounds("hdr") == null && capture.controlBounds("dual") == null)
+                    }
+                    render("$name-toolbar").recycle()
+                    tap("settings")
+                    control("SDR"); control("More settings")
+                    check(control("Use two cameras", pair != null).isChecked.not())
+                    instrumentation.uiAutomation.takeScreenshot()?.let { image ->
+                        File(folder, "$name-camera-settings.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        image.recycle()
+                    }
+                    click("Camera settings done")
+                }
                 test("$name recording marks remain opposite pause and survive saving") {
                     onMain { a.editor.load(Project(name = "Recording marks check")) }
                     tap("record")
                     Thread.sleep(900)
                     check(capture.recording)
+                    tap("settings")
+                    control("SDR", false); control("HDR", false); control("Use two cameras", false)
+                    click("Camera settings done")
                     val mark = capture.controlBounds("mark") ?: error("No Mark button")
                     val pause = capture.controlBounds("pause") ?: error("No Pause button")
                     if (name == "portrait") check(mark.centerX() > pause.centerX())
@@ -248,6 +278,10 @@ object CaptureControlsTest {
                         capture.switchCamera(pair[0])
                     }
                     Thread.sleep(900)
+                    tap("settings")
+                    click("Use two cameras")
+                    click("Camera settings done")
+                    Thread.sleep(1400)
                     tap("dual")
                     tap("pip")
                     tap("dualDone")

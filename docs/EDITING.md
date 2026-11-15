@@ -155,7 +155,15 @@ retain half-float intermediates. Actual ten-bit media/export and an iOS GPU
 comparison still need capable-device acceptance.
 
 Audio filters run in the order shown. Select a container to change its values
-or position. Neural effects prepare and cache audio before playback. Models
+or position. Newly added Low-cut filters use the reference second-order
+Butterworth high-pass response. Voice EQ uses Q=1 and starts at 0 dB; its
+frequency extends to 12 kHz. Output gain is an ordered ±24 dB stage with exact
+neutral bypass and no internal clipping. EQ and gain have a centered 0 dB line;
+the Low-cut fader follows a logarithmic 20–500 Hz scale. These stages retain
+independent stereo state across decoder buffers. Existing saved Low-cut/EQ
+stages retain their earlier processing; remove and add a stage to use the new
+implementation. New direct DSP stages carry effect algorithm 3, so older app
+versions refuse them rather than render a different sound. Neural effects prepare and cache audio before playback. Models
 can change vocal character; compare the result before applying it.
 
 Text opens a preview and a collapsible Duration picker. Choose 1–10 seconds,

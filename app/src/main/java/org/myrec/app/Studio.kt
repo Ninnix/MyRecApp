@@ -166,7 +166,7 @@ object Studio {
             if (effect.number("strength", 1f) <= 0) continue
             val full = effect.from <= 0 && effect.to >= clip.duration && effect.number("animate") == 0f
             val scope = if (full) "source" else "${clip.sourceIn}:${clip.playbackSpans}:${clip.duration}"
-            val model = if (noise) "rnnoise-0.1-stereo-1" else if (neural) AudioModels.version(effect.kind) else "dsp-1"
+            val model = if (noise) "rnnoise-0.1-stereo-1" else if (neural) AudioModels.version(effect.kind) else if (effect.values["dsp"] == "2") "dsp-2" else "dsp-1"
             val recipe = if (full) "${effect.kind}:${effect.values.toSortedMap()}" else parameters(effect)
             val identity = hash("$VERSION:$model:${SourceAudio.hash(source, cancelled)}:$recipe:$scope")
             val target = File(cacheDirectory, "$identity.f32")

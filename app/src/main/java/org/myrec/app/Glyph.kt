@@ -150,6 +150,14 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(0f, 6f, 0f, 9f)
                 path(-3f, 9f, 3f, 9f)
             }
+            "Light" -> {
+                c.drawArc(-4f, -7f, 4f, 2f, 150f, 240f, false, p)
+                path(-2f, 1f, -2f, 5f, 2f, 5f, 2f, 1f)
+                path(-2f, 8f, 2f, 8f)
+                path(-8f, -4f, -10f, -4f)
+                path(8f, -4f, 10f, -4f)
+                path(0f, -10f, 0f, -12f)
+            }
             "Timer" -> {
                 c.drawArc(-6f, -6f, 6f, 6f, -80f, 310f, false, p)
                 path(-3f, -7f, 1f, -6f, -1f, -2f)

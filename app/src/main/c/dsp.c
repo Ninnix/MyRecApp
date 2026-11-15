@@ -31,6 +31,7 @@ static void load_rnnoise(void) {
 typedef struct {
     int rate;
     float in[2], hp[2], x1[2], x2[2], y1[2], y2[2], env, limiter_gain;
+    double z1[2], z2[2];
 } Audio;
 
 JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioCreate(JNIEnv *env, jobject self,
@@ -40,10 +41,42 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioCreate(JNIEnv *env, jobje
     Audio *a = calloc(1, sizeof(*a));
     if (!a)
         return 0;
+    if (rate <= 0) { free(a); return 0; }
     a->rate = rate;
     a->limiter_gain = 1;
     return (jlong)(intptr_t)a;
 }
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_audioDirect(JNIEnv *env, jobject self,
+    jlong handle, jfloatArray data, jint frames, jint kind, jdouble frequency, jdouble gain) {
+    (void)self;
+    Audio *a = (Audio *)(intptr_t)handle;
+    if (!a || frames < 0 || (*env)->GetArrayLength(env, data) / 2 < frames ||
+        kind < 0 || kind > 2 || !isfinite(frequency) || !isfinite(gain)) return;
+    if (kind != 1 && gain == 0) return;
+    double w = 2 * 3.14159265358979323846 * fmin(a->rate * .45, fmax(20, frequency)) / a->rate;
+    double c = cos(w), alpha = sin(w) / (kind == 1 ? 2 * sqrt(.5) : 2);
+    double b0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    if (kind == 1) {
+        double a0 = 1 + alpha;
+        b0 = (1 + c) / 2 / a0; b1 = -(1 + c) / a0; b2 = b0;
+        a1 = -2 * c / a0; a2 = (1 - alpha) / a0;
+    } else if (kind == 2) {
+        double amplitude = pow(10, gain / 40), a0 = 1 + alpha / amplitude;
+        b0 = (1 + alpha * amplitude) / a0; b1 = -2 * c / a0;
+        b2 = (1 - alpha * amplitude) / a0; a1 = b1; a2 = (1 - alpha / amplitude) / a0;
+    } else b0 = pow(10, gain / 20);
+    float *pcm = (*env)->GetFloatArrayElements(env, data, NULL);
+    if (!pcm) return;
+    // Each stage owns stereo delay state; decoder buffer boundaries do not reset it.
+    for (int i = 0; i < frames; i++) for (int ch = 0; ch < 2; ch++) {
+        double x = pcm[2 * i + ch], y = b0 * x + a->z1[ch];
+        a->z1[ch] = b1 * x - a1 * y + a->z2[ch];
+        a->z2[ch] = b2 * x - a2 * y;
+        pcm[2 * i + ch] = isfinite(y) ? (float)y : 0;
+    }
+    (*env)->ReleaseFloatArrayElements(env, data, pcm, 0);
+}
+
 JNIEXPORT jboolean JNICALL Java_org_myrec_app_Native_rnnoiseAvailable(JNIEnv *env,
                                                                        jobject self) {
     (void)env;

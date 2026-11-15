@@ -663,6 +663,8 @@ class ProjectStore(val root: File) {
             require(c.effects.size <= 10000 && c.effects.map { it.id }.distinct().size == c.effects.size &&
                 c.effects.all { it.id.isNotBlank() && it.id.length <= 100 }) { "Invalid effect identities" }
             for (effect in c.effects) {
+                if (effect.kind in AudioFilter.direct && AudioFilter.modern(effect))
+                    require(AudioFilter.valid(effect)) { "Invalid direct audio controls" }
                 val expected = EffectContracts.parameters(effect.kind).associateBy { it.id }
                 require(effect.parameters.size == expected.size && effect.parameters.map { it.id }.distinct().size == expected.size &&
                     effect.parameters.all { it.kind == expected[it.id]?.kind && it.valid() }) { "Invalid effect parameters" }
@@ -729,6 +731,7 @@ class ProjectStore(val root: File) {
                                                     put("values", JSONObject(e.values.toMap()))
                                                     if (e.kind == "Text" && e.values["design"] == "1" || e.kind == "Color LUTs" &&
                                                         (e.motion != null || e.values.containsKey("warmth") || e.values.containsKey("tint"))) put("algorithm", 2)
+                                                    if (e.kind in AudioFilter.direct && AudioFilter.modern(e)) put("algorithm", 3)
                                                     put("parameters", EffectJson.encode(e))
                                                     e.phase?.let { put("phase", TimeEffectJson.encode(it)) }
                                                     e.subtitle?.let { put("subtitle", SubtitleJson.encode(it)) }
@@ -818,7 +821,8 @@ class ProjectStore(val root: File) {
                 val values = e.getJSONObject("values")
                 val algorithm = integer(e, "algorithm", 0)
                 require(algorithm >= 0) { "Invalid effect algorithm" }
-                if (algorithm > 2 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs")) throw NewerProject()
+                if (algorithm > 3 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
+                    algorithm == 3L && e.getString("kind") !in AudioFilter.direct) throw NewerProject()
                 val fx =
                     Effect(
                         e.getString("id"),
@@ -828,6 +832,7 @@ class ProjectStore(val root: File) {
                         e.getBoolean("enabled"),
                     )
                 values.keys().forEach { fx.values[it] = values.getString(it) }
+                if (fx.kind in AudioFilter.direct && fx.values["dsp"]?.let { it != "2" } == true) throw NewerProject()
                 if (algorithm == 0L && integer(o, "version", 1) < 4) EffectImport.convert(fx)
                 else EffectJson.decode(fx, if (e.has("parameters")) e.getJSONArray("parameters") else null)
                 EffectJson.decodeMotion(fx, if (e.has("motion") && !e.isNull("motion")) e.getJSONObject("motion") else null)

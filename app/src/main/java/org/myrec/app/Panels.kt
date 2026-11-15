@@ -3259,7 +3259,7 @@ class Panels(private val a: MainActivity) {
                                 it !in listOf("AI voice isolation", "Studio clarity")
                             }
                         a.choose("Add filter", available) { i ->
-                            val fx = Effect(kind = available[i])
+                            val fx = AudioFilter.effect(available[i])
                             if (fx.kind in AudioModels.neural && !AudioModels.ready(fx.kind)) {
                                 a.prepareAudioModel(fx.kind) { success ->
                                     audio(
@@ -3351,7 +3351,9 @@ class Panels(private val a: MainActivity) {
                 renderDraft()
             }
             action("Reset") {
+                val modern = selected.values["dsp"] == "2"
                 selected.values.clear()
+                if (modern) selected.values.putAll(AudioFilter.effect(selected.kind).values)
                 rack(selected)
                 renderDraft()
             }
@@ -3368,7 +3370,7 @@ class Panels(private val a: MainActivity) {
                     "Frequency",
                     selected.number("frequency", if (eq) 1800f else 80f),
                     if (eq) 80f else 20f,
-                    if (eq) 10000f else 500f,
+                    if (eq) 12000f else 500f,
                     format = {
                         if (it < 1000) "%.0f Hz".format(it) else "%.1f kHz".format(it / 1000)
                     },
@@ -3378,6 +3380,11 @@ class Panels(private val a: MainActivity) {
                     selected.values["frequency"] = it.toString()
                     views[selected.id]?.invalidate()
                     renderDraft()
+                }
+            } else if (selected.kind == "Output gain") {
+                slider(detail, "Gain", selected.number("gain"), -24f, 24f,
+                    format = { "%+.1f dB".format(it) }, color = RED) {
+                    selected.values["gain"] = it.toString(); views[selected.id]?.invalidate(); renderDraft()
                 }
             } else {
                 slider(detail, "Strength", selected.number("strength", 1f), 0f, 1f, color = TEAL) {
@@ -4566,11 +4573,13 @@ class Panels(private val a: MainActivity) {
         private var value = 0f
         private val eq = fx.kind == "Voice EQ"
         private val lowCut = fx.kind == "Low-cut filter"
-        private val color = if (eq) Color.rgb(70, 150, 230) else TEAL
-        private val key = if (eq) "gain" else if (lowCut) "frequency" else "strength"
-        private val fallback = if (eq) 3f else if (lowCut) 80f else 1f
-        private val low = if (eq) -18f else if (lowCut) 20f else 0f
-        private val high = if (eq) 18f else if (lowCut) 500f else 1f
+        private val gain = fx.kind == "Output gain"
+        private val modern = fx.values["dsp"] == "2"
+        private val color = if (eq) Color.rgb(70, 150, 230) else if (gain) RED else if (lowCut) Color.rgb(186, 135, 247) else TEAL
+        private val key = if (eq || gain) "gain" else if (lowCut) "frequency" else "strength"
+        private val fallback = if (gain || eq && modern) 0f else if (eq) 3f else if (lowCut) 80f else 1f
+        private val low = if (gain || eq && modern) -24f else if (eq) -18f else if (lowCut) 20f else 0f
+        private val high = if (gain || eq && modern) 24f else if (eq) 18f else if (lowCut) 500f else 1f
 
         init {
             contentDescription = fx.kind
@@ -4605,14 +4614,21 @@ class Panels(private val a: MainActivity) {
             paint.color = Color.rgb(23, 29, 34)
             c.drawRoundRect(rect, unit * 13, unit * 13, paint)
             c.save()
-            val fraction = ((fx.number(key, fallback) - low) / (high - low)).coerceIn(0f, 1f)
-            c.clipRect(unit, top + (bottom - top) * (1 - fraction), width - unit, bottom)
+            val fraction = if (lowCut && modern) (ln(fx.number(key, fallback) / 20f) / ln(25f)).coerceIn(0f, 1f)
+                else ((fx.number(key, fallback) - low) / (high - low)).coerceIn(0f, 1f)
+            val levelY = top + (bottom - top) * (1 - fraction)
+            if ((eq || gain) && modern) c.clipRect(unit, min((top + bottom) / 2, levelY), width - unit, max((top + bottom) / 2, levelY))
+            else c.clipRect(unit, levelY, width - unit, bottom)
             paint.color =
                 if (fx.enabled)
                     Color.argb(125, Color.red(color), Color.green(color), Color.blue(color))
                 else Color.rgb(45, 45, 48)
             c.drawRoundRect(rect, unit * 13, unit * 13, paint)
             c.restore()
+            if ((eq || gain) && modern) {
+                paint.color = Color.GRAY; paint.strokeWidth = unit * .6f
+                c.drawLine(unit * 2, (top + bottom) / 2, width - unit * 2, (top + bottom) / 2, paint)
+            }
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = unit * if (selected) 1.5f else .8f
             paint.color = if (selected) Color.WHITE else color
@@ -4630,6 +4646,7 @@ class Panels(private val a: MainActivity) {
                     "Speech detail" -> "Detail"
                     "Low-cut filter" -> "Low cut"
                     "Voice EQ" -> "EQ"
+                    "Output gain" -> "Gain"
                     "Compressor" -> "Comp"
                     "Noise gate" -> "Gate"
                     else -> "Limiter"
@@ -4652,7 +4669,7 @@ class Panels(private val a: MainActivity) {
             paint.textSize = unit * 12
             paint.color = Color.WHITE
             val level =
-                if (eq) "%+.1f dB".format(fx.number(key, fallback))
+                if (eq || gain) "%+.1f dB".format(fx.number(key, fallback))
                 else if (lowCut) "%.0f Hz".format(fx.number(key, fallback))
                 else "%.0f%%".format(fx.number(key, fallback) * 100)
             c.drawText(level, middle, bottom - unit * 12, paint)
@@ -4667,10 +4684,10 @@ class Panels(private val a: MainActivity) {
                 MotionEvent.ACTION_MOVE ->
                     if (downY >= px(36f) && abs(e.y - downY) > px(3f)) {
                         parent.requestDisallowInterceptTouchEvent(true)
-                        fx.values[key] =
-                            (value + (downY - e.y) / (height - px(36f)) * (high - low))
-                                .coerceIn(low, high)
-                                .toString()
+                        val delta = (downY - e.y) / (height - px(36f))
+                        fx.values[key] = if (lowCut && modern)
+                            (20f * 25f.pow((ln(value / 20f) / ln(25f) + delta).coerceIn(0f, 1f))).roundToInt().toString()
+                        else (value + delta * (high - low)).coerceIn(low, high).toString()
                         invalidate()
                         renderDraft()
                     }

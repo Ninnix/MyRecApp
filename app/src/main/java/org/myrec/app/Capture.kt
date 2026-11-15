@@ -66,6 +66,7 @@ class Capture(
     private var dualLayout = 4
     private var lastDualLayout = 0
     private var dualMenu = false
+    private var settingsPopup: PopupWindow? = null
     private var dualSwapped = false
     private var dualReady = false
     private var recordingOrientation = 0
@@ -229,6 +230,14 @@ class Capture(
             MeasureSpec.makeMeasureSpec(previewWidth, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(previewHeight, MeasureSpec.EXACTLY),
         )
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (settingsPopup?.isShowing == true) {
+            settingsPopup?.dismiss()
+            post { if (!closed) settings() }
+        }
     }
 
     fun resumeCamera() {
@@ -1471,14 +1480,134 @@ class Capture(
     }
 
     private fun settings() {
+        dualMenu = false
+        zoomMenu = false
+        overlay.invalidate()
+        settingsPopup?.dismiss()
+        val landscape = width > height
+        val scale = min(width / (if (landscape) 640f else 294f), height / (if (landscape) 294f else 640f))
+        val u = InspectorUi(activity, scale)
+        val cyan = Color.rgb(77, 211, 239)
+        val body = u.column().apply {
+            background = u.shape(Color.rgb(29, 29, 31), 16f, Color.rgb(65, 65, 68))
+            setPadding(u.px(14f), u.px(8f), u.px(14f), u.px(8f))
+        }
+        val popup = PopupWindow(body, u.px(if (landscape) 300f else 282f), -2, true).apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            isOutsideTouchable = true
+            elevation = u.px(12f).toFloat()
+        }
+        settingsPopup = popup
+        fun render() {
+            body.removeAllViews()
+            val header = u.row()
+            header.addView(u.text("Camera settings", 12f, bold = true), LinearLayout.LayoutParams(0, u.px(34f), 1f))
+            header.addView(u.text("Done", 11f, cyan).apply {
+                gravity = Gravity.CENTER; contentDescription = "Camera settings done"
+                setOnClickListener { popup.dismiss() }
+            }, LinearLayout.LayoutParams(u.px(44f), u.px(34f)))
+            u.add(body, header)
+            val content = u.column()
+            val assistsColumn = if (landscape) u.column() else content
+            val camerasColumn = if (landscape) u.column() else content
+            if (landscape) {
+                val columns = u.row().apply { gravity = Gravity.TOP }
+                columns.addView(assistsColumn, LinearLayout.LayoutParams(0, -2, 1.2f).apply { rightMargin = u.px(10f) })
+                columns.addView(camerasColumn, LinearLayout.LayoutParams(0, -2, 1f))
+                u.add(content, columns)
+            }
+            val ready = !opening && (device != null || dualReady)
+            val canChange = ready && !recording
+            val assists = u.row()
+            for ((title, icon, active) in listOf(
+                Triple("Stabilize", "Stabilize", prefs.getBoolean("stabilization", true)),
+                Triple(if (front || dualLayout != 4) "Front light" else "Torch", "Light", torch),
+            )) {
+                val tile = u.column().apply {
+                    gravity = Gravity.CENTER; background = u.shape(if (active) Color.rgb(22, 68, 79) else Color.rgb(43, 43, 46))
+                    contentDescription = title; isSelected = active; isFocusable = true
+                    isEnabled = title != "Stabilize" || canChange
+                    alpha = if (isEnabled) 1f else .4f
+                    setOnClickListener {
+                        if (title == "Stabilize") {
+                            prefs.edit().putBoolean("stabilization", !active).apply(); updateRequest()
+                        } else setTorch(!torch)
+                        render()
+                    }
+                    addView(Glyph(activity, icon, if (active) cyan else Color.WHITE), LinearLayout.LayoutParams(u.px(20f), u.px(24f)))
+                    addView(u.text(title, 9f).apply { gravity = Gravity.CENTER })
+                }
+                assists.addView(tile, LinearLayout.LayoutParams(0, u.px(54f), 1f).apply { setMargins(u.px(3f), 0, u.px(3f), 0) })
+            }
+            u.add(assistsColumn, assists); u.gap(assistsColumn, 6f)
+            val pair = DualCamera.pair(manager)
+            val supportsHdr = HdrRecorder.supported(manager, cameraId) &&
+                (dualLayout == 4 || pair?.all { HdrRecorder.supported(manager, it) } == true)
+            u.toggle(camerasColumn, "Use two cameras", dualLayout != 4) { enabled ->
+                setDualLayout(if (enabled) lastDualLayout else 4)
+                render()
+            }
+            camerasColumn.getChildAt(camerasColumn.childCount - 1).apply {
+                isEnabled = canChange && pair != null; alpha = if (isEnabled) 1f else .4f
+                (this as Switch).thumbTintList = android.content.res.ColorStateList.valueOf(cyan)
+            }
+            if (dualLayout != 4 && pair != null) {
+                u.add(camerasColumn, u.text(pair.joinToString(" + ") { id -> lenses.firstOrNull { it.id == id }?.name ?: "Camera $id" }, 9f))
+                u.add(camerasColumn, u.text("Swap and Layout are in the camera strip.", 9f, Color.LTGRAY), if (landscape) 40f else 22f)
+            } else if (pair == null) u.add(camerasColumn, u.text("Two-camera capture is unavailable on this device.", 9f, Color.LTGRAY), if (landscape) 54f else 28f)
+            u.gap(assistsColumn, 5f)
+            u.add(assistsColumn, u.text("Recording color", 10f, bold = true), 26f)
+            val colors = u.row().apply { background = u.shape(Color.rgb(43, 43, 46)); setPadding(u.px(3f), u.px(3f), u.px(3f), u.px(3f)) }
+            for (mode in listOf("SDR", "HDR")) {
+                val selected = hdr == (mode == "HDR")
+                val supported = mode == "SDR" || supportsHdr
+                colors.addView(u.text(mode, 11f, if (selected) Color.BLACK else Color.WHITE, true).apply {
+                    gravity = Gravity.CENTER; contentDescription = mode; isSelected = selected
+                    isEnabled = canChange && supported
+                    alpha = if (isEnabled || selected) 1f else .4f
+                    if (selected) background = u.shape(cyan, 6f)
+                    setOnClickListener { if (!selected) { setHdr(mode == "HDR"); render() } }
+                }, LinearLayout.LayoutParams(0, u.px(34f), 1f))
+            }
+            u.add(assistsColumn, colors)
+            u.add(assistsColumn, u.text(when {
+                recording -> "Stop recording to change color or the camera setup."
+                !ready -> "Recording color is available when the camera is ready."
+                !supportsHdr -> "This camera setup supports SDR only."
+                hdr -> "HDR keeps more highlight and color detail."
+                else -> "SDR is ready to share on any display."
+            }, 9f, Color.LTGRAY), 32f)
+            u.add(body, ScrollView(activity).apply { addView(content); isVerticalScrollBarEnabled = false }, if (landscape) 169f else 224f)
+            u.divider(body)
+            u.add(body, u.disclosure("More settings", false) { popup.dismiss(); moreSettings() }.apply {
+                (getChildAt(0) as TextView).setTextColor(Color.WHITE)
+            }, 34f)
+        }
+        render()
+        popup.showAtLocation(this, if (landscape) Gravity.RIGHT or Gravity.CENTER_VERTICAL else Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, if (landscape) u.px(6f) else 0, u.px(6f))
+        val refresh = object : Runnable {
+            var state = ""
+            override fun run() {
+                if (!popup.isShowing) return
+                val next = "$opening:$dualReady:${device != null}:$hdr:$dualLayout:$front:$recording:$torch"
+                if (state != next) { state = next; render() }
+                ui.postDelayed(this, 250)
+            }
+        }
+        popup.setOnDismissListener {
+            ui.removeCallbacks(refresh)
+            if (settingsPopup === popup) settingsPopup = null
+        }
+        ui.post(refresh)
+    }
+
+    private fun moreSettings() {
         activity.choose(
-            "Recording settings",
+            "More settings",
             listOf(
                 "Resolution · ${prefs.getString("quality","1080p")}",
                 "Frame rate · ${prefs.getInt("fps",30)} fps",
-                "Stabilization · ${if(prefs.getBoolean("stabilization",true))"On"else"Off"}",
                 "Microphone priority",
-                "Torch · ${if(torch) "On" else "Off"}",
             ),
         ) { i ->
             when (i) {
@@ -1499,15 +1628,7 @@ class Capture(
                         activity.choose("Frame rate", listOf("24 fps", "30 fps", "60 fps")) {
                             prefs.edit().putInt("fps", listOf(24, 30, 60)[it]).apply()
                         }
-                2 -> {
-                    prefs
-                        .edit()
-                        .putBoolean("stabilization", !prefs.getBoolean("stabilization", true))
-                        .apply()
-                    updateRequest()
-                }
-                3 -> priority(microphoneDevices())
-                4 -> setTorch(!torch)
+                2 -> priority(microphoneDevices())
             }
         }
     }
@@ -1665,6 +1786,7 @@ class Capture(
     }
 
     fun suspendCamera() {
+        settingsPopup?.dismiss()
         if (recording && !paused) pause()
         closed = true
         closeCamera()
@@ -1672,6 +1794,7 @@ class Capture(
     }
 
     fun destroy() {
+        settingsPopup?.dismiss()
         if (recording) stop()
         closed = true
         closeCamera()
@@ -1723,7 +1846,7 @@ class Capture(
             paint.color =
                 if (id == "time" && recording) Color.rgb(210, 44, 60)
                 else Color.argb(90, 25, 25, 27)
-            if (id !in listOf("flip", "camera", "zoom", "focus"))
+            if (id !in listOf("flip", "camera", "dual", "zoom", "focus"))
                 c.drawRoundRect(r, 15f, 15f, paint)
             val kind =
                 when (id) {
@@ -1796,6 +1919,20 @@ class Capture(
                 paint.strokeCap = Paint.Cap.ROUND
                 c.drawLine(x - 2.2f, r.centerY() - .8f, x, r.centerY() + 1.4f, paint)
                 c.drawLine(x, r.centerY() + 1.4f, x + 2.2f, r.centerY() - .8f, paint)
+            } else if (id == "dual") {
+                val mode = when (dualLayout) {
+                    0 -> "Picture in picture"
+                    1 -> "Split vertical"
+                    2 -> "Split horizontal"
+                    3 -> "Split diagonal"
+                    5 -> "Round picture in picture"
+                    else -> "Dual camera"
+                }
+                val glyph = glyphs.getOrPut(mode to color) {
+                    Glyph(activity, mode, color).apply { layout(0, 0, 14, 14) }
+                }
+                c.save(); c.translate(r.left + 5, r.centerY() - 7); glyph.draw(c); c.restore()
+                text(c, "Layout", r.left + 25, r.centerY() + 3, 9f, color)
             } else if (kind == null)
                 text(c, title, r.centerX(), r.centerY() + 3, 9f, color, Paint.Align.CENTER)
             else {
@@ -1886,42 +2023,18 @@ class Capture(
             val elapsed =
                 (duration +
                     if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
-            val timer = if (recording) elapsed else activity.editor.project.duration
+            val timer = activity.editor.project.duration + if (recording) elapsed else 0.0
             pill(
                 c,
                 RectF(
-                    if (portrait) 80f else 252f,
+                    if (portrait) w / 2 - 32 else 252f,
                     top,
-                    if (portrait) 130f else 328f,
+                    if (portrait) w / 2 + 32 else 328f,
                     top + if (portrait) 34 else 22,
                 ),
                 "%02d:%02d".format(java.util.Locale.US, (timer / 60).toInt(), (timer % 60).toInt()),
                 "time",
                 if (recording) Color.rgb(255, 55, 74) else Color.WHITE,
-            )
-            pill(
-                c,
-                RectF(
-                    if (portrait) 137f else 366f,
-                    top,
-                    if (portrait) 169f else 400f,
-                    top + if (portrait) 34 else 22,
-                ),
-                if (hdr) "HDR" else "SDR",
-                "hdr",
-                if (hdr) Color.YELLOW else Color.WHITE,
-            )
-            pill(
-                c,
-                RectF(
-                    if (portrait) 175f else 404f,
-                    top,
-                    if (portrait) 207f else 437f,
-                    top + if (portrait) 34 else 22,
-                ),
-                "",
-                "dual",
-                if (dualMenu || dualLayout != 4) Color.CYAN else Color.WHITE,
             )
             pill(
                 c,
@@ -1945,10 +2058,13 @@ class Capture(
                 ),
                 "☷",
                 "settings",
+                if (dualLayout != 4) Color.CYAN else Color.WHITE,
             )
+            val bottom = if (portrait) texture.bottom / s - 94f else 242f
+            val twoCameras = dualCamera != null || dualLayout != 4
             if (dualMenu) {
                 val left = if (portrait) 9f else 155f
-                val y = top + 34
+                val y = bottom - 58
                 paint.color = Color.argb(180, 53, 53, 49)
                 c.drawRoundRect(left, y, left + 275, y + 40, 12f, 12f, paint)
                 listOf(
@@ -2048,24 +2164,25 @@ class Capture(
                 if (recording) "Mark" else "✂",
                 if (recording) "mark" else "edit",
             )
-            val bottom = if (portrait) texture.bottom / s - 94f else 242f
             if (portrait) {
                 paint.color = Color.argb(105, 60, 59, 55)
-                c.drawRoundRect(30f, bottom, 264f, bottom + 33, 18f, 18f, paint)
+                c.drawRoundRect(if (twoCameras) 78f else 30f, bottom, if (twoCameras) 216f else 264f, bottom + 33, 18f, 18f, paint)
+                if (!twoCameras) {
                 paint.color = Color.argb(60, 255, 255, 255)
                 paint.strokeWidth = .5f
                 c.drawLine(164f, bottom + 10, 164f, bottom + 23, paint)
                 c.drawLine(217f, bottom + 10, 217f, bottom + 23, paint)
+                }
             } else {
                 paint.color = Color.argb(95, 25, 25, 27)
-                c.drawRoundRect(164f, 236f, 394f, 272f, 18f, 18f, paint)
+                c.drawRoundRect(if (twoCameras) 205f else 164f, 236f, if (twoCameras) 343f else 394f, 272f, 18f, 18f, paint)
             }
             pill(
                 c,
                 RectF(
-                    if (portrait) 34f else 171f,
+                    if (twoCameras) if (portrait) 86f else 213f else if (portrait) 34f else 171f,
                     bottom,
-                    if (portrait) 65f else 203f,
+                    if (twoCameras) if (portrait) 120f else 247f else if (portrait) 65f else 203f,
                     bottom + if (portrait) 33 else 25,
                 ),
                 "▣",
@@ -2074,9 +2191,9 @@ class Capture(
             pill(
                 c,
                 RectF(
-                    if (portrait) 73f else 208f,
+                    if (twoCameras) if (portrait) 126f else 253f else if (portrait) 73f else 208f,
                     bottom,
-                    if (portrait) 153f else 286f,
+                    if (twoCameras) if (portrait) 207f else 334f else if (portrait) 153f else 286f,
                     bottom + if (portrait) 33 else 25,
                 ),
                 lenses
@@ -2084,33 +2201,36 @@ class Capture(
                     ?.name
                     ?.removePrefix("Rear ")
                     ?.replaceFirstChar { it.uppercase() } ?: "Main",
-                "camera",
+                if (twoCameras) "dual" else "camera",
+                if (dualMenu) Color.CYAN else Color.WHITE,
             )
-            pill(
-                c,
-                RectF(
-                    if (portrait) 167f else 301f,
-                    bottom,
-                    if (portrait) 212f else 346f,
-                    bottom + if (portrait) 33 else 25,
-                ),
-                "%.1f×".format(java.util.Locale.US, zoom),
-                "zoom",
-                if (zoomMenu) Color.YELLOW else Color.WHITE,
-            )
-            pill(
-                c,
-                RectF(
-                    if (portrait) 223f else 358f,
-                    bottom,
-                    if (portrait) 257f else 391f,
-                    bottom + if (portrait) 33 else 25,
-                ),
-                if (!CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) "AF L" else "AF",
-                "focus",
-                if (focusLocked) Color.YELLOW else Color.WHITE,
-            )
-            if (!recording)
+            if (!twoCameras) {
+                pill(
+                    c,
+                    RectF(
+                        if (portrait) 167f else 301f,
+                        bottom,
+                        if (portrait) 212f else 346f,
+                        bottom + if (portrait) 33 else 25,
+                    ),
+                    "%.1f×".format(java.util.Locale.US, zoom),
+                    "zoom",
+                    if (zoomMenu) Color.YELLOW else Color.WHITE,
+                )
+                pill(
+                    c,
+                    RectF(
+                        if (portrait) 223f else 358f,
+                        bottom,
+                        if (portrait) 257f else 391f,
+                        bottom + if (portrait) 33 else 25,
+                    ),
+                    if (!CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) "AF L" else "AF",
+                    "focus",
+                    if (focusLocked) Color.YELLOW else Color.WHITE,
+                )
+            }
+            if (!recording && !dualMenu)
                 pill(
                     c,
                     RectF(
@@ -2387,10 +2507,9 @@ class Capture(
                         }
                         "pipSwap" -> swapCameras()
                         "settings" -> settings()
-                        "hdr" -> setHdr(!hdr)
                         "dual" -> {
                             dualMenu = !dualMenu
-                            if (dualMenu && dualLayout == 4) setDualLayout(lastDualLayout)
+                            zoomMenu = false
                         }
                         "pip" -> setDualLayout(0)
                         "roundPip" -> setDualLayout(5)

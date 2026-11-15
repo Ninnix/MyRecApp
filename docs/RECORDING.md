@@ -18,6 +18,13 @@ The controls follow Android's auto-rotate setting. Turning the phone does not
 stop the take. The file keeps its starting frame size; rotated views fit inside
 it without cropping the scene.
 
+The top bar has the microphone on the left, the clock in the center, and live
+video effects and Camera settings on the right. Camera settings opens a bottom
+panel in portrait and a side panel in landscape. It contains stabilization,
+the light, Use two cameras, and the SDR/HDR recording-color selector. More
+settings opens resolution, frame rate, and microphone priority. Color and
+camera setup changes require stopping the current take.
+
 ## Choose a camera
 
 The camera-with-arrows button switches front and rear. The lens selector lists
@@ -35,7 +42,7 @@ leveling from the iOS app are not implemented yet.
 
 ## Use the light
 
-Torch is in Recording settings. Rear cameras use the hardware light when one
+The light is in Camera settings. Rear cameras use the hardware light when one
 is available. The front camera uses a white screen border at full window
 brightness. Its rounded inner edge is slightly transparent; bars outside the
 video are opaque. Drag the border to change its thickness.
@@ -46,8 +53,9 @@ light while its front camera is visible. The border is not recorded.
 
 ## Record two views
 
-The overlapping-camera button offers rectangular or round picture in picture,
-side by side, top/bottom, and diagonal layouts. This needs a supported concurrent
+Enable Use two cameras in Camera settings. The lower camera strip then shows
+Swap and Layout. Layout offers rectangular or round picture in picture, side
+by side, top/bottom, and diagonal layouts. This needs a supported concurrent
 front/rear pair. Layout changes become part of the saved composition.
 
 Tap the divider to swap views. Use two fingers to pan or zoom a region. In
@@ -62,7 +70,8 @@ and fall back together if needed. Output keeps the chosen recording size.
 
 ## Record HDR
 
-Choose SDR or HDR before recording. HDR needs Android 13, an HLG camera output,
+Choose SDR or HDR under Camera settings → Recording color before recording.
+HDR needs Android 13, an HLG camera output,
 HEVC Main10 encoding, and a compatible 10-bit EGL surface. Unsupported cameras
 keep SDR. Recording stores 10-bit BT.2020 HLG; preview is tone mapped.
 

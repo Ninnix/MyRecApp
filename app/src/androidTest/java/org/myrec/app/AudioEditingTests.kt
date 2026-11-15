@@ -146,6 +146,8 @@ object AudioEditingTests {
             val gapPower = (19500 until 20000).sumOf { exported[it * 2].toDouble().pow(2) } / 500
             check(gapPower < .00001) { "Censored speech leaked in exported pulse gap: $gapPower" }
         }
+        onMain { a.editor.load(fixture()) }
+        DirectAudioTests.run(instrumentation, a, onMain, test)
         fun find(root: View, name: String, bar: Boolean = false): View? {
             if ((!bar || root is SeekBar) && (root.contentDescription?.toString() == name || root is TextView && root.text.toString() == name)) return root
             if (root is ViewGroup) for (i in 0 until root.childCount) find(root.getChildAt(i), name, bar)?.let { return it }
