@@ -12,8 +12,9 @@ class CubeLut private constructor(
 ) {
     companion object {
         const val MAX_BYTES = 32 * 1024 * 1024
-        val looks = listOf("Natural", "Warm", "Cool", "Mono", "Cinema", "Portrait", "Daylight",
+        val looks = listOf("Natural", "Warm", "Cool", "Cinema", "Mono", "Portrait", "Daylight",
             "Golden hour", "Muted film", "Rich contrast", "Pastel", "Night", "Silver", "Ink")
+        fun title(name: String) = if (name == "Cool") "Cool shadows" else name
         private val builtins = mutableMapOf<String, CubeLut>()
 
         fun parse(bytes: ByteArray): CubeLut {

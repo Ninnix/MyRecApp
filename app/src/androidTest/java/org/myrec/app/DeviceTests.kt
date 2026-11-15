@@ -117,6 +117,7 @@ class DeviceTests : Instrumentation() {
                 suite == "playback" ||
                 suite == "capture-controls" ||
                 suite == "media-editing" ||
+                suite == "tool-workspaces" ||
                 suite == "live-rotation"
         ) {
             references()
@@ -2459,6 +2460,7 @@ class DeviceTests : Instrumentation() {
             activity = a
             if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
             else if (suite == "media-editing") MediaEditingTest.run(this, a, ::onMain, ::test)
+            else if (suite == "tool-workspaces") ToolWorkspaceTests.run(this, a, ::onMain, ::test)
             else if (suite == "live-rotation") RecordingRotationTest.run(this, a, ::onMain, ::test)
             else if (suite == "playback")
                 PlaybackTest.run(this, a, currentProject, ::onMain, ::test)

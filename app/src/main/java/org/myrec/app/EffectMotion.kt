@@ -85,11 +85,12 @@ data class EffectMotion(
     }
 
     fun valid(effect: Effect): Boolean {
-        if (effect.kind != "Color Correction" || !duration.isFinite() || duration <= 0 ||
+        if (effect.kind !in listOf("Color Correction", "Color LUTs") || !duration.isFinite() || duration <= 0 ||
             !frame.isFinite() || frame <= 0 || !timing.rise.isFinite() || timing.rise < 0 ||
             !timing.release.isFinite() || timing.release < 0 || timing.ramp.hasRise || clock.size > 100000) return false
         if (clock.any { !it.source.isFinite() || !it.elapsed.isFinite() } ||
             clock.zipWithNext().any { (l, r) -> l.source >= r.source || l.elapsed > r.elapsed }) return false
+        if (effect.kind == "Color LUTs") return GradeModel.valid(a) && GradeModel.valid(b)
         val expected = effect.parameters.associateBy { it.id }
         return listOf(a, b).all { pose -> pose.keys == expected.keys && pose.all { (id, value) ->
             expected.getValue(id).kind.accepts(EffectValue.Number(value))

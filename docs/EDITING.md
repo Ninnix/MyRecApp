@@ -1,5 +1,8 @@
 # Editing and export
 
+The first action row is Start, Split, Tools, Export. Start marks a range; after
+marking it becomes End, then Move end.
+
 Tap the preview or Play to start and pause. Double-tap Play to audition around
 the cursor. The transport buttons move between editing events and return to
 the previous position. Review speed changes playback without changing the edit.
@@ -155,14 +158,36 @@ Audio filters run in the order shown. Select a container to change its values
 or position. Neural effects prepare and cache audio before playback. Models
 can change vocal character; compare the result before applying it.
 
-Color LUTs imports standalone 1D and 3D `.cube` files. Imported files belong to
-the project, including its history and archives. Choose the LUT's expected
-input separately from the source interpretation. Recorded uses the movie's
-normal decoding; Apple Log and Apple Log 2 explicitly interpret unmanaged
-camera code values. Exposure and highlights run before the look and still apply
-at zero Strength. The built-in catalogue includes fourteen looks. Log viewing
-uses a highlight shoulder and half-float working images. Automatic Log metadata
-recognition, local highlight recovery and technical white balance remain open.
+Text opens a preview and a collapsible Duration picker. Choose 1–10 seconds,
+15, 30, or 60; choices beyond the available footage are disabled. To end and
+Start/End trimming keep exact timing. Looks, Font, Fill, Outline, Shadow,
+Background, and Motion use separate tabs. The eight look cards show the entered
+words with their actual fonts. Bundled title families include Atkinson Hyperlegible
+Next, Barlow Condensed, Archivo Black, Source Serif 4, Fraunces, IBM Plex Mono,
+and Caveat. Import TTF/OTF fonts or choose a device font.
+
+Fill supports solid colors and twelve gradient presets with editable colors,
+opacity and angle. Outline, shadow, block/per-line backgrounds, letter/line
+spacing and alignment affect preview and export. Entrance and Exit each offer
+None, Fade, Drift, Scale, and Wipe, with duration, direction and audition. Short
+cues fit their animation ends around a readable hold. Source clocks preserve
+motion across cuts. Save as channel style reuses appearance across projects;
+outline and motion stay on the individual overlay. Imported fonts remain in
+project history and ZIPs.
+
+Color LUTs has frame-based look previews, Before/After, numeric animation
+endpoints, favorite looks, imported LUTs and saved grades. Strength sits beside
+its slider; Highlights has a reset. Exposure & white balance expands exposure,
+relative warmth and tint controls. These adjustments precede the creative look
+and remain active at zero Strength. The fourteen built-in looks include Natural,
+Warm and Cool shadows. Imported standalone 1D and 3D `.cube` files belong to the
+project, including history and archives. Choose the LUT input separately from
+source interpretation. Recorded uses normal decoding; Apple Log and Apple Log 2
+explicitly interpret unmanaged camera code values. Log viewing uses a highlight
+shoulder and half-float working images. Automatic Log metadata recognition,
+local highlight recovery and exact Core Image white-balance matching remain open.
+New styled titles and animated/balanced grades carry effect algorithm 2, which
+older builds refuse rather than silently discard their appearance or motion.
 
 Pauses analyzes original-source RMS, then shows candidates with separate keep
 before/after padding. Automatic mode estimates a threshold; Manual uses the

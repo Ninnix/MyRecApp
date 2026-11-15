@@ -600,7 +600,7 @@ class EditorView(
         } else {
             button(
                 c,
-                RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
+                RectF(x + cell + gap, y, x + 2 * cell + gap, y + first),
                 "split",
                 "Split",
                 "split",
@@ -608,17 +608,17 @@ class EditorView(
             )
             button(
                 c,
-                RectF(x + cell + gap, y, x + 2 * cell + gap, y + first),
+                RectF(x, y, x + cell, y + first),
                 "mark",
                 if (editor.range != null) "Move end"
-                else if (editor.mark != null) "${if(landscape)"End" else "Mark end"}"
-                else if (landscape) "Start" else "Mark start",
+                else if (editor.mark != null) "End"
+                else "Start",
                 "mark",
                 editor.project.duration > 0 && !moving,
             )
             button(
                 c,
-                RectF(x + 3 * (cell + gap), y, x + w, y + first),
+                RectF(x + 2 * (cell + gap), y, x + 3 * cell + 2 * gap, y + first),
                 "tools",
                 "Tools",
                 "tools",
@@ -626,7 +626,7 @@ class EditorView(
             )
             button(
                 c,
-                RectF(x, y, x + cell, y + first),
+                RectF(x + 3 * (cell + gap), y, x + w, y + first),
                 "export",
                 "Export",
                 "export",

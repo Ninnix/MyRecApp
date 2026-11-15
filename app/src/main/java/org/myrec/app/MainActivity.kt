@@ -18,6 +18,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
+    internal lateinit var toolLibrary: SharedPreferences
+        private set
+    internal lateinit var toolLibraryDirectory: File
+        private set
     lateinit var editor: Editor
         private set
 
@@ -81,6 +85,8 @@ class MainActivity : Activity() {
         val testSessionId =
             intent.getStringExtra("testSessionId")?.takeIf { it.matches(Regex("[a-zA-Z0-9-]+")) }
                 ?: "shared"
+        toolLibrary = getSharedPreferences(if (testSession) "editor-library-test-$testSessionId" else "editor-library", MODE_PRIVATE)
+        toolLibraryDirectory = if (testSession) File(cacheDir, "test-libraries/$testSessionId") else File(filesDir, "editor-library")
         store =
             ProjectStore(
                 if (testSession) File(cacheDir, "test-projects/$testSessionId")
@@ -96,6 +102,7 @@ class MainActivity : Activity() {
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
         AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
         Person.configure(this)
+        TitleStyle.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))
         Stabilizer.directory = File(cacheDir, "stabilization")
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
@@ -895,6 +902,14 @@ class MainActivity : Activity() {
     }
 
     private var lutCallback: ((String, String) -> Unit)? = null
+    private var fontCallback: ((String, String) -> Unit)? = null
+
+    fun importFont(callback: (String, String) -> Unit) {
+        fontCallback = callback
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
+        }, 33)
+    }
 
     fun importLut(callback: (String, String) -> Unit) {
         lutCallback = callback
@@ -917,6 +932,46 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 33) {
+            val callback = fontCallback; fontCallback = null
+            val uri = data?.data
+            if (resultCode == RESULT_OK && callback != null && uri != null) {
+                val project = editor.project.id
+                worker.execute {
+                    try {
+                        val bytes = contentResolver.openInputStream(uri)!!.use { input ->
+                            val output = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                require(output.size() + count <= 16 * 1024 * 1024) { "Choose a font smaller than 16 MB" }
+                                output.write(buffer, 0, count)
+                            }
+                            output.toByteArray()
+                        }
+                        require(bytes.size in 12..16 * 1024 * 1024) { "Choose a font smaller than 16 MB" }
+                        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+                        val file = File(store.media, "effect-font-$hash.ttf")
+                        if (!file.exists()) {
+                            val partial = File(store.media, "font-${uid()}.partial")
+                            try {
+                                partial.writeBytes(bytes); android.graphics.Typeface.createFromFile(partial)
+                                check(partial.renameTo(file)) { "Cannot save font" }
+                            } finally { partial.delete() }
+                        }
+                        store.registerMedia(project, file.path)
+                        val name = documentName(uri).substringBeforeLast('.').take(120)
+                        val library = File(toolLibraryDirectory, "fonts").apply { mkdirs() }
+                        val saved = File(library, file.name)
+                        if (!saved.exists()) file.copyTo(saved)
+                        toolLibrary.edit().putString("font.${saved.name}", name).apply()
+                        ui.post { if (editor.project.id == project) callback(file.path, name) }
+                    } catch (e: Exception) { message(e.message ?: "Cannot import font") }
+                }
+            }
+            return
+        }
         if (requestCode == 32) {
             val callback = lutCallback
             lutCallback = null

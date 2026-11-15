@@ -43,7 +43,8 @@ object Effects {
                 when (effect.values["input"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 },
                 if (effect.values["path"] == null && (effect.values["lut"] ?: "Natural") == "Natural") 0f else strength,
                 effect.number("exposure"), effect.number("highlights"),
-                when (effect.values["source"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 })
+                when (effect.values["source"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 },
+                effect.number("warmth"), effect.number("tint"))
             return
         }
         if (strength <= 0f) return
@@ -603,7 +604,11 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                 canvas.drawRect(0f, 0f, width.toFloat(), margin, paint)
                 canvas.drawRect(0f, height - margin, width.toFloat(), height.toFloat(), paint)
             }
-            if (e.kind == "Text") {
+            if (e.kind == "Text" && e.values["design"] == "1") {
+                val phase = e.phase
+                val elapsed = if (phase == null) local - e.from else phase.offset + phase.elapsed(c.sourceTime(at)) - e.number("titleOrigin")
+                TitleStyle.draw(canvas, e, width, height, elapsed, e.number("titleDuration", (min(e.to, c.duration) - e.from).toFloat()).toDouble())
+            } else if (e.kind == "Text") {
                 paint.color =
                     try {
                         Color.parseColor(e.values["color"] ?: "#ffffff")

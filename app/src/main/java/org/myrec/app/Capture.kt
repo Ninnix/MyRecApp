@@ -1745,12 +1745,13 @@ class Capture(
                     else -> null
                 }
             if (id == "mic") {
+                val portrait = h > w
                 val glyph =
                     glyphs.getOrPut("Microphone" to color) {
                         Glyph(activity, "Microphone", color).apply { layout(0, 0, 12, 12) }
                     }
                 c.save()
-                c.translate(r.left + 8, r.top + 2)
+                c.translate(r.left + 8, if (portrait) r.top + 2 else r.centerY() - 6)
                 glyph.draw(c)
                 c.restore()
                 for (i in 0..7) {
@@ -1758,17 +1759,27 @@ class Capture(
                         if (amplitude > i / 8f) if (i > 5) Color.rgb(255, 75, 60) else Color.WHITE
                         else Color.argb(150, 100, 100, 100)
                     val x = r.left + 24 + i * 3.2f
+                    val center = if (portrait) r.top + 10 else r.centerY()
                     c.drawRoundRect(
                         x,
-                        r.top + 8 - i * .65f,
+                        center - 2 - i * .65f,
                         x + 1.8f,
-                        r.top + 12 + i * .65f,
+                        center + 2 + i * .65f,
                         1f,
                         1f,
                         paint,
                     )
                 }
-                text(c, title, r.centerX(), r.bottom - 4, 7f, color, Paint.Align.CENTER)
+                if (portrait) text(c, title, r.centerX(), r.bottom - 4, 7f, color, Paint.Align.CENTER)
+                else {
+                    val left = r.left + 56
+                    val labelPaint = android.text.TextPaint(paint).apply {
+                        textSize = 7f; typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                    }
+                    val label = android.text.TextUtils.ellipsize(title, labelPaint,
+                        (r.right - left - 8).coerceAtLeast(0f), android.text.TextUtils.TruncateAt.END)
+                    text(c, label.toString(), left, r.centerY() + 2.5f, 7f, color)
+                }
             } else if (id == "time") {
                 paint.color = Color.WHITE
                 paint.typeface = Typeface.create("monospace", Typeface.BOLD)
@@ -1866,10 +1877,10 @@ class Capture(
                 RectF(
                     if (portrait) 12f else 64f,
                     top,
-                    if (portrait) 74f else 178f,
+                    if (portrait) 74f else 208f,
                     top + if (portrait) 34 else 22,
                 ),
-                micName().take(if (portrait) 15 else 18),
+                if (portrait) micName().take(15) else micName(),
                 "mic",
             )
             val elapsed =

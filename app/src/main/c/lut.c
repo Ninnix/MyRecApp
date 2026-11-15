@@ -23,10 +23,10 @@ static void sample(const float *table, int size, int one, const float domain[6],
 
 JNIEXPORT void JNICALL Java_org_myrec_app_Native_colorLut(JNIEnv *env, jobject self,
     jobject bitmap, jfloatArray entries, jint size, jboolean one, jfloatArray bounds,
-    jint input, jfloat strength, jfloat exposure, jfloat highlights, jint source) {
+    jint input, jfloat strength, jfloat exposure, jfloat highlights, jint source, jfloat warmth, jfloat tint) {
     (void)self;
     if (size < 2 || size > (one ? 16384 : 65) || input < 0 || input > 2 || source < 0 || source > 2 ||
-        !isfinite(strength) || !isfinite(exposure) || !isfinite(highlights) ||
+        !isfinite(strength) || !isfinite(exposure) || !isfinite(highlights) || !isfinite(warmth) || !isfinite(tint) ||
         (*env)->GetArrayLength(env, entries) != (one ? size : size * size * size) * 3 ||
         (*env)->GetArrayLength(env, bounds) != 6) return;
     float domain[6]; (*env)->GetFloatArrayRegion(env, bounds, 0, 6, domain);
@@ -48,6 +48,10 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_colorLut(JNIEnv *env, jobject s
     };
     float gain = exp2f(yr_clamp(exposure, -4, 4)); strength = yr_clamp(strength, 0, 1);
     highlights = yr_clamp(highlights, -1, 1);
+    warmth = yr_clamp(warmth, -1, 1); tint = yr_clamp(tint, -1, 1);
+    float balance[3] = {exp2f(.45f * warmth + .2f * tint), exp2f(-.2f * tint), exp2f(-.45f * warmth + .2f * tint)};
+    float white = yr_luma(balance);
+    for (int i = 0; i < 3; i++) balance[i] /= white;
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
         float pixel[4]; yr_read(&image, x, y, pixel);
         float c[3], codes[3], mapped[3];
@@ -64,7 +68,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_colorLut(JNIEnv *env, jobject s
                 c[i] = row[0] * camera[0] + row[1] * camera[1] + row[2] * camera[2];
             }
         }
-        for (int i = 0; i < 3; i++) c[i] *= gain;
+        for (int i = 0; i < 3; i++) c[i] *= gain * balance[i];
         float luma = fmaxf(0, yr_luma(c)), delta = fmaxf(0, luma - .35f);
         if (highlights != 0 && delta > 0) {
             float k = fmaxf(.000001f, -highlights * 6);

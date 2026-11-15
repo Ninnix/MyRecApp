@@ -167,7 +167,7 @@ object ProcessingDeviceTests {
                 onMain {
                     a.panels.close(); a.editor.load(original.duplicate()); a.editor.project.clips.single().video = true
                     a.panels.effect("Color LUTs")
-                    check(find(a.root, "Import .cube LUT") != null && find(a.root, "Highlights") != null)
+                    check(find(a.root, "Import LUT") != null && find(a.root, "Highlights") != null)
                     a.panels.close(); a.panels.pauses()
                     check(find(a.root, "Find pauses") != null && find(a.root, "Keep all pauses") != null)
                     a.panels.close(); a.editor.cursor = .5; a.panels.freezeFrame()

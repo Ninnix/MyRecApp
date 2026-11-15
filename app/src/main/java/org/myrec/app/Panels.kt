@@ -74,6 +74,9 @@ class Panels(private val a: MainActivity) {
     private var panelClosed: (() -> Unit)? = null
     private var cancelPanel: (() -> Unit)? = null
     private var headerDone: TextView? = null
+    private var scopeHeader: TextView? = null
+    private var gradeActions: LinearLayout? = null
+    private var gradeInspector: LutInspector? = null
     val isOpen
         get() = panel != null
 
@@ -439,6 +442,8 @@ class Panels(private val a: MainActivity) {
     }
 
     fun close(refresh: Boolean = true) {
+        gradeInspector?.close(); gradeInspector = null
+        gradeActions = null; scopeHeader = null
         val cleanup = panelClosed
         panelClosed = null
         cancelPanel = null
@@ -549,22 +554,14 @@ class Panels(private val a: MainActivity) {
             add(content, safe, if (name == "Volume") 49f else 44f)
         }
         val header = FrameLayout(a)
-        val plain = !captureSheet && name in listOf("Text", "Crop", "Video effects")
+        val plain = !captureSheet && name in listOf("Text", "Crop", "Video effects", "Color LUTs")
         val titles = column()
         val titleView = text(name, 10f, Color.WHITE, true).apply { gravity = Gravity.CENTER }
         if (plain) {
             add(titles, titleView, 16f)
-            add(
-                titles,
-                text(
-                        if (editor.range != null) rangeLabel()
-                        else "${editor.targets().size} clip · entire effect",
-                        6.5f,
-                        MUTED,
-                    )
-                    .apply { gravity = Gravity.CENTER },
-                11f,
-            )
+            scopeHeader = text(if (editor.range != null) rangeLabel() else "${editor.targets().size} clip · entire effect", 6.5f, MUTED)
+                .apply { gravity = Gravity.CENTER }
+            add(titles, scopeHeader!!, 11f)
             header.addView(titles, FrameLayout.LayoutParams(-1, px(29f), Gravity.CENTER))
         } else header.addView(titleView, FrameLayout.LayoutParams(-1, -1))
         val cancel =
@@ -636,7 +633,7 @@ class Panels(private val a: MainActivity) {
             if (landscape)
                 if (tools || name == "Transition") 64f
                 else if (name == "Enhance audio") 60f else 32f
-            else if (name == "Video effects" && !captureSheet) 32f else 40f,
+            else if (name in listOf("Text", "Color LUTs", "Video effects") && !captureSheet) 32f else 40f,
         )
         return content
     }
@@ -683,7 +680,7 @@ class Panels(private val a: MainActivity) {
         retained: LinearLayout? = null,
     ): LinearLayout {
         val horizontal = landscape
-        if (horizontal && title in listOf("Text", "Video effects", "Transition")) {
+        if (horizontal && title in listOf("Text", "Video effects", "Transition", "Color LUTs")) {
             body.background =
                 object : android.graphics.drawable.Drawable() {
                     private val paint = Paint()
@@ -734,7 +731,7 @@ class Panels(private val a: MainActivity) {
         val fraction =
             when (title) {
                 "Enhance audio" -> 0.45f
-                "Text" -> 320f / 550f
+                "Text", "Color LUTs" -> 320f / 550f
                 "Transition" -> 320f / 550f
                 else -> 0.64f
             }
@@ -743,6 +740,8 @@ class Panels(private val a: MainActivity) {
             else
                 px(
                     when (title) {
+                        "Text" -> 300f
+                        "Color LUTs" -> 230f
                         "Volume" -> 190f
                         "Video effects" -> 196f
                         "Crop" -> 256f
@@ -826,7 +825,23 @@ class Panels(private val a: MainActivity) {
                 MUTED,
             )
         var endTime: TextView? = null
-        if (horizontal && title != "Volume" && title != "Enhance audio") {
+        if (title in listOf("Text", "Color LUTs")) {
+            play.text = "▶"
+            if (title == "Color LUTs") {
+                val toolbar = row().apply { setPadding(px(10f), 0, px(10f), 0) }
+                toolbar.addView(play, LinearLayout.LayoutParams(px(28f), px(34f)))
+                gradeActions = row().also { toolbar.addView(it, LinearLayout.LayoutParams(0, px(34f), 1f)) }
+                add(left, toolbar, 40f)
+            } else r.addView(play, LinearLayout.LayoutParams(px(28f), px(32f)))
+            time.text = timeLabel(max(0.0, editor.cursor - region.start)); time.setTextColor(Color.WHITE)
+            time.setTextSize(TypedValue.COMPLEX_UNIT_PX, 8f * factor)
+            r.setPadding(px(10f), 0, px(10f), 0)
+            r.addView(time, LinearLayout.LayoutParams(px(40f), px(32f)))
+            r.addView(seek, LinearLayout.LayoutParams(0, px(32f), 1f))
+            endTime = text(timeLabel(length), 8f, MUTED).apply { gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL }
+            r.addView(endTime, LinearLayout.LayoutParams(px(40f), px(32f)))
+            add(left, r, 34f)
+        } else if (horizontal && title != "Volume" && title != "Enhance audio") {
             if (title == "Text") {
                 val end =
                     text(timeLabel(length), 7f, MUTED).apply {
@@ -906,9 +921,9 @@ class Panels(private val a: MainActivity) {
         previewTick = {
             play.text =
                 if (a.playback.playing) {
-                    if (title == "Video effects" || horizontal && title != "Enhance audio") "Ⅱ"
+                    if (title in listOf("Text", "Color LUTs", "Video effects") || horizontal && title != "Enhance audio") "Ⅱ"
                     else "Ⅱ Pause preview"
-                } else if (title == "Video effects" || horizontal && title != "Enhance audio") "▶"
+                } else if (title in listOf("Text", "Color LUTs", "Video effects") || horizontal && title != "Enhance audio") "▶"
                 else "▶ Play preview"
             play.contentDescription = if (a.playback.playing) "Pause preview" else "Play preview"
             val current = previewRegion()
@@ -916,7 +931,7 @@ class Panels(private val a: MainActivity) {
             val elapsed = (editor.cursor - current.start).coerceIn(0.0, duration)
             endTime?.text = timeLabel(duration)
             time.text =
-                if (horizontal && title == "Text" || title == "Crop") timeLabel(elapsed)
+                if (title in listOf("Text", "Color LUTs", "Crop")) timeLabel(elapsed)
                 else "${timeLabel(elapsed)} / ${timeLabel(duration)}"
             if (!seek.isPressed) seek.progress = (elapsed / duration * 1000).toInt()
         }
@@ -1739,6 +1754,10 @@ class Panels(private val a: MainActivity) {
                     "Freeze Frame" -> temporary.project = checkNotNull(freezeDraft).duplicate()
                     "Enhance audio" -> temporary.replaceChain(effects, Effects.audio)
                     "Placement" -> temporary.applyPlacements(placements, placementTracks)
+                    "Color LUTs" -> {
+                        temporary.targets().forEach { clip -> clip.effects.removeAll { it.kind == "Color LUTs" } }
+                        if (previewEffects) draft?.let { temporary.applyEffect(it) }
+                    }
                     else ->
                         effects.forEach {
                             if (title == "Crop" && cropFrame)
@@ -1747,6 +1766,15 @@ class Panels(private val a: MainActivity) {
                                 }
                             else temporary.applyEffect(it, draftReplace)
                         }
+                }
+                if (title in listOf("Text", "Color LUTs")) {
+                    val targets = editor.targets()
+                    val first = editor.range?.start ?: if (title == "Text" && draftReplace == null && editor.selected.isEmpty()) draftOrigin else targets.minOfOrNull { it.start } ?: 0.0
+                    val last = editor.range?.endInclusive ?: targets.maxOfOrNull { it.end } ?: editor.project.duration
+                    val from = first + if (title == "Text") draft?.from ?: 0.0 else 0.0
+                    val to = if (title == "Text") min(last, first + (draft?.to ?: last)) else last
+                    scopeHeader?.text = if (title == "Text") "${if (targets.count { it.video } == 1) "This clip" else "${targets.count { it.video }} clips"} · ${timeLabel(from)}–${timeLabel(to)}"
+                        else "Video + audio · ${targets.sumOf { (if (it.video) 1 else 0) + (if (it.audio) 1 else 0) }} items · ${timeLabel(first)}–${timeLabel(last)}"
                 }
                 val p = temporary.project
                 draftShape?.let { (width, height) ->
@@ -1835,135 +1863,25 @@ class Panels(private val a: MainActivity) {
         val controls = contentWithPreview(body)
         when (kind) {
             "Text" -> {
-                val input =
-                    EditText(a).apply {
-                        setText(fx.values["text"] ?: "")
-                        hint = "Write something"
-                        setTextColor(Color.WHITE)
-                        setHintTextColor(MUTED)
-                        setTextSize(TypedValue.COMPLEX_UNIT_PX, 11f * factor)
-                        background = shape(Color.BLACK, 3f)
-                        setPadding(px(5f), 0, px(5f), 0)
-                        maxLines = 3
-                    }
-                input.addTextChangedListener(
-                    object : TextWatcher {
-                        override fun beforeTextChanged(
-                            s: CharSequence?,
-                            start: Int,
-                            count: Int,
-                            after: Int,
-                        ) {}
-
-                        override fun onTextChanged(
-                            s: CharSequence?,
-                            start: Int,
-                            before: Int,
-                            count: Int,
-                        ) {
-                            fx.values["text"] = s.toString()
-                            renderDraft()
-                        }
-
-                        override fun afterTextChanged(e: Editable?) {}
-                    }
-                )
-                add(controls, input, 22f)
-                space(controls, 7f)
-                val styleRow = row()
-                val style =
-                    text("Style: ${fx.values["style"] ?: "Bold"}", 9f, RED, true).apply {
-                        gravity = Gravity.CENTER
-                        background = shape(Color.rgb(34, 34, 36), 16f)
-                    }
-                style.setOnClickListener {
-                    fx.values["style"] = if (fx.values["style"] == "Regular") "Bold" else "Regular"
-                    style.text = "Style: ${fx.values["style"]}"
+                TitleStyle.initialize(fx, existing == null)
+                val targets = editor.targets().filter { it.video }
+                val base = editor.range?.start ?: if (replace == null && editor.selected.isEmpty()) origin else targets.minOfOrNull { it.start } ?: 0.0
+                val end = editor.range?.endInclusive ?: targets.maxOfOrNull { it.end } ?: editor.project.duration
+                val inspectorUi = InspectorUi(a, factor)
+                val inspector = TitleInspector(inspectorUi, fx, base, max(0.0, end - base), { renderDraft() }) { exit ->
+                    a.playback.pause()
+                    val (entrance, release) = TitleMotion.ends(fx, fx.to - fx.from)
+                    editor.cursor = base + fx.from + if (exit) max(0.0, fx.to - fx.from - release - .35) else 0.0
                     renderDraft()
+                    ui.postDelayed({ if (draft === fx) a.playback.play(min(base + fx.to, editor.cursor + (if (exit) release else entrance) + .7)) }, 80)
                 }
-                styleRow.addView(style, LinearLayout.LayoutParams(px(75f), px(32f)))
-                val colors = HorizontalScrollView(a).apply { isHorizontalScrollBarEnabled = false }
-                val swatches = row()
-                val names = listOf("White", "Black", "Yellow", "Red", "Blue", "Green")
-                val values =
-                    listOf("#ffffff", "#000000", "#ffdd00", "#ff374a", "#438bff", "#40c875")
-                for ((i, value) in values.withIndex()) {
-                    val swatch =
-                        object : View(a) {
-                            private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-                            override fun onDraw(canvas: Canvas) {
-                                val cx = width / 2f
-                                val cy = height / 2f
-                                paint.style = Paint.Style.STROKE
-                                paint.strokeWidth = factor
-                                paint.color =
-                                    if ((fx.values["color"] ?: "#ffffff") == value) Color.WHITE
-                                    else Color.rgb(48, 48, 52)
-                                canvas.drawCircle(cx, cy, px(10f).toFloat(), paint)
-                                paint.style = Paint.Style.FILL
-                                paint.color = Color.parseColor(value)
-                                canvas.drawCircle(cx, cy, px(7.5f).toFloat(), paint)
-                            }
-                        }
-                    swatch.contentDescription = names[i]
-                    swatch.setOnClickListener {
-                        fx.values["color"] = value
-                        for (j in 0 until swatches.childCount) swatches.getChildAt(j).invalidate()
-                        renderDraft()
-                    }
-                    swatches.addView(swatch, LinearLayout.LayoutParams(px(35f), px(32f)))
+                fun build() {
+                    inspectorUi.scale = factor
+                    inspector.build(controls)
+                    if (existing != null) button(controls, "Remove text") { editor.removeEffect(existing.id); close() }
                 }
-                colors.addView(swatches)
-                styleRow.addView(colors, LinearLayout.LayoutParams(0, px(32f), 1f))
-                add(controls, styleRow, 36f)
-                hint(controls, "Drag to move · pinch to resize")
-                slider(
-                    controls,
-                    "Size",
-                    fx.number("size", 0.07f),
-                    0.015f,
-                    0.25f,
-                    format = { "%.0f".format(it * 1000) },
-                    inline = true,
-                    showValue = false,
-                ) {
-                    fx.values["size"] = it.toString()
-                    renderDraft()
-                }
-                val positionRow = row()
-                val position = text("Position", 10f, RED)
-                positionRow.addView(position, LinearLayout.LayoutParams(0, px(29f), 1f))
-                positionRow.addView(text("›", 17f), LinearLayout.LayoutParams(px(12f), px(29f)))
-                position.setOnClickListener {
-                    a.choose(
-                        "Position",
-                        listOf(
-                            "Top left",
-                            "Top center",
-                            "Top right",
-                            "Center left",
-                            "Center",
-                            "Center right",
-                            "Bottom left",
-                            "Bottom center",
-                            "Bottom right",
-                        ),
-                    ) { i ->
-                        fx.values["x"] = listOf("0.05", "0.5", "0.95")[i % 3]
-                        fx.values["y"] = listOf("0.15", "0.5", "0.9")[i / 3]
-                        fx.values["align"] = listOf("Left", "Center", "Right")[i % 3]
-                        renderDraft()
-                    }
-                }
-                positionRow.setOnClickListener { position.performClick() }
-                add(controls, positionRow, 29f)
-                duration(controls, fx)
-                if (existing != null)
-                    button(controls, "⌫ Remove text") {
-                        editor.removeEffect(existing.id)
-                        close()
-                    }
+                reflowControls = { build() }
+                build()
             }
             "Crop",
             "Zoom",
@@ -2094,62 +2012,18 @@ class Panels(private val a: MainActivity) {
             }
             "Placement" -> placementControls(controls)
             "Color LUTs" -> {
-                val selected = text(fx.values["name"] ?: fx.values["lut"] ?: "Natural", 12f, Color.WHITE)
-                add(controls, selected, 34f)
-                lateinit var inputLabel: TextView
-                lateinit var sourceLabel: TextView
-                button(controls, "Choose look") {
-                    a.choose("Look", CubeLut.looks) { i ->
-                        fx.values.remove("path"); fx.values.remove("name"); fx.values.remove("input")
-                        fx.values["lut"] = CubeLut.looks[i]
-                        selected.text = CubeLut.looks[i]
-                        inputLabel.text = "LUT expects · Rec.709"; inputLabel.contentDescription = inputLabel.text
-                        inputLabel.isEnabled = false; inputLabel.alpha = .4f
-                        renderDraft()
-                    }
+                val inspectorUi = InspectorUi(a, factor)
+                val inspector = LutInspector(inspectorUi, fx, { renderDraft() }) { after -> previewEffects = after; renderDraft() }
+                gradeInspector = inspector
+                fun build() {
+                    inspectorUi.scale = factor
+                    inspector.build(controls)
+                    gradeActions?.let { inspector.transport(it) }
+                    if (existing != null) button(controls, "Remove LUT") { editor.removeEffect(existing.id); close() }
                 }
-                button(controls, "Import .cube LUT") {
-                    a.importLut { path, name ->
-                        if (draft === fx) {
-                            fx.values["path"] = path; fx.values["name"] = name
-                            selected.text = name
-                            inputLabel.isEnabled = true; inputLabel.alpha = 1f
-                            renderDraft()
-                        }
-                    }
-                }
-                sourceLabel = button(controls, "Source interpretation · ${fx.values["source"] ?: "Recorded"}") {
-                    a.choose("Source interpretation", listOf("Recorded", "Apple Log", "Apple Log 2")) { i ->
-                        fx.values["source"] = listOf("Recorded", "Apple Log", "Apple Log 2")[i]
-                        sourceLabel.text = "Source interpretation · ${fx.values["source"]}"; sourceLabel.contentDescription = sourceLabel.text
-                        renderDraft()
-                    }
-                }
-                inputLabel = button(controls, "LUT expects · ${fx.values["input"] ?: "Rec.709"}") {
-                    a.choose("LUT expects", listOf("Rec.709", "Apple Log", "Apple Log 2")) { i ->
-                        fx.values["input"] = listOf("Rec.709", "Apple Log", "Apple Log 2")[i]
-                        inputLabel.text = "LUT expects · ${fx.values["input"]}"; inputLabel.contentDescription = inputLabel.text
-                        renderDraft()
-                    }
-                }
-                inputLabel.isEnabled = fx.values.containsKey("path")
-                inputLabel.alpha = if (inputLabel.isEnabled) 1f else .4f
-                slider(controls, "Strength", fx.number("strength", 1f), 0f, 1f) {
-                    fx.values["strength"] = it.toString(); renderDraft()
-                }
-                slider(controls, "Exposure", fx.number("exposure"), -4f, 4f,
-                    format = { "%+.2f EV".format(it) }) {
-                    fx.values["exposure"] = it.toString(); renderDraft()
-                }
-                slider(controls, "Highlights", fx.number("highlights"), -1f, 1f) {
-                    fx.values["highlights"] = it.toString(); renderDraft()
-                }
-                hint(controls, "Strength controls the look. Exposure and highlights remain active at zero strength.")
-                if (existing != null)
-                    button(controls, "Remove LUT") {
-                        editor.removeEffect(existing.id)
-                        close()
-                    }
+                controlsTick = { inspector.tick() }
+                reflowControls = { build() }
+                build()
             }
             "Stabilize" -> {
                 label(controls, "Stabilization", TEAL)

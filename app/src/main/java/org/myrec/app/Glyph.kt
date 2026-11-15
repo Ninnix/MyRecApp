@@ -24,6 +24,33 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "Looks" -> for (x in listOf(-7f, 1f)) for (y in listOf(-7f, 1f)) c.drawRoundRect(x, y, x + 5f, y + 5f, .7f, .7f, p)
+            "Font" -> {
+                p.style = Paint.Style.FILL; p.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                p.textSize = 17f; p.textAlign = Paint.Align.CENTER; c.drawText("Aa", 0f, 6f, p)
+            }
+            "Fill" -> {
+                c.drawOval(-8f, -7f, 8f, 7f, p)
+                for ((x, y) in listOf(-4f to -2f, 0f to -4f, 4f to -2f, -3f to 3f)) c.drawCircle(x, y, 1f, p)
+                path(4f, 7f, 1f, 3f, 3f, 1f)
+            }
+            "Outline" -> {
+                p.pathEffect = DashPathEffect(floatArrayOf(3f, 2f), 0f); c.drawCircle(0f, 0f, 7f, p); p.pathEffect = null
+            }
+            "Shadow" -> { c.drawCircle(0f, 0f, 7f, p); p.style = Paint.Style.FILL; c.drawArc(-7f, -7f, 7f, 7f, -90f, 180f, true, p) }
+            "Text background" -> { p.style = Paint.Style.FILL; c.drawRoundRect(-8f, -6f, 8f, 6f, 1f, 1f, p) }
+            "Motion" -> { path(-8f, 0f, 6f, 0f, 1f, -5f); path(6f, 0f, 1f, 5f); path(8f, -6f, 8f, 6f) }
+            "Duration" -> { c.drawCircle(0f, 0f, 7f, p); path(0f, -5f, 0f, 0f, -4f, 0f) }
+            "Star", "Star filled" -> {
+                val star = Path()
+                for (i in 0..9) {
+                    val angle = Math.toRadians(-90.0 + i * 36)
+                    val r = if (i % 2 == 0) 8f else 3.3f
+                    val x = kotlin.math.cos(angle).toFloat() * r; val y = kotlin.math.sin(angle).toFloat() * r
+                    if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
+                }
+                star.close(); if (kind == "Star filled") p.style = Paint.Style.FILL; c.drawPath(star, p)
+            }
             "Bookmark" -> path(-5f, 8f, -5f, -8f, 5f, -8f, 5f, 8f, 0f, 4f, -5f, 8f)
             "Folder" -> path(-8f, 6f, -8f, -6f, -2f, -6f, 0f, -3f, 8f, -3f, 8f, 6f, -8f, 6f)
             "Round picture in picture" -> {
@@ -136,6 +163,7 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             }
             "Chevron up" -> path(-4f, 2f, 0f, -2f, 4f, 2f)
             "Chevron down" -> path(-4f, -2f, 0f, 2f, 4f, -2f)
+            "Chevron right" -> path(-2f, -4f, 2f, 0f, -2f, 4f)
             "Chevrons" -> {
                 path(-3f, -2f, 0f, -5f, 3f, -2f)
                 path(-3f, 2f, 0f, 5f, 3f, 2f)

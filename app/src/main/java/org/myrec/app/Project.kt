@@ -57,6 +57,8 @@ data class Effect(
     fun sampled(source: Double): Effect {
         if (motion == null && parameters.none { it.keyframes.isNotEmpty() }) return this
         val pose = motion?.pose(source)
+        if (kind == "Color LUTs" && pose != null) return copy(motion = null,
+            values = values.toMutableMap().apply { for ((key, value) in pose) put(key, value.toString()) })
         return copy(motion = null, parameters = parameters.map {
             it.copy(value = pose?.get(it.id)?.let { n -> EffectValue.Number(n) } ?: it.at(source), keyframes = mutableListOf())
         }.toMutableList())
@@ -700,6 +702,9 @@ class Editor(var project: Project = Project()) {
                 splitAt(r.endInclusive)
                 splitAt(r.start)
             }
+            val title = effect.kind == "Text" && effect.values["design"] == "1"
+            val base = targets().minOfOrNull { it.start } ?: 0.0
+            val origin = r?.start ?: if (selected.isEmpty() && replaceId == null) cursor else base
             for (c in targets().sortedByDescending { it.start }) {
                 if (replaceId != null && c.effects.none { it.id == replaceId }) continue
                 val oldDuration = c.duration
@@ -710,9 +715,20 @@ class Editor(var project: Project = Project()) {
                             it.kind == effect.kind &&
                             effect.kind !in listOf("Text", "Image"))
                 }
+                if (title && (origin + effect.to <= c.start || origin + effect.from >= c.end)) continue
                 c.effects.add(
                     effect.copyEffect().apply {
-                        if (
+                        if (kind == "Color LUTs" && motion != null) {
+                            val base = r?.start ?: targets().minOfOrNull { it.start } ?: 0.0
+                            motion = motion!!.anchored(c, c.start - base)
+                        }
+                        if (title) {
+                            from = max(0.0, origin + effect.from - c.start)
+                            to = min(c.duration, origin + effect.to - c.start)
+                            phase = EffectPhase.anchor(c, c.start - base)
+                            values["titleOrigin"] = (origin + effect.from - base).toString()
+                            values["titleDuration"] = (effect.to - effect.from).toString()
+                        } else if (
                             replaceId == null &&
                                 kind in listOf("Text", "Image") &&
                                 r == null &&

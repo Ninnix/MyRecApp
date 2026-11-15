@@ -15,6 +15,7 @@ fun main() {
         passed++
         println("PASS $name")
     }
+    TitleModelTests.run(::test)
     TimeEffectsTests.run(::test)
     ProcessingTests.run(::test)
     EffectModelTests.run(::test)

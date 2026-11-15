@@ -31,3 +31,11 @@ MyRec's branding. Reference-derived test fixtures are identified in
 `app/src/androidTest/assets/README.md` and are not production media assets.
 
 Runtime revisions and file hashes are recorded in `runtimes.json` and `data/models.json`. The application code does not incorporate the external runtime implementation sources.
+
+## Title fonts
+
+The title editor bundles Atkinson Hyperlegible Next, Barlow Condensed, Archivo
+Black, Source Serif 4, Fraunces, IBM Plex Mono, and Caveat from YouRec's title
+font distribution. Each family is licensed under the SIL Open Font License 1.1.
+Its copyright notice and full license accompany the fonts under
+`app/src/main/assets/title-fonts/` and `app/src/main/assets/licenses/Title-*.txt`.

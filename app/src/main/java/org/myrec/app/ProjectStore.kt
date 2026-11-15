@@ -666,7 +666,7 @@ class ProjectStore(val root: File) {
                 val expected = EffectContracts.parameters(effect.kind).associateBy { it.id }
                 require(effect.parameters.size == expected.size && effect.parameters.map { it.id }.distinct().size == expected.size &&
                     effect.parameters.all { it.kind == expected[it.id]?.kind && it.valid() }) { "Invalid effect parameters" }
-                require(effect.phase?.let { effect.kind in TimeEffects.kinds && it.valid() } != false) { "Invalid time-effect phase" }
+                require(effect.phase?.let { (effect.kind in TimeEffects.kinds || effect.kind == "Text" && effect.values["design"] == "1") && it.valid() } != false) { "Invalid time-effect phase" }
                 require(effect.subtitle?.let { effect.kind == "Text" && it.valid() } != false) { "Invalid subtitle words" }
                 require(effect.motion?.valid(effect) != false) { "Invalid effect animation" }
             }
@@ -727,6 +727,8 @@ class ProjectStore(val root: File) {
                                                     put("to", e.to)
                                                     put("enabled", e.enabled)
                                                     put("values", JSONObject(e.values.toMap()))
+                                                    if (e.kind == "Text" && e.values["design"] == "1" || e.kind == "Color LUTs" &&
+                                                        (e.motion != null || e.values.containsKey("warmth") || e.values.containsKey("tint"))) put("algorithm", 2)
                                                     put("parameters", EffectJson.encode(e))
                                                     e.phase?.let { put("phase", TimeEffectJson.encode(it)) }
                                                     e.subtitle?.let { put("subtitle", SubtitleJson.encode(it)) }
@@ -816,7 +818,7 @@ class ProjectStore(val root: File) {
                 val values = e.getJSONObject("values")
                 val algorithm = integer(e, "algorithm", 0)
                 require(algorithm >= 0) { "Invalid effect algorithm" }
-                if (algorithm > 1) throw NewerProject()
+                if (algorithm > 2 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs")) throw NewerProject()
                 val fx =
                     Effect(
                         e.getString("id"),

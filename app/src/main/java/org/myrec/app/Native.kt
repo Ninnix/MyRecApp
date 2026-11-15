@@ -10,7 +10,8 @@ object Native {
     external fun workingDisplay(bitmap: Bitmap, output: Bitmap, toneMap: Boolean)
     external fun dolly(bitmap: Bitmap, mask: FloatArray, scale: Float, targetX: Float, targetY: Float, intensity: Float)
     external fun colorLut(bitmap: android.graphics.Bitmap, entries: FloatArray, size: Int,
-        oneDimensional: Boolean, bounds: FloatArray, input: Int, strength: Float, exposure: Float, highlights: Float, source: Int = 0)
+        oneDimensional: Boolean, bounds: FloatArray, input: Int, strength: Float, exposure: Float, highlights: Float, source: Int = 0,
+        warmth: Float = 0f, tint: Float = 0f)
 
     init {
         System.loadLibrary("myrec")
