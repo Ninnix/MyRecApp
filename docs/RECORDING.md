@@ -22,30 +22,39 @@ The top bar has the microphone on the left, the clock in the center, and live
 video effects and Camera settings on the right. Camera settings opens a bottom
 panel in portrait and a side panel in landscape. It contains stabilization,
 the light, Use two cameras, and the SDR/HDR recording-color selector. More
-settings opens resolution, frame rate, and microphone priority. Color and
+settings opens resolution, frame rate, microphone priority, and separate selfie
+preview/save mirror switches. Color and
 camera setup changes require stopping the current take.
+
 
 ## Choose a camera
 
 The camera-with-arrows button switches front and rear. The lens selector lists
 available cameras. Zoom presets use the selected duration; a quick second tap
-changes zoom immediately. Tap AF to request or release focus lock. AF L and a
-yellow indicator show the request. Fixed-focus cameras are labelled Fixed.
+changes zoom immediately. Each camera remembers its own zoom and focus state.
+Tap AF to request or release focus lock. On adjustable lenses, drag the locked
+focus control vertically for manual focus; short movements make fine changes,
+and longer movements accelerate. The percentage runs toward infinity at 100%.
+Hold the focus control to toggle red focus peaking. It marks sharp edges in the
+preview and is never recorded. Fixed-focus cameras are labelled Fixed.
 
 Camera and zoom choices come from Android's reported capabilities. Switching
 keeps the same recording and its encoded frame size. Frames are rotated to
 that initial orientation; timestamps follow the recording clock.
 
-The front camera is mirrored in preview and in the recording. Independent
-preview/save mirror switches, manual lens focus, face following, and horizon
-leveling from the iOS app are not implemented yet.
+Selfie preview is mirrored by default; saved footage is unmirrored. Change the
+two switches independently in More settings before recording. Saved mirroring
+is locked during a take, including while paused. Camera combinations and HDR support depend on the phone and its drivers. Face following
+and horizon leveling from the iOS app are not implemented yet.
 
 ## Use the light
 
 The light is in Camera settings. Rear cameras use the hardware light when one
-is available. The front camera uses a white screen border at full window
-brightness. Its rounded inner edge is slightly transparent; bars outside the
-video are opaque. Drag the border to change its thickness.
+is available. The front camera uses a rounded screen border. Tap its bulb to
+choose Thin, Medium, or Wide; White, Warm, Cool, or a custom color; and opacity
+in 5% steps. These choices are remembered. Drag the border to adjust its thickness
+continuously. Nonzero opacity raises window brightness to full; zero opacity
+restores the previous brightness without closing the controls.
 
 Brightness returns to its previous setting when the light is switched off,
 the camera closes, or only a rear view remains. Split view can use the screen
@@ -71,9 +80,17 @@ and fall back together if needed. Output keeps the chosen recording size.
 ## Record HDR
 
 Choose SDR or HDR under Camera settings → Recording color before recording.
-HDR needs Android 13, an HLG camera output,
-HEVC Main10 encoding, and a compatible 10-bit EGL surface. Unsupported cameras
-keep SDR. Recording stores 10-bit BT.2020 HLG; preview is tone mapped.
+HDR needs Android 13, an HLG camera output, HEVC Main10 encoding, and a compatible
+10-bit EGL surface. The compositor also needs `EGL_EXT_gl_colorspace_bt2020_hlg`,
+`GL_EXT_YUV_target`, and `GL_OES_EGL_image_external_essl3`. Camera and encoder
+capabilities alone do not establish compositor support. Camera settings checks
+the graphics format and extensions before offering HDR; an unsupported driver
+keeps SDR without closing the working camera. The `MyRec-HDR` log identifies the
+renderer and missing requirement. Recording stores 10-bit BT.2020 HLG; preview
+is tone mapped.
+
+Drivers without `GL_EXT_YUV_target` cannot use the current HDR compositor.
+Direct HDR capture without that compositor is not implemented.
 
 The app checks the camera's RGB primaries by comparing registered SDR and HLG
 frames. Keep the camera still briefly when enabling HDR. A clear match may

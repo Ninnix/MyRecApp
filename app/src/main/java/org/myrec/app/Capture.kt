@@ -2,6 +2,8 @@ package org.myrec.app
 
 import android.Manifest
 import android.animation.ValueAnimator
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.annotation.SuppressLint
 import android.content.*
 import android.content.pm.PackageManager
@@ -50,7 +52,9 @@ class Capture(
     private val handlerThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(handlerThread.looper)
     private val ui = Handler(Looper.getMainLooper())
-    private val prefs = activity.getSharedPreferences("capture", Context.MODE_PRIVATE)
+    private val prefs = activity.captureSettings
+    internal val mirrorPreview get() = prefs.getBoolean("mirrorFrontPreview", true)
+    internal val mirrorRecording get() = prefs.getBoolean("mirrorFrontRecording", false)
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var request: CaptureRequest.Builder? = null
@@ -67,6 +71,7 @@ class Capture(
     private var lastDualLayout = 0
     private var dualMenu = false
     private var settingsPopup: PopupWindow? = null
+    private var lightPopup: PopupWindow? = null
     private var dualSwapped = false
     private var dualReady = false
     private var recordingOrientation = 0
@@ -107,6 +112,10 @@ class Capture(
         private set
 
     private var focusLocked = false
+    private var manualFocus = false
+    private var focusDistance = 0f
+    private var maximumFocusDistance = 0f
+    private var focusPeaking = prefs.getBoolean("focusPeaking", false)
     @Volatile private var focusMode = CaptureRequest.CONTROL_AF_MODE_OFF
     @Volatile
     internal var focusState: Int? = null
@@ -115,9 +124,13 @@ class Capture(
     private var focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
     private var torch = false
     private var screenLight = false
-    private var lightWidth = prefs.getFloat("lightWidth", .06f).coerceIn(.015f, .35f)
+    private var lightWidth = prefs.getFloat("lightWidth", .085f).coerceIn(.015f, .35f)
+    private var lightTone = prefs.getString("lightTone", "White") ?: "White"
+    private var lightCustom = prefs.getInt("lightCustom", Color.rgb(255, 179, 201))
+    private var lightOpacity = prefs.getFloat("lightOpacity", 1f).coerceIn(0f, 1f)
     private var previousBrightness: Float? = null
     private var zoom = 1f
+    private var requestedZoom: Float? = null
     private var zoomRange = Range(1f, 8f)
     private var zoomSeconds = prefs.getFloat("zoomSeconds", 1f)
     private var zoomAnimator: ValueAnimator? = null
@@ -184,7 +197,7 @@ class Capture(
                         } catch (_: Exception) {
                             0f
                         }
-                if (liveEffects.any { it.enabled } && texture.isAvailable && !rendering)
+                if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && !rendering)
                     updateLiveFrame()
                 overlay.invalidate()
                 ui.postDelayed(this, 66)
@@ -238,6 +251,10 @@ class Capture(
             settingsPopup?.dismiss()
             post { if (!closed) settings() }
         }
+        if (lightPopup?.isShowing == true) {
+            lightPopup?.dismiss()
+            post { if (!closed && screenLight) lightSettings() }
+        }
     }
 
     fun resumeCamera() {
@@ -277,15 +294,55 @@ class Capture(
                 chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
                     ?: intArrayOf(CaptureRequest.CONTROL_AF_MODE_OFF)
             )
-        if (!CameraFocus.canLock(focusMode)) focusLocked = false
+        maximumFocusDistance = (chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f).coerceAtLeast(0f)
+        focusLocked = prefs.getBoolean("camera.$cameraId.locked", false) && CameraFocus.canLock(focusMode)
+        focusDistance = prefs.getFloat("camera.$cameraId.focus", 0f).let { if (it.isFinite()) it.coerceIn(0f, maximumFocusDistance) else 0f }
+        manualFocus = focusLocked && maximumFocusDistance > 0 && prefs.contains("camera.$cameraId.focus")
+        latestResult = null
+        focusState = null
         front =
             chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
         zoomRange =
             if (Build.VERSION.SDK_INT >= 30)
                 chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) ?: Range(1f, 8f)
             else Range(1f, chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f)
-        zoom = zoom.coerceIn(zoomRange.lower, zoomRange.upper)
+        zoom = (requestedZoom ?: prefs.getFloat("camera.$cameraId.zoom", 1f)).let { if (it.isFinite()) it.coerceIn(zoomRange.lower, zoomRange.upper) else 1f }
+        requestedZoom = null
+        if (dualLayout != 4) { zoom = 1f; focusLocked = false; manualFocus = false }
         updateLight()
+    }
+
+    private fun rememberLens() {
+        if (cameraId.isEmpty() || device == null || dualLayout != 4) return
+        val distance = if (manualFocus) focusDistance else latestResult?.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: focusDistance
+        prefs.edit().putFloat("camera.$cameraId.zoom", zoom)
+            .putBoolean("camera.$cameraId.locked", focusLocked)
+            .putFloat("camera.$cameraId.focus", distance.coerceIn(0f, maximumFocusDistance)).apply()
+    }
+
+    internal val focusAdjustable get() = maximumFocusDistance > 0 && CameraFocus.canLock(focusMode)
+    internal val focusPosition get() = if (maximumFocusDistance > 0)
+        1f - (if (manualFocus) focusDistance else latestResult?.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f) / maximumFocusDistance else 1f
+    internal val currentZoom get() = zoom
+    internal val manualFocusActive get() = manualFocus
+
+    internal fun setFocusPosition(position: Float, persist: Boolean = true) {
+        if (!focusAdjustable || !position.isFinite()) return
+        focusLocked = true
+        manualFocus = true
+        focusDistance = (1f - position.coerceIn(0f, 1f)) * maximumFocusDistance
+        focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+        updateRequest()
+        if (persist) rememberLens()
+        overlay.invalidate()
+    }
+
+    internal fun toggleFocusPeaking() {
+        focusPeaking = !focusPeaking
+        prefs.edit().putBoolean("focusPeaking", focusPeaking).apply()
+        effectGeneration++
+        liveFrame?.recycle(); liveFrame = null
+        overlay.invalidate()
     }
 
     private fun open(id: String) {
@@ -402,7 +459,7 @@ class Capture(
                         unmirror = front,
                         sensorOrientation =
                             chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
-                        mirror = front,
+                        mirror = front && mirrorRecording,
                         outputRotation = recordingOrientation,
                         fitFrame = recordingTurned(),
                     )
@@ -526,7 +583,8 @@ class Capture(
                 ?.filter { it.contains(fps) }
                 ?.minByOrNull { it.upper - it.lower }
                 ?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-            r.set(CaptureRequest.CONTROL_AF_MODE, focusMode)
+            r.set(CaptureRequest.CONTROL_AF_MODE, if (manualFocus) CaptureRequest.CONTROL_AF_MODE_OFF else focusMode)
+            if (manualFocus) r.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
             r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             r.set(CaptureRequest.CONTROL_AE_LOCK, false)
             r.set(
@@ -579,6 +637,7 @@ class Capture(
                         request: CaptureRequest,
                         result: TotalCaptureResult,
                     ) {
+                        if (session !== this@Capture.session) return
                         latestResult = result
                         focusState = result.get(CaptureResult.CONTROL_AF_STATE)
                     }
@@ -593,6 +652,7 @@ class Capture(
     private fun transform() {
         composition?.let {
             texture.setTransform(Matrix())
+            it.mirrors(mirrorPreview, mirrorRecording)
             it.configure(
                 dualLayout,
                 dualSwapped,
@@ -636,14 +696,34 @@ class Capture(
             else matrix.setScale(1f, desired / aspect, w / 2, h / 2)
             if (rotation == Surface.ROTATION_180) matrix.postRotate(180f, w / 2, h / 2)
         }
+        if (front && !mirrorPreview) matrix.postScale(-1f, 1f, w / 2, h / 2)
         texture.setTransform(matrix)
     }
 
-    private fun setZoom(value: Float, instant: Boolean = false) {
+    internal fun setMirrorPreview(enabled: Boolean) {
+        prefs.edit().putBoolean("mirrorFrontPreview", enabled).apply()
+        effectGeneration++
+        liveFrame?.recycle(); liveFrame = null
+        transform()
+    }
+
+    internal fun setMirrorRecording(enabled: Boolean) {
+        if (recording) {
+            activity.message("Stop recording to change saved selfie mirroring")
+            return
+        }
+        prefs.edit().putBoolean("mirrorFrontRecording", enabled).apply()
+        effectGeneration++
+        liveFrame?.recycle(); liveFrame = null
+        transform()
+    }
+
+    internal fun setZoom(value: Float, instant: Boolean = false) {
         val to = value.coerceIn(zoomRange.lower, zoomRange.upper)
         zoomAnimator?.cancel()
         if (instant || zoomSeconds == 0f) {
             zoom = to
+            rememberLens()
             updateRequest()
             return
         }
@@ -655,6 +735,9 @@ class Capture(
                     updateRequest()
                     overlay.invalidate()
                 }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) { rememberLens() }
+                })
                 start()
             }
     }
@@ -698,7 +781,7 @@ class Capture(
         screenLight = enabled
         val window = activity.window
         val attributes = window.attributes
-        if (screenLight) {
+        if (screenLight && lightOpacity > 0) {
             if (previousBrightness == null) previousBrightness = attributes.screenBrightness
             attributes.screenBrightness = 1f
         } else {
@@ -707,6 +790,113 @@ class Capture(
         }
         window.attributes = attributes
         overlay.invalidate()
+    }
+
+    private fun lightColor(tone: String = lightTone) = when (tone) {
+        "Warm" -> Color.rgb(255, 209, 158)
+        "Cool" -> Color.rgb(184, 222, 255)
+        "Custom" -> lightCustom or Color.BLACK
+        else -> Color.WHITE
+    }
+
+    internal fun setFrontLight(width: Float? = null, tone: String? = null, opacity: Float? = null, color: Int? = null) {
+        width?.takeIf { it.isFinite() }?.let { lightWidth = it.coerceIn(.015f, .35f) }
+        tone?.takeIf { it in listOf("White", "Warm", "Cool", "Custom") }?.let { lightTone = it }
+        opacity?.takeIf { it.isFinite() }?.let { lightOpacity = it.coerceIn(0f, 1f) }
+        color?.let { lightCustom = it or Color.BLACK; lightTone = "Custom" }
+        prefs.edit().putFloat("lightWidth", lightWidth).putString("lightTone", lightTone)
+            .putFloat("lightOpacity", lightOpacity).putInt("lightCustom", lightCustom).apply()
+        updateLight()
+    }
+
+    private fun lightSettings() {
+        lightPopup?.dismiss()
+        val landscape = width > height
+        val u = InspectorUi(activity, min(width / (if (landscape) 640f else 294f), height / (if (landscape) 294f else 640f)))
+        val cyan = Color.rgb(77, 211, 239)
+        val body = u.column().apply {
+            background = u.shape(Color.rgb(29, 29, 31), 14f)
+            setPadding(u.px(12f), u.px(6f), u.px(12f), u.px(10f))
+        }
+        val popup = PopupWindow(body, u.px(210f), -2, true).apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            isOutsideTouchable = true; elevation = u.px(12f).toFloat()
+        }
+        lightPopup = popup
+        fun render() {
+            body.removeAllViews()
+            val header = u.row()
+            header.addView(u.text("Front light", 12f, bold = true), LinearLayout.LayoutParams(0, u.px(30f), 1f))
+            header.addView(u.text("Done", 10f, cyan).apply {
+                contentDescription = "Close front light controls"; gravity = Gravity.CENTER
+                setOnClickListener { popup.dismiss() }
+            }, LinearLayout.LayoutParams(u.px(36f), u.px(30f)))
+            u.add(body, header)
+            u.add(body, u.text("Border width", 10f, bold = true), 25f)
+            val widths = linkedMapOf("Thin" to .045f, "Medium" to .085f, "Wide" to .14f)
+            u.segments(body, widths.keys.toList(), widths.entries.firstOrNull { abs(it.value - lightWidth) < .001 }?.key ?: "") { name ->
+                setFrontLight(width = widths.getValue(name)); render()
+            }
+            u.gap(body, 7f); u.add(body, u.text("Color", 10f, bold = true), 23f)
+            val colors = u.row()
+            for (tone in listOf("White", "Warm", "Cool", "Custom")) {
+                val button = u.column().apply {
+                    gravity = Gravity.CENTER; contentDescription = tone; isSelected = tone == lightTone; isFocusable = true
+                    val swatch = object : View(activity) {
+                        private val pen = Paint(Paint.ANTI_ALIAS_FLAG)
+                        override fun onDraw(canvas: Canvas) {
+                            val r = min(width, height) / 2f - u.px(2f)
+                            val x = width / 2f; val y = height / 2f
+                            pen.shader = null; pen.style = Paint.Style.FILL; pen.color = lightColor(tone)
+                            canvas.drawCircle(x, y, r, pen)
+                            if (tone == "Custom") {
+                                pen.style = Paint.Style.STROKE; pen.strokeWidth = u.px(3f).toFloat()
+                                pen.shader = SweepGradient(x, y, intArrayOf(Color.RED, Color.YELLOW, Color.GREEN, Color.CYAN, Color.BLUE, Color.MAGENTA, Color.RED), null)
+                                canvas.drawCircle(x, y, r, pen); pen.shader = null
+                            }
+                            if (tone == lightTone) {
+                                pen.style = Paint.Style.STROKE; pen.strokeWidth = u.px(2f).toFloat()
+                                pen.color = if (tone == "Custom") Color.BLACK else Color.rgb(20, 20, 20)
+                                val mark = Path().apply { moveTo(x - r * .42f, y); lineTo(x - r * .1f, y + r * .3f); lineTo(x + r * .48f, y - r * .34f) }
+                                canvas.drawPath(mark, pen)
+                            }
+                        }
+                    }
+                    addView(swatch, LinearLayout.LayoutParams(u.px(24f), u.px(24f)))
+                    addView(u.text(tone, 8f).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, u.px(18f)))
+                    setOnClickListener {
+                        if (tone == "Custom") {
+                            setFrontLight(tone = tone); render()
+                            u.pickColor("Front light color", lightCustom, false) { color -> setFrontLight(color = color); render() }
+                        }
+                        else { setFrontLight(tone = tone); render() }
+                    }
+                }
+                colors.addView(button, LinearLayout.LayoutParams(0, u.px(46f), 1f))
+            }
+            u.add(body, colors)
+            val level = u.row()
+            level.addView(u.text("Opacity", 10f), LinearLayout.LayoutParams(0, u.px(25f), 1f))
+            val percent = u.text("${(lightOpacity * 100).roundToInt()}%", 10f, Color.LTGRAY)
+            level.addView(percent); u.add(body, level)
+            val bar = ReferenceSlider(activity, u.scale).apply {
+                max = 20; progress = (lightOpacity * 20).roundToInt(); contentDescription = "Front light opacity"
+                progressTintList = android.content.res.ColorStateList.valueOf(cyan)
+                thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(view: SeekBar, value: Int, user: Boolean) {
+                        if (user) { setFrontLight(opacity = value / 20f); percent.text = "${value * 5}%" }
+                    }
+                    override fun onStartTrackingTouch(view: SeekBar) {}
+                    override fun onStopTrackingTouch(view: SeekBar) {}
+                })
+            }
+            u.add(body, bar, 26f); u.divider(body)
+            u.add(body, u.action("Turn off front light", "Light", Color.WHITE) { popup.dismiss(); setTorch(false) }, 34f)
+        }
+        render()
+        popup.setOnDismissListener { if (lightPopup === popup) lightPopup = null }
+        popup.showAtLocation(this, Gravity.TOP or if (landscape) Gravity.LEFT else Gravity.RIGHT, u.px(6f), u.px(if (landscape) 12f else 42f))
     }
 
     internal fun insetBounds(): RectF? =
@@ -1044,6 +1234,10 @@ class Capture(
             activity.message("HDR recording is unavailable for this camera combination")
             return
         }
+        if (enabled) HdrGraphics.support.reason?.let {
+            activity.message(it)
+            return
+        }
         val ids = if (dualCamera != null) DualCamera.pair(manager).orEmpty() else listOf(cameraId)
         val references =
             if (enabled && !hdr) {
@@ -1284,7 +1478,7 @@ class Capture(
         overlay.invalidate()
     }
 
-    internal fun switchCamera(id: String) {
+    internal fun switchCamera(id: String, preset: Float? = null) {
         if (dualCamera != null || dualLayout != 4) {
             val pair = DualCamera.pair(manager) ?: return
             if (id !in pair) {
@@ -1299,6 +1493,9 @@ class Capture(
             overlay.invalidate()
             return
         }
+        zoomAnimator?.cancel()
+        rememberLens()
+        requestedZoom = preset
         session?.close()
         session = null
         device?.close()
@@ -1414,8 +1611,9 @@ class Capture(
             lenses.map { it.name },
             CameraLenses.selected(lenses, cameraId, zoom),
         ) { i ->
-            zoom = lenses[i].zoom
-            switchCamera(lenses[i].id)
+            val lens = lenses[i]
+            if (lens.id == cameraId) setZoom(lens.zoom, true)
+            else switchCamera(lens.id, lens.zoom.takeIf { it != 1f })
         }
     }
 
@@ -1541,8 +1739,10 @@ class Capture(
             }
             u.add(assistsColumn, assists); u.gap(assistsColumn, 6f)
             val pair = DualCamera.pair(manager)
-            val supportsHdr = HdrRecorder.supported(manager, cameraId) &&
+            val cameraHdr = HdrRecorder.supported(manager, cameraId) &&
                 (dualLayout == 4 || pair?.all { HdrRecorder.supported(manager, it) } == true)
+            val graphicsReason = if (cameraHdr) HdrGraphics.support.reason else null
+            val supportsHdr = cameraHdr && graphicsReason == null
             u.toggle(camerasColumn, "Use two cameras", dualLayout != 4) { enabled ->
                 setDualLayout(if (enabled) lastDualLayout else 4)
                 render()
@@ -1573,7 +1773,8 @@ class Capture(
             u.add(assistsColumn, u.text(when {
                 recording -> "Stop recording to change color or the camera setup."
                 !ready -> "Recording color is available when the camera is ready."
-                !supportsHdr -> "This camera setup supports SDR only."
+                !cameraHdr -> "This camera setup supports SDR only."
+                graphicsReason != null -> graphicsReason
                 hdr -> "HDR keeps more highlight and color detail."
                 else -> "SDR is ready to share on any display."
             }, 9f, Color.LTGRAY), 32f)
@@ -1608,7 +1809,10 @@ class Capture(
                 "Resolution · ${prefs.getString("quality","1080p")}",
                 "Frame rate · ${prefs.getInt("fps",30)} fps",
                 "Microphone priority",
+                "Mirror selfie preview · ${if (mirrorPreview) "On" else "Off"}",
+                "Save mirrored selfies · ${if (mirrorRecording) "On" else "Off"}",
             ),
+            disabled = if (recording) setOf(0, 1, 4) else emptySet(),
         ) { i ->
             when (i) {
                 0 ->
@@ -1629,6 +1833,8 @@ class Capture(
                             prefs.edit().putInt("fps", listOf(24, 30, 60)[it]).apply()
                         }
                 2 -> priority(microphoneDevices())
+                3 -> { setMirrorPreview(!mirrorPreview); moreSettings() }
+                4 -> { setMirrorRecording(!mirrorRecording); moreSettings() }
             }
         }
     }
@@ -1654,7 +1860,9 @@ class Capture(
     }
 
     private fun updateLiveFrame() {
-        val raw = cameraFrame(640, if (width > height) 360 else 1138) ?: return
+        val frame = cameraFrame(640, if (width > height) 360 else 1138) ?: return
+        val flip = front && dualLayout == 4 && mirrorPreview != mirrorRecording
+        var raw = if (flip) SourceMirror.flip(frame) else frame
         rendering = true
         val generation = effectGeneration
         val now = SystemClock.elapsedRealtime()
@@ -1677,9 +1885,10 @@ class Capture(
                 val fx = original.sampled(clock)
                 if (fx.kind == "Negative Strobe" && TimeEffects.negative(original.copy(phase = EffectPhase(0.0)), clock, prefs.getInt("fps", 30).toDouble()))
                     Native.workingNegative(raw, fx.strength(0.0, 1.0))
-                Effects.correct(raw, fx, fx.strength(0.0, 1.0), person)
+                Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = clock,
+                    frame = floor(clock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong())
                 var kind = fx.kind
-                val id = Effects.pixelId(kind)
+                val id = Effects.pixelId(fx)
                 if (id > 0)
                     Native.image(
                         raw,
@@ -1692,6 +1901,8 @@ class Capture(
                         fx.number("bw") == 1f,
                     )
             }
+            if (flip) raw = SourceMirror.flip(raw)
+            if (focusPeaking && dualLayout == 4) Native.focusPeaking(raw)
             ui.post {
                 rendering = false
                 if (generation != effectGeneration || closed) raw.recycle()
@@ -1764,6 +1975,8 @@ class Capture(
     }
 
     private fun closeCamera() {
+        zoomAnimator?.cancel()
+        rememberLens()
         updateLight(false)
         colorGeneration++
         matchingColor = false
@@ -1787,6 +2000,7 @@ class Capture(
 
     fun suspendCamera() {
         settingsPopup?.dismiss()
+        lightPopup?.dismiss()
         if (recording && !paused) pause()
         closed = true
         closeCamera()
@@ -1795,6 +2009,7 @@ class Capture(
 
     fun destroy() {
         settingsPopup?.dismiss()
+        lightPopup?.dismiss()
         if (recording) stop()
         closed = true
         closeCamera()
@@ -1859,6 +2074,7 @@ class Capture(
                     "dualReset" -> "Reset"
                     "effects" -> "Sparkles"
                     "settings" -> "Edit"
+                    "light" -> "Light"
                     "flip" -> "Camera flip"
                     "pipSwap" -> "Camera flip"
                     "projects" -> "Stack"
@@ -1971,43 +2187,32 @@ class Capture(
             }
             if (screenLight) {
                 val border = min(width, height) * lightWidth
-                paint.color = Color.WHITE
-                c.drawRect(0f, 0f, width.toFloat(), texture.top.toFloat(), paint)
-                c.drawRect(0f, texture.bottom.toFloat(), width.toFloat(), height.toFloat(), paint)
-                c.drawRect(
-                    0f,
-                    texture.top.toFloat(),
-                    texture.left.toFloat(),
-                    texture.bottom.toFloat(),
-                    paint,
-                )
-                c.drawRect(
-                    texture.right.toFloat(),
-                    texture.top.toFloat(),
-                    width.toFloat(),
-                    texture.bottom.toFloat(),
-                    paint,
-                )
                 lightPath.rewind()
                 lightPath.fillType = Path.FillType.EVEN_ODD
                 lightPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
-                val radius = 24 * resources.displayMetrics.density
+                val corner = 24 * resources.displayMetrics.density
+                val radius = max(min(corner, 10 * resources.displayMetrics.density), corner - border)
                 lightPath.addRoundRect(
-                    max(border, texture.left.toFloat()),
-                    max(border, texture.top.toFloat()),
-                    min(width - border, texture.right.toFloat()),
-                    min(height - border, texture.bottom.toFloat()),
+                    border,
+                    border,
+                    width - border,
+                    height - border,
                     radius,
                     radius,
                     Path.Direction.CW,
                 )
-                paint.color = Color.argb(200, 255, 255, 255)
+                val color = lightColor()
+                paint.color = Color.argb((lightOpacity * 255).roundToInt(), Color.red(color), Color.green(color), Color.blue(color))
                 c.drawPath(lightPath, paint)
             }
             c.save()
             c.scale(s, s)
             hits.clear()
             val portrait = h > w
+            if (screenLight) {
+                val x = if (portrait) w - 25f else 25f
+                pill(c, RectF(x - 22, h - 47f, x + 22, h - 3f), "", "light")
+            }
             val top = if (portrait) max(36f, texture.top / s - 10f) else 14f
             pill(
                 c,
@@ -2225,9 +2430,9 @@ class Capture(
                         if (portrait) 257f else 391f,
                         bottom + if (portrait) 33 else 25,
                     ),
-                    if (!CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) "AF L" else "AF",
+                    if (!CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) if (focusAdjustable) "MF" else "Locked" else "AF",
                     "focus",
-                    if (focusLocked) Color.YELLOW else Color.WHITE,
+                    if (focusPeaking) Color.RED else if (focusLocked) Color.YELLOW else Color.WHITE,
                 )
             }
             if (!recording && !dualMenu)
@@ -2294,7 +2499,7 @@ class Capture(
                 }
             }
             if (focusLocked)
-                text(c, "AF LOCK", w / 2, top + 38, 8f, Color.YELLOW, Paint.Align.CENTER)
+                text(c, if (manualFocus) "Focus ${(focusPosition * 100).roundToInt()}%" else "AF LOCK", w / 2, top + 38, 8f, Color.YELLOW, Paint.Align.CENTER)
             c.restore()
         }
 
@@ -2327,6 +2532,8 @@ class Capture(
         private var resizingLight = false
         private var downX = 0f
         private var downY = 0f
+        private var focusTouch = false
+        private var focusStart = 1f
         private val slop = ViewConfiguration.get(activity).scaledTouchSlop
 
         private fun edgeDistance(x: Float, y: Float) = min(min(x, width - x), min(y, height - y))
@@ -2338,6 +2545,8 @@ class Capture(
                 downX = e.x
                 downY = e.y
                 moved = false
+                focusTouch = bounds("focus")?.contains(e.x, e.y) == true
+                focusStart = focusPosition
                 val free = hits.none { it.first.contains(e.x / s, e.y / s) }
                 val margin = 14 * resources.displayMetrics.density
                 val inset = insetBounds()?.apply { inset(-margin, -margin) }
@@ -2391,10 +2600,25 @@ class Capture(
                 if (resizingLight) prefs.edit().putFloat("lightWidth", lightWidth).apply()
                 resizingLight = false
                 composing = false
+                focusTouch = false
                 return true
             }
             if (e.actionMasked == MotionEvent.ACTION_MOVE && hypot(e.x - downX, e.y - downY) > slop)
                 moved = true
+            if (focusTouch) {
+                if (e.actionMasked == MotionEvent.ACTION_MOVE && moved && focusLocked && focusAdjustable && abs(e.y - downY) > abs(e.x - downX)) {
+                    val dy = (e.y - downY) / resources.displayMetrics.density
+                    val distance = abs(dy)
+                    val amount = min(distance, 40f) / 320f + max(0f, distance - 40f) / 160f
+                    setFocusPosition(focusStart + if (dy < 0) amount else -amount, false)
+                    return true
+                }
+                if (e.actionMasked == MotionEvent.ACTION_UP) {
+                    focusTouch = false
+                    if (moved) { rememberLens(); return true }
+                    if (e.eventTime - e.downTime >= 450) { toggleFocusPeaking(); return true }
+                }
+            }
             if (resizingLight) {
                 if (e.actionMasked == MotionEvent.ACTION_MOVE && moved) {
                     lightWidth = (edgeDistance(e.x, e.y) / min(width, height)).coerceIn(.015f, .35f)
@@ -2493,6 +2717,8 @@ class Capture(
                                 return true
                             }
                             focusLocked = !focusLocked
+                            manualFocus = false
+                            rememberLens()
                             cameraHandler.post {
                                 focusTrigger =
                                     if (focusLocked) CaptureRequest.CONTROL_AF_TRIGGER_START
@@ -2507,6 +2733,7 @@ class Capture(
                         }
                         "pipSwap" -> swapCameras()
                         "settings" -> settings()
+                        "light" -> lightSettings()
                         "dual" -> {
                             dualMenu = !dualMenu
                             zoomMenu = false

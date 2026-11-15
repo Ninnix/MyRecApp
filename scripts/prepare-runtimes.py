@@ -21,6 +21,6 @@ for name,(url,checksum) in SOURCES.items():
 
 ort=DEST/'onnxruntime-current/libonnxruntime.so'
 if not ort.exists():
- subprocess.run([sys.executable,str(ROOT/'tools/prepare-onnxruntime.py')],check=True)
+ subprocess.run([sys.executable,str(ROOT/'scripts/prepare-onnxruntime.py')],check=True)
 if hashlib.sha256(ort.read_bytes()).hexdigest()!=RUNTIMES['onnxruntime']['sha256_arm64']:
  raise SystemExit('ONNX Runtime 1.31.1 checksum mismatch')

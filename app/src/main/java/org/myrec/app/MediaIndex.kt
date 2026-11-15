@@ -41,10 +41,7 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
                 val sourceDuration = duration
                 ui.post { durations[clip.path] = sourceDuration }
                 if (clip.video) {
-                    val hdr =
-                        reader
-                            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_COLOR_TRANSFER)
-                            ?.toIntOrNull() in listOf(6, 7)
+                    val hdr = WorkingColor.hdr(clip.path)
                     val decoder =
                         if (hdr || File(clip.path + ".primaries").isFile)
                             try {

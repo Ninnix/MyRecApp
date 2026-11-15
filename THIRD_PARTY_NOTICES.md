@@ -1,8 +1,9 @@
 # Third-party components
 
-MyRec's application code and documentation are MIT-licensed under [LICENCE](LICENCE),
-with a matching copy in `app/src/main/assets/licenses/MyRec.txt`. Branding and
-third-party assets are excluded from that grant as described there.
+MyRec's application code and documentation are MIT-licensed under [LICENSE](LICENSE),
+with a matching copy in `app/src/main/assets/licenses/MyRec.txt`. Scope and
+branding notices are retained in `app/src/main/assets/licenses/MyRec-notices.txt`.
+Third-party components retain the licenses listed below.
 
 MyRec follows [YouRec for iPhone](https://github.com/antirez/YouRecApp), by
 Salvatore Sanfilippo (antirez). YouRec's original source and documentation use
@@ -26,8 +27,10 @@ Application source is Kotlin and C11. Android framework APIs provide camera, dec
 
 The MyRec hippopotamus launcher artwork was generated for this project with the
 built-in image generation tool. Its source and prompt are under `docs/branding/`.
-It does not reuse YouRec's reserved icon. The upstream MIT grant does not license
-MyRec's branding. Reference-derived test fixtures are identified in
+It does not reuse YouRec's reserved icon. The MyRec name and hippopotamus icon
+are branding assets excluded from the source-code grant. Salvatore Sanfilippo
+reserves the YouRec name and original icon. The source licenses grant no
+permission to use either project's branding. Reference-derived test fixtures are identified in
 `app/src/androidTest/assets/README.md` and are not production media assets.
 
 Runtime revisions and file hashes are recorded in `runtimes.json` and `data/models.json`. The application code does not incorporate the external runtime implementation sources.

@@ -3,6 +3,7 @@ package org.myrec.app
 import android.graphics.Bitmap
 
 object Native {
+    external fun focusPeaking(bitmap: Bitmap)
     external fun workingAverage(bitmap: Bitmap, other: Bitmap, weight: Float)
     external fun workingNegative(bitmap: Bitmap, strength: Float)
     external fun hlgSurface(surface: android.view.Surface): Boolean
@@ -23,6 +24,9 @@ object Native {
         redX: Float, redY: Float, greenX: Float, greenY: Float, blueX: Float, blueY: Float)
 
     external fun filmColor(bitmap: Bitmap, kernel: Int, strength: Float, parameters: FloatArray)
+    external fun halation(bitmap: Bitmap, strength: Float, parameters: FloatArray)
+    external fun noir(bitmap: Bitmap, strength: Float, parameters: FloatArray, frame: Long)
+    external fun sixteenMm(bitmap: Bitmap, strength: Float, parameters: FloatArray, frame: Long)
     external fun primaryColor(bitmap: Bitmap, strength: Float, parameters: FloatArray)
 
     external fun widescreen(

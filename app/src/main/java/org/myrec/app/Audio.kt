@@ -15,7 +15,7 @@ class AudioCache(internal val root: File) {
     fun get(path: String, cancelled: () -> Boolean = { false }): File {
         if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
         val source = File(path)
-        val hash = SourceAudio.hash(source, cancelled) + "-pcm-v6"
+        val hash = SourceAudio.hash(source, cancelled) + "-pcm-v7"
         val file = File(root, "$hash.f32")
         if (file.exists()) return file
         val temp = File(root, "$hash.partial")
@@ -70,16 +70,17 @@ class AudioCache(internal val root: File) {
     fun head(path: String, frames: Int): FloatArray {
         val temporary = File(root, "probe-${uid()}.partial")
         try {
-            decode(path, temporary, frames.toLong())
+            decode(path, temporary, frames.toLong(), rawClock = true)
             val buffer = ByteBuffer.wrap(temporary.readBytes()).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
             return FloatArray(buffer.remaining()).also { buffer.get(it) }
         } finally { temporary.delete() }
     }
 
-    private fun decode(path: String, target: File, limit: Long = Long.MAX_VALUE, cancelled: () -> Boolean = { false }) {
+    private fun decode(path: String, target: File, limit: Long = Long.MAX_VALUE,
+                       cancelled: () -> Boolean = { false }, rawClock: Boolean = false) {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
-        val presented = Mp4Audio.presentedDuration(File(path))?.let { (it * 48000).roundToLong() } ?: Long.MAX_VALUE
+        val presented = if (rawClock) Long.MAX_VALUE else Mp4Audio.presentedDuration(File(path))?.let { (it * 48000).roundToLong() } ?: Long.MAX_VALUE
         val outputLimit = min(limit, presented)
         try {
             extractor.setDataSource(path)
@@ -96,9 +97,10 @@ class AudioCache(internal val root: File) {
             }
             extractor.selectTrack(track)
             val format = extractor.getTrackFormat(track)
-            // Preroll is discarded on the presentation clock below. Decoder
-            // gapless trimming would remove it a second time on newer Android.
-            if (presented != Long.MAX_VALUE) {
+            // Older extractors express the edit as decoder delay; newer ones
+            // shift packet timestamps. Apply only one of these trimming paths.
+            // The encoder timing probe deliberately keeps the raw coded prefix.
+            if (rawClock || extractor.sampleTime < 0) {
                 format.setInteger(MediaFormat.KEY_ENCODER_DELAY, 0)
                 format.setInteger(MediaFormat.KEY_ENCODER_PADDING, 0)
             }
@@ -170,7 +172,7 @@ class AudioCache(internal val root: File) {
                                     samples[i * 2] = l
                                     samples[i * 2 + 1] = if (channels == 1) l else r
                                 }
-                                if (totalSource == 0L && info.presentationTimeUs < 0)
+                                if (!rawClock && totalSource == 0L && info.presentationTimeUs < 0)
                                     totalSource = (info.presentationTimeUs * rate / 1_000_000.0).roundToLong()
                                 val end = totalSource + frames
                                 while (frames > 0) {

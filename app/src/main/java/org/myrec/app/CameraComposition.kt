@@ -58,6 +58,8 @@ class CameraComposition(
     private var layout = 1
     private var swapped = false
     private var displayRotation = 0
+    private var mirrorPreview = true
+    private var mirrorRecording = false
     private var zoom = floatArrayOf(1f, 1f)
     private var panX = floatArrayOf(0f, 0f)
     private var panY = floatArrayOf(0f, 0f)
@@ -167,10 +169,13 @@ class CameraComposition(
             check(status[0] != 0) { GLES20.glGetShaderInfoLog(id) }
             return id
         }
-        if (hdr)
-            check(GLES20.glGetString(GLES20.GL_EXTENSIONS)?.contains("GL_EXT_YUV_target") == true) {
-                "This graphics driver cannot preserve HDR camera colours"
-            }
+        if (hdr) {
+            val support = HdrGraphics.evaluate(
+                EGL14.eglQueryString(display,EGL14.EGL_EXTENSIONS).orEmpty(),
+                GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty(),true,
+                GLES20.glGetString(GLES20.GL_RENDERER).orEmpty())
+            check(support.reason == null) { "${support.reason} (${support.missing})" }
+        }
         val vertex =
             if (hdr)
                 """
@@ -295,6 +300,12 @@ class CameraComposition(
         displayRotation = rotation
         width = w
         height = h
+        render()
+    }
+
+    fun mirrors(preview: Boolean, recording: Boolean) = call {
+        mirrorPreview = preview
+        mirrorRecording = recording
         render()
     }
 
@@ -518,6 +529,7 @@ class CameraComposition(
                 rect.centerX(), rect.centerY(),
                 if (circle) rect.width() / 2 else 0f, if (circle) rect.height() / 2 else 0f)
             val source = inputs[index]
+            val mirrored = source.front && if (target === encoder) mirrorRecording else mirrorPreview
             GLES20.glUniform1f(
                 GLES20.glGetUniformLocation(program, "primaries"),
                 source.primaries.toFloat(),
@@ -539,7 +551,7 @@ class CameraComposition(
                 val y = (1 - (if (top) rect.top else rect.bottom) * 2) * fitY
                 values[i * 4] = x * cos(radians) - y * sin(radians)
                 values[i * 4 + 1] = x * sin(radians) + y * cos(radians)
-                values[i * 4 + 2] = cx + (if (right != source.front) .5f else -.5f) * cropX
+                values[i * 4 + 2] = cx + (if (right != mirrored) .5f else -.5f) * cropX
                 values[i * 4 + 3] = cy + (if (top) .5f else -.5f) * cropY
             }
             vertices.clear()

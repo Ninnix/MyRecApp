@@ -30,13 +30,21 @@ object FilmColor {
             slider("vignette", "Vignette", 0.0, 1.0, .7),
             picker("iris", "Iris", listOf("Oval", "Circle"), "Oval"),
             toggle("tint", "Tint", false))),
+        "Halation" to Definition(5, "Glow softens bright areas, Halation red adds warm fringes around highlights, and Shadow lift raises darker tones. Small amounts retain contrast.", listOf(
+            slider("glow", "Glow", 0.0, 1.0, .4),
+            slider("red", "Halation red", 0.0, 1.0, .5),
+            slider("flash", "Shadow lift", 0.0, 1.0, .2),
+            picker("flashColor", "Flash color", listOf("Neutral", "Warm", "Cool"), "Warm"))),
     )
 
     fun parameters(kind: String) = definitions[kind]?.controls?.map {
         EffectParameter(it.id, it.kind, it.initial)
     }?.toMutableList() ?: mutableListOf()
 
-    fun uniforms(effect: Effect): FloatArray = definitions.getValue(effect.kind).controls.map { control ->
+    fun definition(effect: Effect): Definition? = definitions[effect.kind]
+        ?: if (Noir.modern(effect)) Noir.definition else if (SixteenMm.modern(effect)) SixteenMm.definition else null
+
+    fun uniforms(effect: Effect): FloatArray = definition(effect)!!.controls.map { control ->
         when (val value = effect.parameter(control.id)?.value ?: control.initial) {
             is EffectValue.Number -> value.value.toFloat()
             is EffectValue.Toggle -> if (value.value) 1f else 0f

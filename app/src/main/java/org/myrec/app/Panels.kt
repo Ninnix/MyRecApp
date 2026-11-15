@@ -23,8 +23,10 @@ class Panels(private val a: MainActivity) {
         get() = a.editor
 
     @Volatile private var panel: FrameLayout? = null
+    private var coveredEditor = false
     private var preview: Preview? = null
     private var previewTick: (() -> Unit)? = null
+    private var coverPicker: CoverPicker? = null
     private var controlsTick: (() -> Unit)? = null
     private var rgbPads: RGBOffsetPads? = null
     private var videoDraft: VideoEffectsDraft? = null
@@ -442,6 +444,11 @@ class Panels(private val a: MainActivity) {
     }
 
     fun close(refresh: Boolean = true) {
+        draft?.takeIf { StabilizationSettings.modern(it) }?.let { effect ->
+            if (editor.project.clips.none { clip -> clip.effects.any { it.id == effect.id && StabilizationSettings.modern(it) &&
+                    it.enabled && StabilizationSettings.level(it) != StabilizationLevel.Off } }) a.playback.cancelPreparation()
+        }
+        coverPicker?.close(); coverPicker = null
         gradeInspector?.close(); gradeInspector = null
         gradeActions = null; scopeHeader = null
         val cleanup = panelClosed
@@ -453,6 +460,8 @@ class Panels(private val a: MainActivity) {
         captureSheet = false
         panel?.let { a.root.removeView(it) }
         panel = null
+        if (coveredEditor && a.editorView.visibility == View.INVISIBLE) a.editorView.visibility = View.VISIBLE
+        coveredEditor = false
         preview = null
         previewTick = null
         controlsTick = null
@@ -489,6 +498,7 @@ class Panels(private val a: MainActivity) {
         progressBar = null
         progressText = null
         a.playback.previewProject = null
+        a.playback.originalStabilization = false
         if (refresh) a.playback.refresh()
     }
 
@@ -640,6 +650,11 @@ class Panels(private val a: MainActivity) {
 
     fun relayout() {
         if (panel == null) return
+        if (title == "Select cover") {
+            panel?.let { a.root.removeView(it) }
+            coverPicker?.attach(createPanel(title,null,false),InspectorUi(a,factor))
+            return
+        }
         if (title == "Voice recording") {
             val oldBody = body ?: return
             val scroll = oldBody.getChildAt(oldBody.childCount - 1)
@@ -1041,12 +1056,15 @@ class Panels(private val a: MainActivity) {
         try {
             val sources = a.store.originals(project)
             if (sources.isEmpty()) hint(list, "No original recordings in this project.")
+            val available = sources.map { java.io.File(it.path) }.filter { it.isFile }
+            if (available.size > 1) button(list,"Save all originals to Files") { a.saveOriginals(available) }
+            if (available.isNotEmpty()) button(list,"Create recovered project") { a.recoverOriginals(available,"${project.name.take(95)} · Recovered") }
             for (source in sources) {
                 val file = java.io.File(source.path)
                 label(list, file.name)
                 hint(list, "${timeLabel(source.sourceOut)} · ${if (file.isFile) "Original source" else "Missing original"}")
                 if (file.isFile) {
-                    button(list, "Review original") { a.reviewOriginal(source) }
+                    button(list, "Review original") { a.reviewOriginal(source,project) }
                     button(list, "Save original to Files") {
                         a.saveDocument(file, if (source.video) "video/mp4" else "audio/*")
                     }
@@ -1082,8 +1100,31 @@ class Panels(private val a: MainActivity) {
         } catch (e: Exception) { hint(list, e.message ?: "Cannot open originals") }
     }
 
+    fun recoveryOriginals(project: String? = null) {
+        a.playback.pause()
+        val content = setup("Original files",tools = true)
+        val scroll = ScrollView(a); val list = column(); pad(list,16f); scroll.addView(list)
+        content.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        hint(list,"Browse and save files independently of editing metadata. No timeline is reconstructed or changed.")
+        try {
+            val files = OriginalMedia.files(a.store,project)
+            if (files.isEmpty()) hint(list,"No original media files found.")
+            if (files.size > 1) button(list,"Save all originals to Files") { a.saveOriginals(files) }
+            if (files.isNotEmpty()) button(list,"Create recovered project") { a.recoverOriginals(files) }
+            for (file in files) {
+                label(list,file.name)
+                hint(list,android.text.format.Formatter.formatShortFileSize(a,file.length()))
+                button(list,"Review original") { a.reviewOriginalFile(file,list) }
+                button(list,"Save original to Files") { a.saveDocument(file,OriginalMedia.type(file)) }
+                space(list,14f)
+            }
+        } catch (failure: Exception) { hint(list,failure.message ?: "Cannot list original files") }
+    }
+
     fun projects(deleted: Boolean = false) {
         close(false)
+        coveredEditor = a.editorView.visibility == View.VISIBLE
+        if (coveredEditor) a.editorView.visibility = View.INVISIBLE
         title = if (deleted) "Recently deleted" else "Projects"
         val width = a.root.width.takeIf { it > 0 } ?: a.resources.displayMetrics.widthPixels
         val height = a.root.height.takeIf { it > 0 } ?: a.resources.displayMetrics.heightPixels
@@ -1202,6 +1243,7 @@ class Panels(private val a: MainActivity) {
         if (a.store.problems.isNotEmpty()) {
             hint(content, a.store.problems.values.distinct().joinToString("\n"))
             button(content, "Retry opening project", RED) { a.retryProjects() }
+            button(content,"Browse original files",RED) { recoveryOriginals() }
         }
         val thumbnails = mutableListOf<() -> Unit>()
         for (project in projects) {
@@ -1281,7 +1323,7 @@ class Panels(private val a: MainActivity) {
                     LinearLayout.LayoutParams(px(20f), px(42f)),
                 )
             val menu =
-                Glyph(a, "More", RED).apply { contentDescription = "Options for ${project.name}" }
+                Glyph(a, "More", RED).apply { contentDescription = "Options for ${project.name}"; tag = "project.options:${project.id}" }
             menu.setOnClickListener {
                 if (deleted) {
                     a.choose(project.name, listOf("Restore", "Delete permanently")) { action ->
@@ -1301,12 +1343,13 @@ class Panels(private val a: MainActivity) {
                     }
                     return@setOnClickListener
                 }
-                a.choose(project.name, listOf("Rename", "Duplicate", "Delete", "Original recordings", "Zip project")) { action ->
+                a.choose(project.name, listOf("Rename", "Duplicate", "Delete", "Original recordings", "Export video", "Zip project")) { action ->
                     when (action) {
                         0 -> rename()
                         1 -> a.duplicateProject(project)
                         3 -> originals(project)
-                        4 -> a.exportProject(project)
+                        4 -> { a.openProject(project); if (editor.project.id == project.id) export() }
+                        5 -> a.exportProject(project)
                         2 ->
                             a.choose("Delete project?", listOf("Delete project", "Cancel")) {
                                 if (it == 0) {
@@ -1460,6 +1503,7 @@ class Panels(private val a: MainActivity) {
             a.importVideo(layer = true)
         }
         toolRow(content, "Add audio", "Volume", TEAL) { addAudio() }
+        toolRow(content, "Select cover", "Image", TEAL) { cover() }
         toolRow(content, "Record here", "Camera", RED) { close(); a.recordHere() }
         toolRow(content, "Voiceover here", "Volume", TEAL) { close(); a.voiceover() }
         toolRow(content, "Censor audio", "Volume", TEAL) { censor() }
@@ -1758,6 +1802,9 @@ class Panels(private val a: MainActivity) {
                         temporary.targets().forEach { clip -> clip.effects.removeAll { it.kind == "Color LUTs" } }
                         if (previewEffects) draft?.let { temporary.applyEffect(it) }
                     }
+                    "Stabilize" -> {
+                        draft?.let { temporary.applyEffect(it,draftReplace) }
+                    }
                     else ->
                         effects.forEach {
                             if (title == "Crop" && cropFrame)
@@ -1804,6 +1851,7 @@ class Panels(private val a: MainActivity) {
                             previewTransition = current.copy()
                         }
                 }
+                a.playback.originalStabilization = title == "Stabilize" && !previewEffects
                 a.playback.previewProject = p
                 a.playback.refresh(p)
             },
@@ -1813,7 +1861,7 @@ class Panels(private val a: MainActivity) {
 
     fun effect(kind: String, existing: Effect? = null) {
         if (kind == "Freeze Frame") { freezeFrame(existing); return }
-        val fx = existing?.copyEffect() ?: Effect(kind = kind)
+        val fx = existing?.copyEffect() ?: Effect.create(kind)
         val origin = editor.cursor
         val replace =
             existing?.id?.takeIf { id ->
@@ -2026,20 +2074,50 @@ class Panels(private val a: MainActivity) {
                 build()
             }
             "Stabilize" -> {
-                label(controls, "Stabilization", TEAL)
-                hint(
-                    controls,
-                    "Track edges to smooth camera movement. A small crop keeps the frame covered.",
-                )
-                slider(controls, "Strength", fx.number("strength", 0.5f), 0f, 1f, color = TEAL) {
-                    fx.values["strength"] = it.toString()
-                    renderDraft()
-                }
-                if (existing != null)
-                    button(controls, "Remove stabilization") {
-                        editor.removeEffect(existing.id)
-                        close()
+                fun build() {
+                    controls.removeAllViews()
+                    label(controls,"Stabilization level",if (StabilizationSettings.modern(fx)) Color.WHITE else TEAL)
+                    if (StabilizationSettings.modern(fx)) {
+                        val detail = text(StabilizationSettings.level(fx).detail,8f,MUTED)
+                        choices(controls,StabilizationLevel.entries.map { it.name },StabilizationSettings.level(fx).name,RED) {
+                            fx.values["level"] = StabilizationLevel.entries[it].name
+                            detail.text = StabilizationSettings.level(fx).detail
+                            renderDraft()
+                        }
+                        add(controls,detail,34f)
+                        choices(controls,listOf("Original","Stabilized"),if (previewEffects) "Stabilized" else "Original",RED) {
+                            previewEffects = it == 1; renderDraft()
+                        }
+                        val crop = text("Analyzing motion…",8f,Color.WHITE,bold = true).apply { contentDescription = "Stabilization crop" }
+                        val warning = text("",7.5f,MUTED)
+                        val cachedPlans = mutableMapOf<StabilizationLevel,List<StabilizationPlan>>()
+                        add(controls,crop,30f); add(controls,warning,42f)
+                        controlsTick = {
+                            val project = a.playback.previewProject ?: editor.project
+                            val currentPlans = project.clips.mapNotNull { clip -> clip.effects.firstOrNull { it.id == fx.id && StabilizationSettings.modern(it) }
+                                ?.let { StabilizationRenderer.status(clip,it) } }
+                            val level = StabilizationSettings.level(fx)
+                            if (currentPlans.isNotEmpty()) cachedPlans[level] = currentPlans
+                            val plans = cachedPlans[level].orEmpty()
+                            crop.text = if (StabilizationSettings.level(fx) == StabilizationLevel.Off) "Full frame kept"
+                                else if (plans.isEmpty()) if (previewEffects) "Analyzing motion…" else "Original"
+                                else if (plans.all { it.zoom < 1.001 }) "Full frame kept"
+                                else "Zoomed in ${String.format(java.util.Locale.US,"%.2f",plans.maxOf { it.zoom })}× to hide edges"
+                            warning.text = when {
+                                plans.any { it.trackingFraction < .65 } -> "Some motion could not be tracked. Those sections keep their original movement."
+                                plans.any { it.limited } -> "Smoothing is limited to keep more of your frame."
+                                else -> ""
+                            }
+                        }
+                    } else {
+                        hint(controls,"This saved edit uses the original stabilization processing.")
+                        slider(controls,"Strength",fx.number("strength",.5f),0f,1f,color = TEAL) { fx.values["strength"] = it.toString(); renderDraft() }
+                        button(controls,"Use stabilization levels",TEAL) { StabilizationSettings.initialize(fx); build(); renderDraft() }
                     }
+                    if (existing != null) button(controls,"Remove stabilization") { editor.removeEffect(existing.id); close() }
+                }
+                reflowControls = { build() }
+                build()
             }
             "Mirror" -> {
                 choices(
@@ -2467,6 +2545,7 @@ class Panels(private val a: MainActivity) {
                     "Color Isolation" ->
                         "Keep one color or the person in color; make the rest monochrome."
                     "Noir" -> "Black and white with deep shadows and contrast."
+                    "Halation" -> "Soften bright lights with a warm glow."
                     else -> "Tap to add"
                 }
             add(description, text(detail, 7.5f, MUTED).apply { setPadding(0, px(3f), 0, 0) })
@@ -2491,11 +2570,11 @@ class Panels(private val a: MainActivity) {
                             "Vintage film" -> listOf("Sepia", "Film grain")
                             else -> emptyList()
                         }
-                    chain.addAll(kinds.map { Effect(kind = it) })
+                    chain.addAll(kinds.map { Effect.create(it) })
                     appliedVideo(parent, chain)
                     renderDraft()
                 } else {
-                    val fx = Effect(kind = kind)
+                    val fx = Effect.create(kind)
                     chain.add(fx)
                     videoParameters(parent, fx, chain)
                     renderDraft()
@@ -2712,10 +2791,11 @@ class Panels(private val a: MainActivity) {
         add(parent, actions, 41f)
         if (fx.parameters.isNotEmpty() && rgbAnimating)
             hint(parent, "Animating · changes add keyframes at ${timeLabel(editor.cursor)}")
-        if (fx.kind !in setOf("Color Correction", "Step Printing"))
-        slider(parent, "Intensity", readNumber(if (fx.parameters.isEmpty()) "strength" else "intensity", 1f), 0f, 1f, color = orange) {
-            if (fx.parameters.isNotEmpty()) editNumber("intensity", it) else fx.setNumber("strength", it)
-            renderDraft()
+        if (fx.kind !in setOf("Color Correction", "Step Printing")) {
+            slider(parent, "Intensity", readNumber(if (fx.parameters.isEmpty()) "strength" else "intensity", 1f), 0f, 1f, color = orange) {
+                if (fx.parameters.isNotEmpty()) editNumber("intensity", it) else fx.setNumber("strength", it)
+                renderDraft()
+            }
         }
         fun pick(value: String, enabled: Boolean = true, action: () -> Unit): View {
             val line =
@@ -2769,8 +2849,8 @@ class Panels(private val a: MainActivity) {
                     a.tryStrobe(if ((fx.parameter("timedBurst")?.value as? EffectValue.Toggle)?.value == true) fx.number("burstLength", 1f) else 2f)
                 }
             } else hint(parent, "Repeat actual source frames and blend motion within each group. Speed applies to the selection.")
-        } else if (fx.kind in FilmColor.definitions) {
-            val definition = FilmColor.definitions.getValue(fx.kind)
+        } else if (FilmColor.definition(fx) != null) {
+            val definition = FilmColor.definition(fx)!!
             fun current(id: String) = videoDraft?.value(fx, id, editor.cursor) ?: fx.parameter(id)?.at(sourceTime())
             fun edit(id: String, value: EffectValue) {
                 val work = videoDraft
@@ -2789,21 +2869,24 @@ class Panels(private val a: MainActivity) {
                     val bar = slider(parent, control.title, readNumber(control.id), kind.min.toFloat(), kind.max.toFloat(),
                         color = orange, reset = ::reset) {
                         editNumber(control.id, ((it / kind.step).roundToInt() * kind.step).toFloat().coerceIn(kind.min.toFloat(), kind.max.toFloat()))
-                        if (control.id == "vignette") parent.findViewWithTag<View>("film.iris")?.let { picker ->
-                            picker.isEnabled = it > 0f; picker.alpha = if (it > 0f) 1f else .4f
-                        }
+                        val dependent = when (control.id) { "vignette" -> "iris"; "flash" -> "flashColor"; "grain" -> "grainSize"; else -> null }
+                        if (dependent != null) for (tag in listOf("film.$dependent", "film.$dependent.label"))
+                            parent.findViewWithTag<View>(tag)?.visibility = if (it > 0f) View.VISIBLE else View.GONE
                         renderDraft()
                     }
                     bind(bar, control.id, kind.min.toFloat(), kind.max.toFloat())
                 }
                 is ParameterKind.Picker -> {
                     val value = (current(control.id) as? EffectValue.Choice)?.value ?: (control.initial as EffectValue.Choice).value
-                    label(parent, control.title)
-                    pick(value, control.id != "iris" || readNumber("vignette") > 0f) {
+                    val visible = when (control.id) { "iris" -> readNumber("vignette") > 0f; "flashColor" -> readNumber("flash") > 0f; "grainSize" -> readNumber("grain") > 0f; else -> true }
+                    add(parent, text(control.title, 10f).apply {
+                        tag = "film.${control.id}.label"; visibility = if (visible) View.VISIBLE else View.GONE
+                    }, 21f)
+                    pick(value) {
                         a.choose(control.title, kind.values, kind.values.indexOf(value)) {
                             edit(control.id, EffectValue.Choice(kind.values[it]))
                         }
-                    }.tag = "film.${control.id}"
+                    }.apply { tag = "film.${control.id}"; visibility = if (visible) View.VISIBLE else View.GONE }
                 }
                 ParameterKind.Toggle -> toggle(parent, control.title,
                     (current(control.id) as? EffectValue.Toggle)?.value ?: false) {
@@ -4000,6 +4083,15 @@ class Panels(private val a: MainActivity) {
                     .start()
             }
         }
+    }
+
+    fun cover() {
+        a.playback.pause()
+        val source = CoverSource(editor.project,editor.selected.toSet(),editor.range)
+        val content = setup("Select cover")
+        val picker = CoverPicker(a,source)
+        coverPicker = picker
+        picker.attach(content,InspectorUi(a,factor))
     }
 
     fun export() {

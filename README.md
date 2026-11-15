@@ -73,10 +73,21 @@ reference; see the editing guide for current limits.
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
+Release 0.1.4 adds independent selfie preview/recording mirrors,
+per-camera focus and zoom recall, front-light controls, and expanded Halation,
+Noir and 16mm effects. Projects offers original-file review, verified bulk saves,
+and recovery into a separate project. The cover picker saves composed JPEGs;
+completed movie exports can be reused or saved again without re-encoding.
+Stabilization adds timestamp-based Light/Standard/Strong levels with bounded
+cropping and retained framing through cuts and trims.
+Projects headings render correctly, and the editor accounts for camera cutouts
+without a fixed portrait top gap. HDR checks the graphics driver
+before interrupting a working SDR camera.
+
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.3](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.3), install it, and
+[release 0.1.4](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.4), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 
@@ -85,24 +96,23 @@ the earlier `org.yourec.app` build. Android keeps their private projects, settin
 and downloaded models separate. There is no automatic migration yet; keep the
 old app installed if it holds recordings or edits you need.
 
-This is development software. Physical checks cover a OnePlus 15 and a Xiaomi
-Mi 8 running Android 10. Other cameras, microphones, and phones need testing.
-A passing Android check
-does not establish the same behavior or output as the iOS app.
+This is development software. Camera, microphone and HDR support depend on the
+phone and its drivers. Full behavior and processing parity with iOS remains in
+progress.
 
 ## Build
 
 Use JDK 17+, Android SDK 37, NDK 28.2.13676358, CMake 3.31.6, and Python 3.12.
 
 ```sh
-python3 tools/prepare-runtimes.py
-python3 tools/prepare-person.py
-./tools/build.sh :app:assembleDebug
+python3 scripts/prepare-runtimes.py
+python3 scripts/prepare-person.py
+./scripts/build.sh :app:assembleDebug
 ```
 
 The APK is `app/build/outputs/apk/debug/app-debug.apk`.
 See [Building](docs/BUILD.md) for SDK paths and
-[Releasing](docs/RELEASING.md) for signing.
+[Releasing](RELEASE.md) for signing.
 
 The interface uses Kotlin and Android Canvas. Camera2 and Android media APIs
 handle capture and export. C11 handles image processing, stabilization, and
@@ -131,7 +141,7 @@ The app has no advertising or analytics SDK. Recording, editing, audio
 processing, and transcription run locally. Model downloads contact GitHub,
 Hugging Face, and their delivery providers; they do not send recordings or
 transcripts. Import and sharing use Android's picker and the app you choose.
-Read the [privacy notes](docs/PRIVACY.md).
+Read the [privacy notes](PRIVACY.md).
 
 ## Acknowledgements
 
@@ -153,7 +163,7 @@ Runtime revisions are recorded in [runtimes.json](runtimes.json).
 ## Licenses and artwork
 
 MyRec's application source code and documentation are released under the
-[MIT License](LICENCE). It retains the copyright notices for Ninnix and the
+[MIT License](LICENSE). It retains the copyright notices for Ninnix and the
 MyRec contributors, and for Salvatore Sanfilippo's upstream work. The same
 license is [bundled in the APK](app/src/main/assets/licenses/MyRec.txt).
 

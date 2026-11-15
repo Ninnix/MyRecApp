@@ -23,11 +23,11 @@ To reproduce with an authorized connected phone:
 mkdir -p .build/rome-showcase
 curl -L --fail https://videos.pexels.com/video-files/31553545/13447079_3840_2160_25fps.mp4 \
   -o .build/rome-showcase/colosseum-original.mp4
-python3 tools/prepare-showcase.py
-./tools/build.sh :app:assembleDebug :app:assembleDebugAndroidTest
+python3 scripts/prepare-showcase.py
+./scripts/build.sh :app:assembleDebug :app:assembleDebugAndroidTest
 adb push .build/rome-showcase/colosseum.mp4 \
   /sdcard/Android/data/org.myrec.app/files/test-inputs/colosseum.mp4
-python3 tools/test-device.py --showcase
+python3 scripts/test-device.py --showcase
 adb pull /sdcard/Android/data/org.myrec.app/files/showcase/. artifacts/rome-showcase/
 ```
 

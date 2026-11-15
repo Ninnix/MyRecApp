@@ -132,23 +132,28 @@ class InspectorUi(val a: MainActivity, var scale: Float) {
         line.addView(text(title, 11f), LinearLayout.LayoutParams(0, -1, 1f))
         val swatch = View(a).apply { background = shape(initial, 6f, Color.GRAY) }
         line.addView(swatch, LinearLayout.LayoutParams(px(26f), px(26f)))
-        line.setOnClickListener {
-            val body = column().apply { setPadding(px(12f), px(6f), px(12f), px(10f)) }
-            val channels = intArrayOf(Color.red(initial), Color.green(initial), Color.blue(initial), Color.alpha(initial))
-            val sample = View(a).apply { setBackgroundColor(initial) }; add(body, sample, 30f)
-            val hex = EditText(a).apply { setText("#%08x".format(initial)); setTextColor(Color.WHITE); setSingleLine(); contentDescription = "Hex color" }
-            add(body, hex, 40f)
-            for ((i, name) in listOf("Red", "Green", "Blue", "Opacity").withIndex()) slider(body, name, channels[i] / 255f, 0f, 1f) { value ->
-                channels[i] = (value * 255).roundToInt(); val color = Color.argb(channels[3], channels[0], channels[1], channels[2])
-                sample.setBackgroundColor(color); hex.setText("#%08x".format(color))
-            }
-            val dialog = AlertDialog.Builder(a).setTitle(title).setView(body).setNegativeButton("Cancel", null).setPositiveButton("Done", null).create()
-            dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val color = runCatching { Color.parseColor(hex.text.toString()) }.getOrNull()
-                if (color == null) hex.error = "Use #RRGGBB or #AARRGGBB"
-                else { swatch.background = shape(color, 6f, Color.GRAY); change(color); dialog.dismiss() }
-            } }; dialog.show()
-        }
+        var selected = initial
+        line.setOnClickListener { pickColor(title, selected) { color ->
+            selected = color; swatch.background = shape(color, 6f, Color.GRAY); change(color)
+        } }
         add(parent, line, 40f)
     }
+    fun pickColor(title: String, initial: Int, allowAlpha: Boolean = true, change: (Int) -> Unit) {
+        val body = column().apply { setPadding(px(12f), px(6f), px(12f), px(10f)) }
+        val channels = intArrayOf(Color.red(initial), Color.green(initial), Color.blue(initial), Color.alpha(initial))
+        val sample = View(a).apply { setBackgroundColor(initial) }; add(body, sample, 30f)
+        val hex = EditText(a).apply { setText("#%08x".format(initial)); setTextColor(Color.WHITE); setSingleLine(); contentDescription = "Hex color" }
+        add(body, hex, 40f)
+        for ((i, name) in (if (allowAlpha) listOf("Red", "Green", "Blue", "Opacity") else listOf("Red", "Green", "Blue")).withIndex()) slider(body, name, channels[i] / 255f, 0f, 1f) { value ->
+            channels[i] = (value * 255).roundToInt(); val color = Color.argb(channels[3], channels[0], channels[1], channels[2])
+            sample.setBackgroundColor(color); hex.setText("#%08x".format(color))
+        }
+        val dialog = AlertDialog.Builder(a).setTitle(title).setView(body).setNegativeButton("Cancel", null).setPositiveButton("Done", null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val color = runCatching { Color.parseColor(hex.text.toString()) }.getOrNull()
+            if (color == null) hex.error = "Use #RRGGBB or #AARRGGBB"
+            else { change(if (allowAlpha) color else color or Color.BLACK); dialog.dismiss() }
+        } }; dialog.show()
+    }
+
 }

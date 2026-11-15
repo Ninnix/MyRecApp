@@ -62,8 +62,8 @@ hashes and shape offsets are recorded in the model manifests.
 For development installation:
 
 ```sh
-python3 tools/prepare-studio.py --install
-python3 tools/prepare-audio.py --install
+python3 scripts/prepare-studio.py --install
+python3 scripts/prepare-audio.py --install
 ```
 
 VoiceFixer can be slow and can change vocal character. Compare the result on
@@ -84,16 +84,16 @@ checkpointed by edited-audio hash, language, range, speech plan and runtime/mode
 identity. Corrupt or stale progress starts again; up to eight jobs are retained
 in the app cache. An active C inference call must finish before cancellation
 returns. All five model/tokenizer/configuration files have pinned sizes and
-SHA-256 checks. Actual recognition has run on the Mi 8 and OnePlus 15. The speech
-suite uses a fresh job for each run before checking completed-section reuse.
+SHA-256 checks. The speech suite uses a fresh recognition job for each run
+before checking completed-section reuse.
 
 The iOS app uses a smaller 4-bit MLX pack; Android uses the external Qwen C
 runtime and BF16 checkpoint. Those are different numerical backends. Neither
 implementation uses forced alignment.
 
 ```sh
-python3 tools/prepare-model.py
-python3 tools/install-model.py
+python3 scripts/prepare-model.py
+python3 scripts/install-model.py
 ```
 
 `ANDROID_SERIAL` selects the phone for the installers. Models live in MyRec's

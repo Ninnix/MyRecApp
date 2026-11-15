@@ -25,6 +25,10 @@ fun main() {
     TimelineMoveTests.run(::test)
     TimelineSnapTests.run(::test)
     TimelineRulesTests.run(::test)
+    CoverFrameTests.run(::test)
+    OriginalRangeTests.run(::test)
+    RevisionCacheTests.run(::test)
+    StabilizationTests.run(::test)
     test("new recordings remain through undo redo and restored editing sessions") {
         val e = Editor()
         val first = Clip(path = "first.mp4", sourceOut = 5.0)

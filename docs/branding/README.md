@@ -15,7 +15,7 @@ with the image inset to 328 px, plus 48/72/96/144/192 px legacy launchers derive
 with ImageMagick. The adaptive inset keeps the wide muzzle inside launcher masks.
 
 The MyRec name and icon are branding assets excluded from the source-code
-license; see [LICENCE](../../LICENCE). YouRec's original name and icon remain
+license; see [the branding notices](../../THIRD_PARTY_NOTICES.md). YouRec's original name and icon remain
 reserved by Salvatore Sanfilippo. Neither project's source license grants
 permission to use its branding.
 

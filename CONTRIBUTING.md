@@ -12,10 +12,10 @@ through C APIs. Keep dependencies to the minimum required.
 ## Build and checks
 
 ```sh
-python3 tools/prepare-runtimes.py
-python3 tools/prepare-person.py
-./tools/build.sh :app:testEditor :app:assembleDebug :app:assembleDebugAndroidTest
-ANDROID_SERIAL=SERIAL python3 tools/test-device.py
+python3 scripts/prepare-runtimes.py
+python3 scripts/prepare-person.py
+./scripts/build.sh :app:testEditor :app:assembleDebug :app:assembleDebugAndroidTest
+ANDROID_SERIAL=SERIAL python3 scripts/test-device.py
 ```
 
 See [BUILD.md](docs/BUILD.md) for tools and [TESTING.md](docs/TESTING.md) for

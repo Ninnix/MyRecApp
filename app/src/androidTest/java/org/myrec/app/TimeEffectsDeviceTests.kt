@@ -21,6 +21,15 @@ object TimeEffectsDeviceTests {
         val file = File(root, "vfr.mp4")
         instrumentation.context.assets.open("time-vfr.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
         val times = doubleArrayOf(0.0, .04, .11, .16, .30, .38, .50, .70)
+        fun duration(movie: File, expected: Double) {
+            // Android 10's retriever reports AAC media before the MP4 edit list.
+            // Check the presented movie and the decoded timeline instead.
+            check(abs((Mp4Audio.presentedDuration(movie) ?: error("No movie duration")) - expected) < .002)
+            check(abs(a.audioCache.get(movie.path).length()/8.0/48000 - expected) < .002)
+            VideoDecoder(movie.path).use { decoder ->
+                (decoder.frame(expected-1.0/30,64,64) ?: error("No final video frame")).recycle()
+            }
+        }
         try {
             test("animated Step Printing keeps stereo pitch across speed keys and exports exact timeline duration") {
                 val count = 48000 * 4
@@ -54,10 +63,7 @@ object TimeEffectsDeviceTests {
                 check(saved.clips.single().playbackSpans == clip.playbackSpans)
                 val movie = File(root, "animated.mp4")
                 Export(a.audioCache).run(saved, movie, 160, 96) {}
-                android.media.MediaMetadataRetriever().use { reader ->
-                    reader.setDataSource(movie.path)
-                    check(abs(reader.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() / 1000.0 - 6) < .04)
-                }
+                duration(movie,6.0)
             }
             test("pause analysis padding and exported duration follow animated speed after trim and reopen") {
                 val count = 48000 * 4
@@ -87,10 +93,7 @@ object TimeEffectsDeviceTests {
                 check(abs(saved.project.duration - 5.4) < 1e-6)
                 val movie = File(root, "paused-speed.mp4")
                 Export(a.audioCache).run(saved.project, movie, 160, 96) {}
-                android.media.MediaMetadataRetriever().use { reader ->
-                    reader.setDataSource(movie.path)
-                    check(abs(reader.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)!!.toLong() / 1000.0 - 5.4) < .002)
-                }
+                duration(movie,5.4)
                 saved.undo(); check(saved.project.duration == 6.0)
                 saved.redo(); check(abs(saved.project.duration - 5.4) < 1e-6)
             }

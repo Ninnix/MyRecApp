@@ -142,7 +142,7 @@ object AudioEditingTests {
             val exported = read(a.audioCache.get(movie.path))
             check(exported.size / 2 / 48000.0 in .98..1.05) { "Decoded export duration: ${exported.size / 2 / 48000.0}" }
             val voice = exported.copyOfRange((.11 * 48000).toInt() * 2, (.19 * 48000).toInt() * 2)
-            check(abs(pitch(voice, 0) - 440) < 25 && abs(pitch(voice, 1) - 733) < 25) { "Export changed source pitch" }
+            check(abs(pitch(voice, 0) - 440) < 25 && abs(pitch(voice, 1) - 733) < 25) { "Export changed source pitch: ${pitch(voice, 0)}, ${pitch(voice, 1)}" }
             val gapPower = (19500 until 20000).sumOf { exported[it * 2].toDouble().pow(2) } / 500
             check(gapPower < .00001) { "Censored speech leaked in exported pulse gap: $gapPower" }
         }

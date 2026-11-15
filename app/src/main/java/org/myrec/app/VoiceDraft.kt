@@ -61,7 +61,7 @@ class VoiceDraft(private val activity: MainActivity,
 
     fun show() {
         val devices = microphoneDevices()
-        val selected = activity.getSharedPreferences("capture", Context.MODE_PRIVATE).getInt("mic", -1)
+        val selected = activity.captureSettings.getInt("mic", -1)
         input = devices.firstOrNull { it.id == selected }
             ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
             ?: devices.firstOrNull()

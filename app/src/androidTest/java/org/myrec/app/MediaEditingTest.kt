@@ -47,7 +47,14 @@ object MediaEditingTest {
         fun bounds(id: String): RectF {
             var result: RectF? = null
             onMain { result = a.editorView.controlBounds(id) }
-            return result ?: error("Missing editor control $id")
+            if (result == null) {
+                instrumentation.uiAutomation.takeScreenshot()?.let { image ->
+                    File(folder,"missing-$id.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG,100,it) }
+                    image.recycle()
+                }
+                error("Missing editor control $id; moving=${a.editor.move != null}; selected=${a.editor.selected}")
+            }
+            return result!!
         }
         fun gesture(from: PointF, to: PointF = from) {
             onMain {
@@ -94,12 +101,10 @@ object MediaEditingTest {
         }
         fun point(x: Float, y: Float): PointF {
             val v = a.editorView
-            val landscape = v.width > v.height
-            val w = if (landscape) 640f else 294f
-            val h = if (landscape) 294f else 640f
-            val unit = min(v.width / w, v.height / h)
-            return PointF((v.width - w * unit) / 2 + x * unit,
-                (v.height - h * unit) / 2 + y * unit)
+            val bounds = v.controlBounds("preview") ?: error("Preview has no bounds")
+            val logical = v.previewBounds
+            val unit = bounds.width()/logical.width()
+            return PointF(bounds.left+(x-logical.left)*unit,bounds.top+(y-logical.top)*unit)
         }
         fun snapshot(name: String) {
             onMain {
@@ -149,10 +154,13 @@ object MediaEditingTest {
                 }
                 Thread.sleep(250)
                 tap("move")
-                val landscape = name == "landscape"
-                val x = if (landscape) 320f else 165f
-                val y = if (landscape) 172f else 428f
-                gesture(point(x, y), point(x - 25, y - 35))
+                fun moveLayer() {
+                    val from = center(card(a.editor.targets().single().id))
+                    val zero = point(0f,0f)
+                    val delta = point(25f,35f)
+                    gesture(from,PointF(from.x-delta.x+zero.x,from.y-delta.y+zero.y))
+                }
+                moveLayer()
                 check(a.editor.targets().single().track == 1)
                 check(a.editor.project.active(.75).size == 2)
                 snapshot("$name-moving")
@@ -165,7 +173,7 @@ object MediaEditingTest {
                 }
                 Thread.sleep(200)
                 tap("move")
-                gesture(point(x, y), point(x - 25, y - 35))
+                moveLayer()
                 tap("moveDone")
                 check(a.editor.project.active(.75).size == 2)
                 onMain { a.editor.clearSelection(); a.playback.seek(.75) }
@@ -416,6 +424,7 @@ object MediaEditingTest {
                     val deadline = SystemClock.uptimeMillis() + 8000
                     while (a.editor.project.clips.size == before.clips.size && SystemClock.uptimeMillis() < deadline)
                         Thread.sleep(100)
+                    onMain { }
                     check(monitor.hits == 1)
                     val added = a.editor.project.clips.last()
                     check(a.editor.project.clips.dropLast(1) == before.clips)
@@ -423,7 +432,7 @@ object MediaEditingTest {
                     check(abs(added.start - .75) < .01 && abs(added.duration - 3.0) < .01)
                     check(added.track > (before.clips.filter { it.audio }.maxOfOrNull { it.track } ?: -1))
                     check(File(added.path).readBytes().contentEquals(wave.readBytes()))
-                    check(a.store.current().clips.last() == added)
+                    check(a.store.current().clips.last() == added) { "Imported audio was not saved: $added" }
                     check(a.audioCache.waveform(added.path).any { it > .01f })
                     onMain { a.editor.clearSelection(); a.editorView.invalidate() }
                     Thread.sleep(400)
@@ -468,6 +477,7 @@ object MediaEditingTest {
                 }
                 val deadline = SystemClock.uptimeMillis() + 10000
                 while (a.editor.project.clips.size != 2 && SystemClock.uptimeMillis() < deadline) Thread.sleep(100)
+                onMain { }
                 check(monitor.hits == 1 && a.editor.project.clips.size == 2)
                 val edit = a.editor.project.duplicate()
                 check(edit.clips.first().photo && !edit.clips.first().audio)

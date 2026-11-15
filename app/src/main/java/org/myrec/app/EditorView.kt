@@ -423,6 +423,12 @@ class EditorView(
         unit = min(width / bw, height / bh)
         ox = (width / unit - bw) / 2
         oy = (height / unit - bh) / 2
+        if (!landscape && !fullscreen) {
+            val safe = SafeArea.insets(this)
+            unit = min((width-safe.left-safe.right)/294f,(height-safe.top-safe.bottom)/600f)
+            ox = safe.left/unit + ((width-safe.left-safe.right)/unit-294f)/2
+            oy = safe.top/unit-40f
+        }
         canvas.save()
         canvas.scale(unit, unit)
         canvas.translate(ox, oy)

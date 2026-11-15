@@ -11,9 +11,9 @@ The checkout uses this remote:
 ```sh
 git clone https://github.com/Ninnix/MyRecApp.git MyRecApp
 cd MyRecApp
-python3 tools/prepare-runtimes.py
-python3 tools/prepare-person.py
-./tools/build.sh :app:assembleDebug :app:assembleDebugAndroidTest :app:testEditor
+python3 scripts/prepare-runtimes.py
+python3 scripts/prepare-person.py
+./scripts/build.sh :app:assembleDebug :app:assembleDebugAndroidTest :app:testEditor
 ```
 
 The runtime script downloads the pinned sources and ONNX Runtime into
@@ -29,7 +29,7 @@ and experiments are not needed for a build.
 ## Set SDK paths
 
 Set `JAVA_HOME` and `ANDROID_HOME` if they are not already configured.
-`tools/build.sh` also finds the usual Android Studio JDK location on Linux.
+`scripts/build.sh` also finds the usual Android Studio JDK location on Linux.
 Put machine-specific SDK paths in the ignored `local.properties`:
 
 ```properties
@@ -55,7 +55,7 @@ See [Testing](TESTING.md) before running device checks.
 ## Build without a Gradle daemon
 
 ```sh
-python3 tools/build.py
+python3 scripts/build.py
 ```
 
 This uses the installed SDK/NDK and cached Kotlin compiler. Prepare the runtimes
@@ -72,4 +72,4 @@ git -C reference/YouRecApp rev-parse HEAD
 
 Skip the clone if the folder already exists. `reference/` is ignored.
 Record the exact commit when comparing algorithms or behavior. Signing is
-covered in [Releasing](RELEASING.md).
+covered in [Releasing](../RELEASE.md).

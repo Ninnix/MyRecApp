@@ -92,7 +92,7 @@ class Export(private val cache: AudioCache) {
             }
         }
         try {
-            Frames().use { frames ->
+            Frames(cancelled = { cancelled }).use { frames ->
                 val count = ceil(project.duration * project.fps - 1e-7).toInt().coerceAtLeast(1)
                 for (i in 0 until count) {
                     checkCancelled()

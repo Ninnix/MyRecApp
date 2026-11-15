@@ -11,7 +11,7 @@ import java.security.MessageDigest
 import kotlin.math.*
 
 object Studio {
-    private const val VERSION = "source-audio-v8-dfn-norm99-1"
+    private const val VERSION = "source-audio-v9-aac-clock-1"
     private const val MODEL_URL =
         "https://github.com/Topping1/LavaSR-ONNX/releases/download/Alpha-v0.1/"
     private val models =

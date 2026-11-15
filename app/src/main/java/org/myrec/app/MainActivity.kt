@@ -43,6 +43,11 @@ class MainActivity : Activity() {
     lateinit var panels: Panels
         private set
 
+    internal lateinit var captureSettings: android.content.SharedPreferences
+        private set
+    internal lateinit var movieExports: MovieExports
+        private set
+
     private lateinit var mediaIndex: MediaIndex
     private val worker = Executors.newSingleThreadExecutor()
     private val ui = Handler(Looper.getMainLooper())
@@ -57,11 +62,15 @@ class MainActivity : Activity() {
     internal var voiceDraft: VoiceDraft? = null
         private set
     private var pendingSave: File? = null
+    private var pendingOriginals: List<File>? = null
+    internal var originalReview: OriginalReview? = null
+        private set
     private data class MediaRepair(val project: Project, val path: String)
     private var pendingRepair: MediaRepair? = null
     private var imageCallback: ((String) -> Unit)? = null
     private var importAsProject = false
     private var exporting: Export? = null
+    private var moviePermission: Triple<Int, Int, ExportColor>? = null
     internal var choices: PopupWindow? = null
         private set
     internal var linkDialog: AlertDialog? = null
@@ -85,6 +94,8 @@ class MainActivity : Activity() {
         val testSessionId =
             intent.getStringExtra("testSessionId")?.takeIf { it.matches(Regex("[a-zA-Z0-9-]+")) }
                 ?: "shared"
+        captureSettings = getSharedPreferences(if (testSession) "capture-test-$testSessionId" else "capture", MODE_PRIVATE)
+        movieExports = MovieExports(if (testSession) File(cacheDir, "test-exports/$testSessionId") else File(filesDir, "movie-exports"))
         toolLibrary = getSharedPreferences(if (testSession) "editor-library-test-$testSessionId" else "editor-library", MODE_PRIVATE)
         toolLibraryDirectory = if (testSession) File(cacheDir, "test-libraries/$testSessionId") else File(filesDir, "editor-library")
         store =
@@ -105,6 +116,7 @@ class MainActivity : Activity() {
         TitleStyle.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))
         Stabilizer.directory = File(cacheDir, "stabilization")
+        StabilizationRenderer.directory = if (testSession) File(cacheDir,"test-stabilization/$testSessionId") else File(cacheDir,"stabilization-paths")
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         setContentView(root)
         mediaIndex = MediaIndex(audioCache) { editorView.invalidate() }
@@ -417,6 +429,11 @@ class MainActivity : Activity() {
         else if (code == 10) { recordingAt = null; message("Camera and microphone permissions are needed to record") }
         if (code == 11 && granted) voiceover()
         else if (code == 11) message("Microphone permission is needed for voiceover")
+        if (code == 12) {
+            val request = moviePermission; moviePermission = null
+            if (granted && request != null) export(request.first, request.second, request.third)
+            else message("Storage permission is needed to save a movie on Android 9")
+        }
     }
 
     internal fun recordingInsertion(): Double? = recordingAt?.takeIf { it.project == editor.project.id }?.at
@@ -513,7 +530,10 @@ class MainActivity : Activity() {
             editor.load(saved.project, saved)
             indexOriginals(saved.project.id)
             showEditor()
-        } catch (e: Exception) { message(e.message ?: "Cannot open project") }
+        } catch (e: Exception) {
+            android.util.Log.w("MyRec","Cannot open project",e)
+            message(e.message ?: "Cannot open project")
+        }
     }
 
     private fun projects() {
@@ -527,6 +547,7 @@ class MainActivity : Activity() {
         items: List<String>,
         checked: Int = -1,
         anchor: View? = null,
+        disabled: Set<Int> = emptySet(),
         selected: (Int) -> Unit,
     ) {
         choices?.dismiss()
@@ -594,6 +615,8 @@ class MainActivity : Activity() {
                         0,
                     )
                     contentDescription = item
+                    isEnabled = i !in disabled
+                    alpha = if (isEnabled) 1f else .4f
                     setOnClickListener {
                         popup.dismiss()
                         selected(i)
@@ -606,6 +629,8 @@ class MainActivity : Activity() {
                         gravity = Gravity.CENTER_VERTICAL
                         setPadding(px(12f), 0, px(8f), 0)
                         contentDescription = items[i]
+                        isEnabled = i !in disabled
+                        alpha = if (isEnabled) 1f else .4f
                         setOnClickListener {
                             popup.dismiss()
                             selected(i)
@@ -765,6 +790,62 @@ class MainActivity : Activity() {
         }, 30)
     }
 
+    fun saveOriginals(files: List<File>) {
+        if (files.isEmpty() || files.any { !it.isFile }) { message("An original is missing"); return }
+        pendingOriginals = files.toList()
+        try {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION),34)
+        } catch (_: android.content.ActivityNotFoundException) {
+            pendingOriginals = null; message("No folder picker is available")
+        }
+    }
+
+    private fun copyOriginals(files: List<File>, tree: Uri) {
+        val cancelled = AtomicBoolean(false)
+        panels.progress("Saving original files…",0f) { cancelled.set(true) }
+        worker.execute {
+            var folder: Uri? = null
+            try {
+                val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,
+                    android.provider.DocumentsContract.getTreeDocumentId(tree))
+                folder = android.provider.DocumentsContract.createDocument(contentResolver,parent,
+                    android.provider.DocumentsContract.Document.MIME_TYPE_DIR,"MyRec originals ${uid().take(8)}")
+                    ?: error("Cannot create the originals folder")
+                OriginalMedia.copy(files,OriginalMedia.documents(contentResolver,folder),{ cancelled.get() }) {
+                    value -> ui.post { if (!isDestroyed) panels.updateProgress(value) }
+                }
+                if (cancelled.get()) throw java.io.InterruptedIOException("Copy cancelled")
+                ui.post { if (!isDestroyed) { panels.close(); message("Saved ${files.size} original files") } }
+            } catch (failure: Exception) {
+                folder?.let { owned -> try { android.provider.DocumentsContract.deleteDocument(contentResolver,owned) }
+                    catch (cleanup: Exception) { failure.addSuppressed(cleanup) } }
+                val detail = if (failure.suppressed.isEmpty()) failure.message ?: "Cannot save originals"
+                    else "${failure.message}. Some incomplete copies could not be removed."
+                ui.post { if (!isDestroyed) { panels.close(); message(detail) } }
+            }
+        }
+    }
+
+    fun recoverOriginals(files: List<File>, title: String = "Recordings · Recovered") {
+        val cancelled = AtomicBoolean(false)
+        panels.progress("Creating recovered project…",0f) { cancelled.set(true) }
+        worker.execute {
+            try {
+                val result = RecoveredProject.create(store,files,title,{ cancelled.get() }) {
+                    value -> ui.post { if (!isDestroyed) panels.updateProgress(value) }
+                }
+                ui.post { if (!isDestroyed) {
+                    panels.projects()
+                    message("Created ${result.project.name} with ${result.project.clips.size} takes"+
+                        if (result.skipped > 0) ". ${result.skipped} unreadable files remain with the originals." else ".")
+                } }
+            } catch (failure: Exception) {
+                ui.post { if (!isDestroyed) { panels.close(); message(failure.message ?: "Cannot create a recovered project") } }
+            }
+        }
+    }
+
     fun exportProject(project: Project) {
         if (!saveProject()) return
         val cancelled = AtomicBoolean(false)
@@ -882,24 +963,33 @@ class MainActivity : Activity() {
         }
     }
 
-    fun reviewOriginal(source: Clip) {
+    fun reviewOriginal(source: Clip, project: Project? = null) {
         if (!File(source.path).isFile) { message("This original file is missing"); return }
         playback.pause()
-        val player = VideoView(this)
-        val controls = MediaController(this)
-        player.setMediaController(controls)
-        player.setVideoPath(source.path)
-        val dialog = Dialog(this).apply {
-            setTitle(File(source.path).name)
-            setContentView(player)
-            setOnDismissListener { player.stopPlayback() }
-        }
-        dialog.show()
-        dialog.window?.setLayout((resources.displayMetrics.widthPixels * .9f).toInt(),
-            (resources.displayMetrics.heightPixels * .7f).toInt())
-        player.setOnPreparedListener { player.start() }
-        player.setOnErrorListener { _, _, _ -> dialog.dismiss(); message("Cannot play this original"); true }
+        originalReview?.dismiss()
+        val review = OriginalReview(this,source.duplicate(),project?.duplicate())
+        review.onClosed = { if (originalReview === review) originalReview = null }
+        originalReview = review; review.show()
     }
+
+    fun reviewOriginalFile(file: File, owner: View) {
+        worker.execute {
+            try {
+                val source = ProjectStore.inspect(file)
+                ui.post { if (!isDestroyed && owner.isAttachedToWindow) reviewOriginal(source) }
+            } catch (_: Exception) {
+                ui.post { if (!isDestroyed && owner.isAttachedToWindow) message("Cannot play this file. You can save the unchanged original.") }
+            }
+        }
+    }
+
+    fun insertOriginalRange(project: Project, source: Clip, start: Double, end: Double): Boolean = try {
+        check(ProjectAssets.clips(store.open(project.id)).any { File(it.path).canonicalFile == File(source.path).canonicalFile }) { "This original no longer belongs to the project" }
+        val clip = OriginalRange.clip(source,start,end,project.fps)
+        openProject(project)
+        if (editor.project.id != project.id) false
+        else { editor.insertBatch(listOf(clip),editor.project.duration); panels.close(); true }
+    } catch (failure: Exception) { message(failure.message ?: "Cannot insert the original range"); false }
 
     private var lutCallback: ((String, String) -> Unit)? = null
     private var fontCallback: ((String, String) -> Unit)? = null
@@ -932,6 +1022,11 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 34) {
+            val files = pendingOriginals; pendingOriginals = null
+            if (resultCode == RESULT_OK && files != null) data?.data?.let { copyOriginals(files,it) }
+            return
+        }
         if (requestCode == 33) {
             val callback = fontCallback; fontCallback = null
             val uri = data?.data
@@ -1187,78 +1282,105 @@ class MainActivity : Activity() {
         playback.frameHeight = (playback.frameWidth.toFloat() * h / w).toInt()
     }
 
-    fun export(width: Int, height: Int, color: ExportColor = ExportColor.SDR) {
-        if (exporting != null || editor.project.duration <= 0) return
-        playback.pause()
-        val snapshot = editor.project.duplicate()
-        val exporter = Export(audioCache)
-        exporting = exporter
-        val file = File(cacheDir, "MyRec-${System.currentTimeMillis()}.mp4")
-        panels.progress("Exporting", 0f) { exporter.cancelled = true }
-        worker.execute {
+    internal var movieWriter: (File, () -> Boolean) -> Uri = ::writeMovie
+
+    private fun writeMovie(file: File, cancelled: () -> Boolean): Uri {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "MyRec-${System.currentTimeMillis()}.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT >= 29) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/MyRec")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            ?: error("Cannot create exported video")
+        try {
+            contentResolver.openOutputStream(uri)!!.use { output -> file.inputStream().use { input ->
+                val buffer = ByteArray(131072)
+                while (true) {
+                    if (cancelled()) throw java.io.InterruptedIOException("Export cancelled")
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer,0,count)
+                }
+            } }
+            if (cancelled()) throw java.io.InterruptedIOException("Export cancelled")
+            if (Build.VERSION.SDK_INT >= 29) check(contentResolver.update(uri,
+                ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING,0) },null,null) == 1) { "Cannot publish the saved video" }
+        } catch (e: Exception) {
+            runCatching { contentResolver.delete(uri,null,null) }
+            throw e
+        }
+        return uri
+    }
+
+    private fun movieFinished(uri: Uri, file: File, sound: Boolean) {
+        panels.close(); message("Saved to Movies/MyRec")
+        choose("Video exported",listOf("Play video","Share video","Save to file","Done")) { action ->
             try {
-                exporter.run(snapshot, file, width, height, color) { progress ->
-                    ui.post { panels.updateProgress(progress) }
+                when (action) {
+                    0 -> startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,"video/mp4")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                    1 -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("video/mp4")
+                        .putExtra(Intent.EXTRA_STREAM,uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),"Share video"))
+                    2 -> saveDocument(file,"video/mp4","MyRec-${System.currentTimeMillis()}.mp4")
                 }
-                val values =
-                    ContentValues().apply {
-                        put(MediaStore.Video.Media.DISPLAY_NAME, file.name)
-                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                        if (Build.VERSION.SDK_INT >= 29) {
-                            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/MyRec")
-                            put(MediaStore.Video.Media.IS_PENDING, 1)
-                        }
-                    }
-                val uri =
-                    contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: error("Cannot create exported video")
-                try {
-                    contentResolver.openOutputStream(uri)!!.use { out ->
-                        file.inputStream().use { it.copyTo(out) }
-                    }
-                    if (Build.VERSION.SDK_INT >= 29)
-                        contentResolver.update(
-                            uri,
-                            ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) },
-                            null,
-                            null,
-                        )
-                } catch (e: Exception) {
-                    contentResolver.delete(uri, null, null)
-                    throw e
-                }
+            } catch (e: ActivityNotFoundException) { message("No app is available to open this video") }
+        }
+        if (sound) {
+            ExportSound.play()
+            root.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY)
+        }
+    }
+
+    private fun exportJob(title: String, prepare: (Export) -> MovieExports.Movie) {
+        if (exporting != null) return
+        playback.pause()
+        val job = Export(audioCache)
+        exporting = job
+        panels.progress(title,0f) { job.cancelled = true }
+        worker.execute {
+            var movie: MovieExports.Movie? = null
+            try {
+                val ready = prepare(job); movie = ready
+                if (job.cancelled) throw java.io.InterruptedIOException("Export cancelled")
+                val uri = movieWriter(ready.file) { job.cancelled }
                 ui.post {
-                    panels.close()
-                    message("Saved to Movies/MyRec")
-                    choose("Video exported", listOf("Play video", "Share video", "Done")) {
-                        when (it) {
-                            0 ->
-                                startActivity(
-                                    Intent(Intent.ACTION_VIEW)
-                                        .setDataAndType(uri, "video/mp4")
-                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                )
-                            1 ->
-                                startActivity(
-                                    Intent.createChooser(
-                                        Intent(Intent.ACTION_SEND)
-                                            .setType("video/mp4")
-                                            .putExtra(Intent.EXTRA_STREAM, uri)
-                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                                        "Share video",
-                                    )
-                                )
-                        }
-                    }
+                    exporting = null
+                    if (!isFinishing && !isDestroyed) movieFinished(uri,ready.file,!ready.reused)
                 }
             } catch (e: Exception) {
+                val completed = movie
                 ui.post {
-                    panels.close()
-                    message(e.message ?: "Export failed")
+                    exporting = null
+                    if (isFinishing || isDestroyed) return@post
+                    panels.close(); message(e.message ?: "Export failed")
+                    if (completed != null && completed.file.isFile && !job.cancelled) {
+                        choose("Save completed movie",listOf("Retry saving","Save to file","Keep for later")) { action ->
+                            when (action) {
+                                0 -> exportJob("Saving video") { completed }
+                                1 -> saveDocument(completed.file,"video/mp4","MyRec-${System.currentTimeMillis()}.mp4")
+                            }
+                        }
+                    }
                 }
-            } finally {
-                file.delete()
-                exporting = null
+            }
+        }
+    }
+
+    fun export(width: Int, height: Int, color: ExportColor = ExportColor.SDR) {
+        if (exporting != null || editor.project.duration <= 0) return
+        if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            moviePermission = Triple(width,height,color)
+            requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),12)
+            return
+        }
+        val snapshot = editor.project.duplicate()
+        exportJob("Exporting") { job ->
+            movieExports.movie(store,snapshot,width,height,color,cancelled = { job.cancelled },
+                progress = { progress -> ui.post { panels.updateProgress(progress) } }) { target,progress ->
+                job.run(snapshot,target,width,height,color,progress)
             }
         }
     }
@@ -1344,18 +1466,12 @@ class MainActivity : Activity() {
         root.addOnLayoutChangeListener(
             object : View.OnLayoutChangeListener {
                 override fun onLayoutChange(
-                    view: View,
-                    left: Int,
-                    top: Int,
-                    right: Int,
-                    bottom: Int,
-                    oldLeft: Int,
-                    oldTop: Int,
-                    oldRight: Int,
-                    oldBottom: Int,
+                    view: View, left: Int, top: Int, right: Int, bottom: Int,
+                    oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
                 ) {
                     root.removeOnLayoutChangeListener(this)
                     panels.relayout()
+                    originalReview?.relayout()
                 }
             }
         )
@@ -1369,6 +1485,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         voiceDraft?.pause()
+        originalReview?.pause()
         super.onPause()
         playback.pause()
         capture?.suspendCamera()
@@ -1396,6 +1513,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         voiceDraft?.close()
+        originalReview?.dismiss()
         importDialog?.dismiss()
         linkDialog?.dismiss()
         choices?.dismiss()

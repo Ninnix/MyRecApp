@@ -7,7 +7,7 @@ repository root.
 ## Build first
 
 ```sh
-./tools/build.sh :app:testEditor :app:assembleDebug :app:assembleDebugAndroidTest
+./scripts/build.sh :app:testEditor :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
 The pure editor suite checks source clocks, splits, copies, independent effect
@@ -19,17 +19,19 @@ Android filesystem and JSON APIs; they do not need a camera or foreground UI.
 ## Choose a device suite
 
 ```sh
-ANDROID_SERIAL=SERIAL python3 tools/test-device.py
-ANDROID_SERIAL=SERIAL python3 tools/test-device.py --parity
+python3 scripts/test-device.py --serial SERIAL
+python3 scripts/test-device.py --serial SERIAL --parity
 ```
 
 The runner installs the app and test APK without clearing app data, grants
 camera/microphone access, and stores evidence in `artifacts/`. Test project
-metadata uses isolated cache folders. After the run, the app opens normal
-project storage. Recording checks create short fixture recordings.
+metadata uses isolated cache folders. Recording and editor preferences use
+separate files for each test session, including the microphone selection used
+by voiceover. After the run, the app opens normal project storage and settings.
+Recording checks create short fixture recordings.
 Keep the test phone unlocked and MyRec in the foreground.
 
-Set `ANDROID_SERIAL` to select a particular connected phone. The runner can
+Use `--serial` or `ANDROID_SERIAL` to select a particular connected phone. The runner can
 start its isolated activity through ADB when a device delays the instrumentation
 launch. It first checks that the display is awake and the keyguard is unlocked.
 It does not send wake/unlock commands or change the screen timeout.
@@ -41,19 +43,24 @@ restores access, retries the save, and verifies the latest edit was retained.
 
 | Option | Checks |
 | --- | --- |
+| `--responsive-layout` | Actual screen pixels for Projects headings with cards and after scrolling, portrait/landscape/portrait navigation, inset-aware editor controls, five compact/tall screen sizes, unchanged project and recorder visibility |
+| `--hdr-graphics` | Missing HDR graphics requirements despite camera/codec support, exact extension names, actual ten-bit EGL probe, and preservation of an existing context/framebuffer |
+| `--stabilization` | Actual 60 fps/VFR presentation times, held frames at trims/seeks, rendered shake reduction, bounded crops and rotation, reference reuse through split/trim/speed/freeze/copy/history/ZIP, checked cache reuse/corruption/source replacement, Off and legacy stability, cancellation, decoded export with unchanged audio/duration/source, portrait/landscape inspector comparison/apply/cancel/remove |
 | `--hdr-full` | Requires actual native ten-bit HDR decoding and Main10 HLG output; exports a known ramp and checks code levels, headroom and linear-light error |
 | `--hdr-pipeline` | Half-float headroom and grading, linear composition, synthetic P010 HLG code steps, consistent display conversion, inactive-HDR isolation, actual decoder precision gate, tagged Main10 export or explicit capability rejection, export controls |
 | `--time-effects` | Actual VFR/B-frame index, backward/repeated seeks, linear Step Printing smear, source phase and animated-speed persistence/undo, source clocks and constant-rate audio pieces, stereo pitch, pause detection/padding across speed keys and exact export length, negative inversion |
 | `--restoration` | Stereo/mono rational resampling, anti-aliasing, cancellation and file safety, checkpoint validation and actual 256-frame VoiceFixer inference; restoration model required |
 | `--scene` | Optional eight-second landscape excerpt: import/frame index, random-seek time effects, half-speed picture/sound export; install the source at external-files `test-inputs/sicily-8s.mp4` first |
 | `--audio-editing` | Reference Low-cut/EQ frequency response, neutral/headroom gain, stereo state across buffer sizes, mixer seeks, new-stage persistence/reset/undo and legacy stability; pitch/length/stereo and deterministic stretch/seek checks, cancellation, fade/censor persistence and archives, preview/export timing, MP4 AAC priming, tool apply/remove/undo in both orientations |
+| `--movie-exports` | Completed picture/sound reuse across reopening, canonical edit/source/settings identity, same-size/timestamp source/output changes, malformed/future/missing receipts, cancellation/failure/source changes, verified replacement retirement, and real gallery publication/reuse on API 29+ |
+| `--covers` | Scoped chronological choices, refresh, immutable full-resolution composed JPEGs through rotation, read-only provider metadata/bytes and traversal rejection, cancelled generation and unchanged edit history |
+| `--originals` | Original access with unreadable/newer metadata, bounded path scanning, external symlinks/cycles, verified bulk copies and real Android Files folder permission/write/read/cleanup, duplicate names, failure/cancel cleanup, independent recovered projects and sidecars, failed-index recovery, review Start/End through rotation and append/undo, both orientations and picker cancellation |
 | `--preview` | Continuous pinch, pan/reset, inspection without changing edits, Crop Inspect, immediate pause state, cancelled startup, actual draft EOF and replay |
-| `--effect-contracts` | Linear RGB sampling, source-time parameters, fixed rendering order, old-project conversion, shared/per-clip drafts, source keys and A/B motion/history/ZIP transfer, channel pads and touch/accessibility, primary grading and five film-color goldens, inspector controls in both orientations, Kaleidoscope wedge math/guide gestures; CUBE/Log, Dolly separation, RNNoise source stereo/tails, pause/subtitle/hold persistence and portrait/landscape workspaces |
-| `--storage` | Persistent history/redo, capture ledger, immutable revisions, legacy upgrade, recovery indexes, future-schema refusal, save failure, independent copies, take receipts, deletion safety, checksum relinking/concurrent saves, staging cleanup, live damaged-history repair, strict schema versions, recovery of Record here and voiceover insertion receipts |
+| `--effect-contracts` | Linear RGB sampling, source-time parameters, fixed rendering order, old-project conversion, shared/per-clip drafts, source keys and A/B motion/history/ZIP transfer, channel pads and touch/accessibility, primary grading, film-color/Halation/Noir goldens and grain presentation clock, inspector controls in both orientations, Kaleidoscope wedge math/guide gestures; CUBE/Log, Dolly separation, RNNoise source stereo/tails, pause/subtitle/hold persistence and portrait/landscape workspaces |
+| `--storage` | Persistent history/redo, typed capture recipes in originals/ledger/receipts/ZIPs, immutable revisions, bounded decoded history cache/private copies and changed/missing disk checks, read timing for 65 states × 15 clips, legacy upgrade, recovery indexes, future-schema refusal, save failure, independent copies, deletion safety, checksum relinking, staging cleanup, damaged-history repair and Record here/voiceover receipt recovery |
 | `--archives` | ZIP checksums, source/history/redo assets, sidecars, missing/damaged media and checked relinking, unsafe paths, future versions, cancellation, no overwrite, OTIO timing |
 | `--tool-workspaces` | Start/Split/Tools/Export order, Text duration/tabs/apply/cancel, bundled font glyphs, title motion/outline/background export, LUT previews/comparison/favorites and saved/source-clock grade animation in both orientations |
 | `--showcase` | Reproduce the Colosseum landscape timeline and portrait Text/LUT screenshots from the documented clip in an isolated project store |
-| `--media-editing` | Move, Snap to cuts, Link confirmation/intersection, Cut/Paste/gaps, Restore sync, ordered mixed photo/video import and export, real voiceover passes/audition/discard, voice screen rotation |
 | `--storage-ui` | Project switching, portrait/landscape originals, actual Retry recovery, undoable unavailable-take removal, real paused capture, Record here insertion and undo protection |
 | No option | Native image/audio calls, runtimes, persistence, decode/export, stabilization, composition, camera switching, pause/resume, AF, microphone labels, portrait recording |
 | `--parity` | Portrait/landscape tools, drafts, cancellation, rotation, placement, volume, sliders, timeline, Settings, Animate controls |
@@ -66,15 +73,25 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--composition` | Encoded pixels for five dual layouts, round masks, swaps, normal framing, four rotations |
 | `--camera-gaps` | Real concurrent capture, layout changes, pause/resume, timing, Main10 HLG metadata, HDR decode/SDR export, live effect ranges |
 | `--live-rotation` | Display rotation during one SDR, HDR, or dual take; UI reflow and saved-frame comparison |
-| `--capture-controls` | Simplified toolbar, Camera settings and color/setup locks, lower-strip Layout, Mark/Pause positions, saved marks, torch, border transparency/resize, brightness restoration, PiP movement/resize/swaps |
-| `--tool-workspaces` | Start/Split/Tools/Export order, Text duration/tabs/apply/cancel, bundled font glyphs, title motion/outline/background export, LUT previews/comparison/favorites and saved/source-clock grade animation in both orientations |
-| `--media-editing` | Portrait/landscape copy/paste, horizontal overlaps and lower-card selection, release-position snapping, free scrubbing until release, snap targets and Off, frame/cut-aligned marks, minimum selection length and Move end, shared Snap to cuts/Tools preference across fresh activities, neighbor modes, long-press selection, stable Move rows, exact boundary picking, Cancel/Done, Placement, audio import, persistence, foreground pixels in preview/export and decoded sound |
+| `--capture-controls` | Simplified toolbar, Camera settings and color/setup locks, lower-strip Layout, Mark/Pause positions, saved marks, torch, front-light width/color/opacity/custom picker, rounded border/resize, brightness restoration and saved-edge pixels, PiP movement/resize/swaps |
+| `--media-editing` | Portrait/landscape copy/paste, horizontal overlaps and lower-card selection, release-position snapping, free scrubbing until release, snap targets and Off, frame/cut-aligned marks, minimum selection length and Move end, shared Snap to cuts/Tools preference across fresh activities, neighbor modes, long-press selection, stable Move rows, exact boundary picking, Cancel/Done, Placement, audio import and ordered mixed photo/video import/export, persistence, foreground pixels and decoded sound, real voiceover passes/audition/discard and rotation |
 | `--playback` | Moving frames in a fifth take after seeking earlier takes |
-| `--camera-preview` | Mirrored front preview/recording in portrait/landscape and Kaleidoscope orientation |
+| `--camera-preview` | All independent selfie preview/save mirror combinations in portrait/landscape, saved-switch lock during a take and Kaleidoscope framing |
+| `--capture-compatibility` | Unsupported HDR repeated requests and disabled UI touch on each camera, a request during SDR recording, and a decoded playable result |
+| `--capture-endurance` | Eleven-minute SDR take without user input, awake/unlocked checks, pause/resume and marker, bounded memory growth, full track timestamp continuity/AV drift, endpoint decoding and source checksum; removes its own isolated recording after success |
+| `--capture-focus` | Reference peaking pixels, per-camera zoom/manual focus recall, actual lens metadata, gestures/hold and preview-only focus aids |
 | `--references` | Project delete/restore, shared-media safety, project controls, mirror geometry, RGB offsets |
 | `--new-ui` | Live effects sheet, Clear all, Widescreen, 4:5 crop, quarter turns |
 | `--hdr-color` | Full/limited P010 patches through GL, C11, decoder, and Main10 encoder; primaries detection and sidecars |
 | `--hdr-scene` | SDR/HDR scene comparison and a direct HDR recording bypassing the compositor |
+
+Use `--serial SERIAL` to select an attached phone. `--apk-directory DIRECTORY`
+selects a pair named `app-debug.apk` and `app-debug-androidTest.apk` signed with
+the installed app's certificate. This allows testing a phone with an existing
+release installation without uninstalling its projects. The two APKs must share
+a certificate. The responsive-layout suite checks hardware screenshots before
+any software view draw, so a valid view hierarchy alone cannot pass the heading
+visibility check. Tests use isolated projects and recording preferences.
 
 Use `--current-project` only with `--playback`. It opens a read-only copy of the
 active project in the isolated store. Other suites use fixtures.
@@ -90,11 +107,11 @@ lens clear. Encoded dimensions alone do not prove that the picture is upright.
 ## Check HDR independently
 
 ```sh
-ANDROID_SERIAL=SERIAL python3 tools/check-hdr.py --device
+ANDROID_SERIAL=SERIAL python3 scripts/check-hdr.py --device
 ```
 
 This uses FFmpeg to inspect encoded patch values. Generate the fixture with
-`tools/hdr-fixture.py`. Optional `hdr-color-reference.png` and
+`scripts/hdr-fixture.py`. Optional `hdr-color-reference.png` and
 `hdr-color-input.png` in the app's external-files directory exercise a known
 camera interpretation; personal images are not committed fixtures.
 
@@ -126,6 +143,8 @@ AAC preroll, even when its decoder correctly applies the MP4 edit list.
 The effect-contract suite also checks independent RNNoise channels and final
 partial-frame flushing, native CUBE interpolation and linear-light
 strength, technical adjustments at zero strength, Apple Log viewing ramps,
+Halation extraction/blur/flash goldens in SDR and half float, exact bypass and
+algorithm identity, source-key persistence and all film-color inspector controls,
 deterministic Dolly foreground protection, saved pause playback, source-owned
 subtitle words, hold metadata and project asset/history/archive ownership. The
 host editor suite tests speech-island bounds, word timing outside silence,
@@ -139,28 +158,23 @@ SHA-256 values before inference. The window/cache tests use a supplied processor
 as well, to isolate channel and boundary behavior from model quality. No full
 Qwen recognition or imported Cinematic depth acceptance is claimed by these tests.
 
-A successful capability-rejection test does not prove HDR encoding. The Mi 8
-rejected native ten-bit HDR images; its earlier tiny-resolution encoder check
-cannot establish the supported sizes of its Main10 encoder. The OnePlus 15
-passes actual 720p, 1080p and 4K Main10 HLG export: 741/855/874 distinct ramp
-levels, about 4.89 times SDR-white headroom and 0.0038/0.0034/0.0024 mean linear
-error. `--hdr-full` requires this
-successful path. An independent FFmpeg probe verifies the output profile and
-tags. Independent FFmpeg pixel decoding also confirms the distinct-code counts
-and headroom; `artifacts/oneplus15/hdr-independent-decode.json` records those
-measurements beside the movies and metadata.
-
-The OnePlus 15 checkpoint passes 97 host editor checks and 257 device checks
-across 27 suites. `artifacts/oneplus15/acceptance.json` records the complete
-matrix and matching build, installed and copied-APK fingerprints. The copied
-APK is `artifacts/myrec-debug.apk`. Project/media integrity against the pre-test
-backup is recorded separately in `project-integrity.json`.
+A successful capability-rejection test does not prove HDR encoding.
+`--hdr-full` requires actual ten-bit decoding and Main10 HLG output. Check
+supported sizes, distinct ramp codes, headroom, profile and color tags with an
+independent decoder as well as Android. Keep numerical results and device/build
+fingerprints in the local verification report.
 
 Codec selection checks source/output sizes and tries compatible encoders.
 Android 17 reports the foreground activity as `topResumedActivity`; the runner
 recognizes that form so its ADB fallback cannot restart a running test session.
 AAC checks include explicit decoder preroll handling and MP4 presented-duration
-bounds, avoiding double gapless trimming on newer Android releases.
+bounds. Older extractors express AAC edits as decoder delay/padding, while newer
+ones can shift packet timestamps. The decoder retains the first path when
+timestamps are nonnegative and avoids applying both paths to negative preroll.
+The encoder's timing probe deliberately decodes the raw prefix. Check encoded
+pitch, fade and censor timing independently with FFmpeg as well. The relevant platform behavior is in
+[AOSP's MP4 extractor](https://android.googlesource.com/platform/frameworks/av/+/0da67bb0e7facf146be789e4c67afa4fc5788995/media/extractors/mp4/MPEG4Extractor.cpp)
+and [ACodec's skip/cut handling](https://android.googlesource.com/platform/frameworks/av/+/9c318e64f58b11b1eda587a5d741d36d2511d42f/media/libstagefright/ACodec.cpp).
 
 Imported depth needs an original Cinematic movie with its disparity track.
 YouTube excerpts contain ordinary video/audio and cannot validate depth decoding.

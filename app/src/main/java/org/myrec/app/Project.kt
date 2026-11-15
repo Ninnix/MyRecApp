@@ -24,6 +24,13 @@ data class Effect(
     var subtitle: SubtitlePhrase? = null,
     var phase: EffectPhase? = null,
 ) {
+    companion object {
+        fun create(kind: String) = Effect(kind = kind,parameters = when (kind) {
+            "Noir" -> Noir.parameters()
+            "16mm" -> SixteenMm.parameters()
+            else -> EffectContracts.parameters(kind)
+        }).also { if (kind == "Stabilize") StabilizationSettings.initialize(it) }
+    }
     fun parameter(key: String) = parameters.firstOrNull { it.id == key }
         ?: if (key == "strength") parameters.firstOrNull { it.id == "intensity" } else null
 
@@ -38,16 +45,14 @@ data class Effect(
         val p = parameter(key)
         if (p == null) values[key] = value.toString()
         else {
-            val next = EffectValue.Number(value.toDouble())
-            require(p.kind.accepts(next))
+            val next = p.number(value)
             if (source != null && p.keyframes.isNotEmpty()) p.setKeyframe(source, next) else p.value = next
         }
     }
 
     fun editNumber(key: String, value: Float, source: Double, begin: Double, animate: Boolean) {
         val p = parameter(key) ?: return setNumber(key, value)
-        val next = EffectValue.Number(value.toDouble())
-        require(p.kind.accepts(next))
+        val next = p.number(value)
         val prior = (p.at(source) as? EffectValue.Number)?.value
         if (prior != null && abs(prior - value) <= .000001) return
         if (animate && p.keyframes.isEmpty() && source > begin + .001) p.setKeyframe(begin, p.value)
@@ -707,6 +712,8 @@ class Editor(var project: Project = Project()) {
             val origin = r?.start ?: if (selected.isEmpty() && replaceId == null) cursor else base
             for (c in targets().sortedByDescending { it.start }) {
                 if (replaceId != null && c.effects.none { it.id == replaceId }) continue
+                if (StabilizationSettings.modern(effect) && (!c.video || c.photo)) continue
+                val previous = c.effects.firstOrNull { it.id == replaceId }
                 val oldDuration = c.duration
                 val oldEnd = c.end
                 c.effects.removeAll {
@@ -718,6 +725,7 @@ class Editor(var project: Project = Project()) {
                 if (title && (origin + effect.to <= c.start || origin + effect.from >= c.end)) continue
                 c.effects.add(
                     effect.copyEffect().apply {
+                        if (StabilizationSettings.modern(this)) StabilizationSettings.bind(this,c,previous)
                         if (kind == "Color LUTs" && motion != null) {
                             val base = r?.start ?: targets().minOfOrNull { it.start } ?: 0.0
                             motion = motion!!.anchored(c, c.start - base)

@@ -25,17 +25,19 @@ object Effects {
                     "Exposure",
                     "Vignette",
                     "Film grain",
+                    "Halation",
+                    "16mm",
                 ),
             "Camera & frame" to
                 listOf("Zoom", "Mirror", "Rotation", "Kaleidoscope", "Dolly Zoom", "Widescreen 1953"),
             "Time" to listOf("Negative Strobe", "Step Printing", "Strobe", "Freeze", "Echo"),
             "Background" to listOf("Blur", "Letterbox"),
         )
-    val legacy = listOf("Sepia", "Invert", "Contrast", "Warmth", "16mm", "Undercranking")
+    val legacy = listOf("Sepia", "Invert", "Contrast", "Warmth", "Undercranking")
     val video
         get() = categories.values.flatten() + legacy
 
-    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null, elapsed: Double = 0.0) {
+    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null, elapsed: Double = 0.0, frame: Long = 0) {
         if (effect.kind == "Color LUTs") {
             val cube = effect.values["path"]?.let { LutAssets.load(it) }
                 ?: CubeLut.builtin(effect.values["lut"] ?: "Natural")
@@ -48,8 +50,17 @@ object Effects {
             return
         }
         if (strength <= 0f) return
+        if (Noir.modern(effect)) {
+            Native.noir(bitmap,strength,Noir.uniforms(effect),frame)
+            return
+        }
+        if (SixteenMm.modern(effect)) {
+            Native.sixteenMm(bitmap,strength,FilmColor.uniforms(effect),frame)
+            return
+        }
         FilmColor.definitions[effect.kind]?.let {
-            Native.filmColor(bitmap, it.kernel, strength, FilmColor.uniforms(effect))
+            if (effect.kind == "Halation") Native.halation(bitmap, strength, FilmColor.uniforms(effect))
+            else Native.filmColor(bitmap, it.kernel, strength, FilmColor.uniforms(effect))
             return
         }
         when (effect.kind) {
@@ -138,6 +149,8 @@ object Effects {
             else -> Color.rgb(51, 179, 221)
         }
 
+    fun pixelId(effect: Effect) = if (Noir.modern(effect) || SixteenMm.modern(effect)) 0 else pixelId(effect.kind)
+
     fun pixelId(kind: String) =
         when (kind) {
             "Mono",
@@ -168,10 +181,12 @@ object Effects {
         }
 }
 
-class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
+class Frames(private val cancelled: () -> Boolean = { false }, private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
     private var fps = 30
     private var extended = false
     private var tenBit = false
+    private var presentationFrame = 0L
+    private var originalStabilization = false
     private val decoders = linkedMapOf<String, VideoDecoder>()
     private val failed = mutableSetOf<String>()
     private val photoPaths = mutableMapOf<String, Boolean>()
@@ -242,7 +257,9 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
             null
         }
 
-    fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false): Bitmap {
+    fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false,
+        originalStabilization: Boolean = false): Bitmap {
+        this.originalStabilization = originalStabilization
         fps = project.fps.coerceAtLeast(1)
         tenBit = keepLinear
         preserveHdr = keepLinear
@@ -253,6 +270,7 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
         val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
+        presentationFrame = floor(t * fps + .000001).toLong()
         data class Layer(
             val track: Int,
             val clip: Clip? = null,
@@ -378,6 +396,12 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                 val hz = it.number("frequency", 8f)
                 sourceTime = floor(sourceTime * hz) / hz
             }
+        val stabilization = fx.lastOrNull { it.kind == "Stabilize" }
+        val sourceStabilization = stabilization?.takeIf { StabilizationSettings.modern(it) &&
+            StabilizationSettings.level(it) != StabilizationLevel.Off && !c.photo }
+        if (sourceStabilization != null) sourceTime = if (originalStabilization)
+            StabilizationRenderer.originalTime(c.path,sourceTime,cancelled,onAnalysis)
+        else StabilizationRenderer.frameTime(c,sourceStabilization,sourceTime,cancelled,onAnalysis)
         val grade = fx.lastOrNull { it.kind == "Color LUTs" }
         val rawLog = grade?.values?.get("source") in listOf("Apple Log", "Apple Log 2")
         val raw = sequenceFrame(c, fx, sourceTime, width, height, rawLog) ?: return
@@ -426,9 +450,9 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                     Native.workingNegative(bitmap, e.strength(local, c.duration))
             }
             Effects.correct(bitmap, e, e.strength(local, c.duration), person,
-                sourceTime - (e.values["origin"]?.toDoubleOrNull() ?: c.sourceTime(c.start + e.from)))
+                sourceTime - (e.values["origin"]?.toDoubleOrNull() ?: c.sourceTime(c.start + e.from)),frame = presentationFrame)
             var kind = e.kind
-            val id = Effects.pixelId(kind)
+            val id = Effects.pixelId(e)
             if (id > 0)
                 Native.image(
                     bitmap,
@@ -571,8 +595,8 @@ class Frames(private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
                 rect.centerX(),
                 rect.centerY(),
             )
-        val stabilization = fx.lastOrNull { it.kind == "Stabilize" }
-        if (stabilization != null && stabilization.number("strength", 0.5f) > 0f) {
+        if (sourceStabilization != null && !originalStabilization) canvas.concat(StabilizationRenderer.matrix(c,sourceStabilization,sourceTime,dest,cancelled,onAnalysis))
+        else if (stabilization != null && !StabilizationSettings.modern(stabilization) && stabilization.number("strength", 0.5f) > 0f) {
             canvas.concat(
                 Stabilizer.matrix(
                     c,

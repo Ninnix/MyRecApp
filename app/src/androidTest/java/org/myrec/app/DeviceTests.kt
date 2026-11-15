@@ -43,17 +43,22 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing") {
+        if (suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {
                 val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
                     .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
                 activity = a
-                if (suite == "scene") SceneTests.run(this, a, ::test)
+                if (suite == "responsive-layout") ResponsiveLayoutTests.run(this,a,::onMain,::test)
+                else if (suite == "stabilization") StabilizationDeviceTests.run(this,a,::onMain,::test)
+                else if (suite == "scene") SceneTests.run(this, a, ::test)
                 else if (suite == "restoration") RestorationTests.run(this, a, ::test)
                 else if (suite == "time-effects") TimeEffectsDeviceTests.run(this, a, ::onMain, ::test)
                 else if (suite == "hdr-pipeline" || suite == "hdr-full") HdrPipelineTests.run(this, a, ::onMain, ::test, requireFull = suite == "hdr-full")
+                else if (suite == "covers") CoverTests.run(this, a, ::onMain, ::test)
+                else if (suite == "originals") OriginalMediaTests.run(this,a,::onMain,::test)
+                else if (suite == "movie-exports") MovieExportTests.run(this, a, ::onMain, ::test)
                 else if (suite == "audio-editing") AudioEditingTests.run(this, a, ::onMain, ::test)
                 else if (suite == "preview") PreviewTests.run(this, a, ::onMain, ::test)
                 else if (suite == "effect-contracts") EffectContractTests.run(this, a, ::onMain, ::test)
@@ -64,9 +69,10 @@ class DeviceTests : Instrumentation() {
             } finally { activity?.let { onMain { it.finish() } } }
             return
         }
-        if (suite == "storage" || suite == "archives") {
+        if (suite == "hdr-graphics" || suite == "storage" || suite == "archives") {
             try {
-                if (suite == "archives") ArchiveTests.run(this, ::test)
+                if (suite == "hdr-graphics") HdrGraphicsTests.run(this,::test)
+                else if (suite == "archives") ArchiveTests.run(this, ::test)
                 else DurabilityTests.run(this, ::test)
                 finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
             } catch (e: Throwable) {
@@ -113,6 +119,9 @@ class DeviceTests : Instrumentation() {
         }
         if (
             suite == "references" ||
+                suite == "capture-compatibility" ||
+                suite == "capture-endurance" ||
+                suite == "capture-focus" ||
                 suite == "showcase" ||
                 suite == "camera-preview" ||
                 suite == "playback" ||
@@ -2459,7 +2468,10 @@ class DeviceTests : Instrumentation() {
                 )
                     as MainActivity
             activity = a
-            if (suite == "showcase") ShowcaseScreens.run(this, a, ::onMain, ::test)
+            if (suite == "capture-focus") FocusControlsTest.run(this, a, ::onMain, ::test)
+            else if (suite == "showcase") ShowcaseScreens.run(this, a, ::onMain, ::test)
+            else if (suite == "capture-compatibility") CaptureCompatibilityTest.run(this, a, ::onMain, ::test)
+            else if (suite == "capture-endurance") CaptureEnduranceTest.run(a,::onMain,::test)
             else if (suite == "capture-controls") CaptureControlsTest.run(this, a, ::onMain, ::test)
             else if (suite == "media-editing") MediaEditingTest.run(this, a, ::onMain, ::test)
             else if (suite == "tool-workspaces") ToolWorkspaceTests.run(this, a, ::onMain, ::test)

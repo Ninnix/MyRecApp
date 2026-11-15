@@ -38,6 +38,16 @@ data class EffectParameter(
 ) {
     fun duplicate() = copy(keyframes = keyframes.toMutableList())
 
+    fun number(value: Float): EffectValue.Number {
+        val next = if (kind is ParameterKind.Slider) {
+            /* A UI float such as 0.3f may lie just beyond the stored double endpoint. */
+            require(value.isFinite() && value in kind.min.toFloat()..kind.max.toFloat())
+            EffectValue.Number(value.toDouble().coerceIn(kind.min,kind.max))
+        } else EffectValue.Number(value.toDouble())
+        require(kind.accepts(next))
+        return next
+    }
+
     fun valid() = kind.accepts(value) && keyframes.size <= 100000 &&
         keyframes.map { it.id }.distinct().size == keyframes.size &&
         keyframes.all { it.id.isNotBlank() && it.id.length <= 100 && it.time.isFinite() && it.time in 0.0..604800.0 && kind.accepts(it.value) } &&
@@ -121,6 +131,12 @@ object EffectContracts {
         "vibrance" -> "Adjusts muted colors more than vivid ones. Positive values are gentler on common skin hues."
         "hue" -> "Rotates colors around the color wheel while preserving luminance. Zero is unchanged."
         else -> "Blends the correction with its input in linear light. 100% applies the full correction; 0% bypasses it."
+    }
+
+    fun parameters(effect: Effect) = when {
+        Noir.modern(effect) -> Noir.parameters()
+        SixteenMm.modern(effect) -> SixteenMm.parameters()
+        else -> parameters(effect.kind)
     }
 
     fun parameters(kind: String): MutableList<EffectParameter> {

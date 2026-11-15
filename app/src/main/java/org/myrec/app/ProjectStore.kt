@@ -23,6 +23,7 @@ class ProjectStore(val root: File) {
     val problems = ConcurrentHashMap<String, String>()
     private val deleted = File(root, "deleted")
     private val knownIndexes = ConcurrentHashMap.newKeySet<String>()
+    private val stateCache = RevisionCache()
 
     private fun id(value: String): String {
         require(value.matches(Regex("[A-Za-z0-9-]{1,100}"))) { "Invalid project identity" }
@@ -104,7 +105,11 @@ class ProjectStore(val root: File) {
         require(hash.matches(Regex("[0-9a-f]{64}"))) { "Invalid history reference" }
         val data = bytes(File(revisions(project), "$hash.json"))
         check(sha(data) == hash) { "An editing-history file is damaged" }
-        return decode(JSONObject(String(data, Charsets.UTF_8))).also {
+        /* Verify disk bytes on every read; only decoding is reusable. */
+        return (stateCache[hash] ?: decode(JSONObject(String(data, Charsets.UTF_8))).also {
+            check(it.id == project) { "History belongs to another project" }
+            stateCache.put(hash,it,data.size)
+        }).also {
             check(it.id == project) { "History belongs to another project" }
         }
     }
@@ -663,9 +668,11 @@ class ProjectStore(val root: File) {
             require(c.effects.size <= 10000 && c.effects.map { it.id }.distinct().size == c.effects.size &&
                 c.effects.all { it.id.isNotBlank() && it.id.length <= 100 }) { "Invalid effect identities" }
             for (effect in c.effects) {
+                if (effect.kind == "Stabilize" && effect.values.containsKey("stabilization"))
+                    require(StabilizationSettings.valid(effect,c)) { "Invalid stabilization settings" }
                 if (effect.kind in AudioFilter.direct && AudioFilter.modern(effect))
                     require(AudioFilter.valid(effect)) { "Invalid direct audio controls" }
-                val expected = EffectContracts.parameters(effect.kind).associateBy { it.id }
+                val expected = EffectContracts.parameters(effect).associateBy { it.id }
                 require(effect.parameters.size == expected.size && effect.parameters.map { it.id }.distinct().size == expected.size &&
                     effect.parameters.all { it.kind == expected[it.id]?.kind && it.valid() }) { "Invalid effect parameters" }
                 require(effect.phase?.let { (effect.kind in TimeEffects.kinds || effect.kind == "Text" && effect.values["design"] == "1") && it.valid() } != false) { "Invalid time-effect phase" }
@@ -732,6 +739,8 @@ class ProjectStore(val root: File) {
                                                     if (e.kind == "Text" && e.values["design"] == "1" || e.kind == "Color LUTs" &&
                                                         (e.motion != null || e.values.containsKey("warmth") || e.values.containsKey("tint"))) put("algorithm", 2)
                                                     if (e.kind in AudioFilter.direct && AudioFilter.modern(e)) put("algorithm", 3)
+                                                    if (e.kind == "Halation" || Noir.modern(e) || SixteenMm.modern(e)) put("algorithm", 4)
+                                                    if (StabilizationSettings.modern(e)) put("algorithm", 5)
                                                     put("parameters", EffectJson.encode(e))
                                                     e.phase?.let { put("phase", TimeEffectJson.encode(it)) }
                                                     e.subtitle?.let { put("subtitle", SubtitleJson.encode(it)) }
@@ -821,8 +830,10 @@ class ProjectStore(val root: File) {
                 val values = e.getJSONObject("values")
                 val algorithm = integer(e, "algorithm", 0)
                 require(algorithm >= 0) { "Invalid effect algorithm" }
-                if (algorithm > 3 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
-                    algorithm == 3L && e.getString("kind") !in AudioFilter.direct) throw NewerProject()
+                if (algorithm > 5 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
+                    algorithm == 3L && e.getString("kind") !in AudioFilter.direct ||
+                    algorithm == 4L && e.getString("kind") !in listOf("Halation","Noir","16mm") ||
+                    algorithm == 5L && e.getString("kind") != "Stabilize") throw NewerProject()
                 val fx =
                     Effect(
                         e.getString("id"),
@@ -830,10 +841,16 @@ class ProjectStore(val root: File) {
                         e.getDouble("from"),
                         e.getDouble("to"),
                         e.getBoolean("enabled"),
+                        parameters = when {
+                            algorithm == 4L && e.getString("kind") == "Noir" -> Noir.parameters()
+                            algorithm == 4L && e.getString("kind") == "16mm" -> SixteenMm.parameters()
+                            else -> EffectContracts.parameters(e.getString("kind"))
+                        },
                     )
                 values.keys().forEach { fx.values[it] = values.getString(it) }
+                if (algorithm == 5L) require(StabilizationSettings.modern(fx)) { "Invalid stabilization algorithm" }
                 if (fx.kind in AudioFilter.direct && fx.values["dsp"]?.let { it != "2" } == true) throw NewerProject()
-                if (algorithm == 0L && integer(o, "version", 1) < 4) EffectImport.convert(fx)
+                if (algorithm == 0L && integer(o, "version", 1) < 4 && !e.has("parameters")) EffectImport.convert(fx)
                 else EffectJson.decode(fx, if (e.has("parameters")) e.getJSONArray("parameters") else null)
                 EffectJson.decodeMotion(fx, if (e.has("motion") && !e.isNull("motion")) e.getJSONObject("motion") else null)
                 if (fx.parameters.isNotEmpty()) fx.values.clear()

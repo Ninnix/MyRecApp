@@ -1,3 +1,4 @@
+.DS_Store
 .gradle/
 .kotlin/
 **/build/
@@ -15,6 +16,10 @@ local.properties
 *.p12
 *.pfx
 keystore.properties
+*.pem
+*.key
+.env
+.env.*
 release.properties
 **/__pycache__/
 *.pyc
@@ -28,10 +33,10 @@ release.properties
 
 /artifacts/
 
-/tools/research-*.py
-/tools/research_metrics.py
-/tools/prepare-research.py
-/tools/export-cofi.py
-/tools/fetch-ort-research.py
-/tools/catalog-screens.py
-/tools/parity-review.py
+/scripts/research-*.py
+/scripts/research_metrics.py
+/scripts/prepare-research.py
+/scripts/export-cofi.py
+/scripts/fetch-ort-research.py
+/scripts/catalog-screens.py
+/scripts/parity-review.py

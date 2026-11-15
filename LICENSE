@@ -20,22 +20,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Scope and attribution
-=====================
-
-The MIT License above applies to MyRec's application source code and
-accompanying documentation. Ninnix and the MyRec contributors hold the rights
-to their Android implementation and changes. Salvatore Sanfilippo retains the
-copyright in YouRec's original source code and documentation; the complete
-upstream notice is preserved in app/src/main/assets/licenses/YouRec.txt.
-
-The MyRec name and hippopotamus icon (docs/branding/myrec-icon.png and its
-launcher derivatives) are branding assets and are excluded from the MIT grant
-above. Salvatore Sanfilippo reserves the YouRec name and original icon as
-branding. This license grants no permission to use either project's branding.
-
-Third-party libraries, models, fonts, images and test fixtures retain their
-own licenses and notices. In particular, VoiceFixer's code is MIT, while its
-published model checkpoints are CC BY 4.0. See THIRD_PARTY_NOTICES.md and
-app/src/main/assets/licenses/ for the applicable attributions and license texts.

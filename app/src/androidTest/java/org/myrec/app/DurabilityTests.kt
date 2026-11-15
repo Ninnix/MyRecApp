@@ -16,6 +16,40 @@ object DurabilityTests {
             return ProjectStore.inspect(file)
         }
         fun reopen(e: Editor) = ProjectStore(root).editor(e.project)
+        test("typed capture recipes retain controls and keys in originals ledger recovery and archives") {
+            val effects = mutableListOf(
+                Effect(kind = "RGB Offset").apply { setNumber("redX",.21f); editNumber("greenY",-.17f,.5,0.0,true) },
+                Effect(kind = "Color Correction").apply { editNumber("exposure",1.5f,.5,0.0,true) },
+                Effect(kind = "Kaleidoscope").apply { setNumber("divisions",7f); setNumber("splitAngle",23f) },
+                Effect(kind = "Silent Tint").apply { parameter("mode")!!.value = EffectValue.Choice("Tone"); parameter("tint")!!.value = EffectValue.Choice("Fire Red") },
+                Effect.create("Noir").apply { setNumber("crush",.27f) },
+                Effect.create("16mm").apply { setNumber("softness",.7f) })
+            val editor = Editor(Project(name = "Typed capture recipes")); store.save(editor,false)
+            val file = File(store.media,"typed-capture.mp4")
+            val receipt = store.beginCapture(editor.project,file,effects)
+            instrumentation.context.assets.open("fixture.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
+            val clip = ProjectStore.inspect(file).copy(id = receipt.id,group = receipt.id,occurrence = receipt.id,
+                effects = effects.map { it.copyEffect() }.toMutableList())
+            store.finishCapture(receipt,clip); editor.appendRecording(clip); store.save(editor,false)
+            check(store.acknowledgeCapture(receipt))
+            val saved = ProjectStore(root).open(editor.project.id)
+            for ((label,actual) in listOf("current" to saved.project.clips.single(),"ledger" to saved.captures.single(),"original" to saved.originals.single()))
+                for ((expected,loaded) in effects.zip(actual.effects)) check(loaded == expected) { "$label ${expected.kind} changed its captured controls or keys" }
+            val archive = File(root,"typed-capture.zip")
+            ProjectArchive.export(store,editor.project,archive)
+            val transferred = store.open(ProjectArchive.restore(store,archive).project.id)
+            check(transferred.captures.single().effects == effects && transferred.originals.single().effects == effects)
+            archive.delete()
+            val interrupted = Editor(Project(name = "Typed receipt")); store.save(interrupted,false)
+            val pending = File(store.media,"typed-interrupted.mp4")
+            val unfinished = store.beginCapture(interrupted.project,pending,effects)
+            instrumentation.context.assets.open("fixture.mp4").use { input -> pending.outputStream().use { input.copyTo(it) } }
+            store.checkpoint(unfinished,listOf(.5),effects)
+            check(ProjectStore(root).recoverCaptures() == 1)
+            val recovered = store.open(interrupted.project.id)
+            check(recovered.project.clips.single().effects == effects && recovered.captures.single().effects == effects && recovered.originals.single().effects == effects)
+            check(ProjectStore(root).recoverCaptures() == 0)
+        }
         test("history and its redo branch survive reopening beyond sixty edits") {
             val e = Editor(Project(clips = mutableListOf(source("history.mp4"))))
             repeat(80) { e.setGain(if (it % 2 == 0) -3f else -9f) }
@@ -34,6 +68,47 @@ object DurabilityTests {
             check(!again.canRedo)
             store.save(again)
             check(!reopen(again).canRedo)
+        }
+        test("repeated long-history reads preserve every edit and record library read timing") {
+            val directory = File(root,"read-bench"); val target = ProjectStore(directory)
+            val file = File(target.media,"fixture.mp4")
+            instrumentation.context.assets.open("fixture.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
+            val editor = Editor(Project(clips = (0 until 15).map { index -> Clip(path = file.path,sourceOut = 1.0,start = index.toDouble(),
+                effects = mutableListOf(Effect(kind = "Color Correction"))) }.toMutableList()))
+            repeat(64) { editor.setGain(if (it%2 == 0) -3f else -9f) }
+            target.save(editor,false); target.open(editor.project.id)
+            val timings = org.json.JSONArray()
+            repeat(5) {
+                val started = android.os.SystemClock.elapsedRealtimeNanos()
+                val loaded = target.open(editor.project.id)
+                timings.put((android.os.SystemClock.elapsedRealtimeNanos()-started)/1000000.0)
+                check(loaded.undo.size == 64 && loaded.project.clips.size == 15 && loaded.project.clips.first().gainDb == -9f)
+                check(loaded.undo.first().project.clips.first().gainDb == 0f)
+            }
+            File(instrumentation.targetContext.getExternalFilesDir(null),"history-read-bench.json").writeText(JSONObject()
+                .put("device",android.os.Build.MODEL).put("states",65).put("clips",15).put("milliseconds",timings).toString(2))
+            directory.deleteRecursively()
+        }
+        test("reopened history snapshots never share mutable edits with subsequent readers") {
+            val editor = Editor(Project(clips = mutableListOf(source("private-history.mp4").apply { effects.add(Effect.create("Noir")) })))
+            editor.setGain(-3f); store.save(editor,false)
+            val expected = editor.session(); val first = store.open(editor.project.id)
+            first.project.clips.single().effects.single().setNumber("crush",.3f)
+            first.undo.first().project.clips.clear()
+            val second = store.open(editor.project.id)
+            check(second.project == expected.project && second.undo.first().project == expected.undo.first().project)
+        }
+        test("a warm decoded revision never hides changed or missing immutable disk bytes") {
+            val directory = File(root,"cache-integrity"); val target = ProjectStore(directory)
+            val project = Project(clips = mutableListOf(Clip(path = "missing.mp4",sourceOut = 2.0)))
+            target.save(project,false); target.open(project.id)
+            val index = JSONObject(File(directory,"${project.id}.json").readText())
+            val file = File(directory,"revisions/${project.id}/${index.getString("state")}.json")
+            val original = file.readBytes(); file.writeBytes(original.clone().apply { this[0] = ' '.code.toByte() })
+            check(runCatching { target.open(project.id) }.isFailure)
+            file.writeBytes(original); check(target.open(project.id).project == project)
+            check(file.delete()); check(runCatching { target.open(project.id) }.isFailure)
+            directory.deleteRecursively()
         }
         test("recordings survive old edits and preserve immutable history payloads") {
             val e = Editor()

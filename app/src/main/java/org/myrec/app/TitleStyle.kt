@@ -110,6 +110,8 @@ object TitleStyle {
         val available = (maxWidth - inset * 2).coerceAtLeast(ceil(size).toInt())
         val desired = ceil(Layout.getDesiredWidth(text, paint)).toInt().coerceIn(1, available)
         val alignment = when (fx.values["align"]) { "Left" -> Layout.Alignment.ALIGN_NORMAL; "Right" -> Layout.Alignment.ALIGN_OPPOSITE; else -> Layout.Alignment.ALIGN_CENTER }
+        // Layout's API-23 constant has the same value as the API-29 LineBreaker alias.
+        @android.annotation.SuppressLint("WrongConstant")
         val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, desired)
             .setAlignment(alignment).setIncludePad(false).setLineSpacing(size * fx.number("lineSpacing"), 1f)
             .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY).build()

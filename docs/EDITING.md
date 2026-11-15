@@ -79,8 +79,23 @@ memory and lets you save it again.
 
 In Projects, open the card's menu for Original recordings. Review a source,
 save its unchanged file through Android's picker, or insert it at the playhead.
+Review original also selects source Start/End and adds that range to the end
+as one undoable insertion. The selected range survives rotation. Done closes
+review without changing the edit.
 Originals remain available when absent from the timeline. Duplicate makes an
 independent copy of sources, overlays, sidecars, and undo/redo history.
+
+Save all originals to Files creates a separate folder in the Android folder
+picker's destination. Each copy is checked against its source; Cancel or a
+failed copy removes only that operation's new files. If a project cannot open,
+Browse original files lists source files independently of editing metadata.
+Saving those files does not reconstruct or change a timeline.
+
+Create recovered project makes checked, independent copies of playable original
+files and their color/mirror sidecars. It leaves the active edit unchanged and
+adds a separate project card. Unreadable files stay with the original collection;
+they can still be saved. A file with no readable picture is not made into a
+synthetic black take.
 
 Zip project includes the originals, every editing state, and Timeline.otio.
 Use Projects → Import to restore a ZIP or import a video. Restore checks entry
@@ -115,6 +130,29 @@ Crop includes 4:5, Frame/Inspect, and quarter turns. Original restores the sourc
 shape. Transitions overlap neighboring footage and shorten the composition;
 range edits keep surviving portions of a transition.
 
+Stabilize offers Off, Light, Standard and Strong. Original/Stabilized compares
+the same edit without changing the source. The inspector reports the actual
+crop and explains when poor tracking or the crop limit reduces correction.
+Light, Standard and Strong limit zoom to 1.045×, 1.10× and 1.18× respectively.
+Smoothing follows source presentation timestamps, preserves intentional pans
+and zooms, and resets at cuts or unreliable motion. Splitting or trimming an
+already stabilized clip keeps its original analysis range and framing; speed
+and freeze holds reuse the corresponding source correction.
+
+Analysis uses frames up to 640 pixels on the longer side, runs before the first
+stabilized preview, and is reused across levels and reopening. Completed cache
+files are checksummed and tied to the source, mirror/color sidecars, range and
+processing version. Analysis currently accepts at most 600,000 source frames.
+Export cancellation interrupts preparation. Cancelling a new inspector draft
+also stops its unfinished source work; completed analysis remains reusable.
+Original comparison uses the same held source frame and does not save a bypass.
+Long-take checkpoint/resume and
+broader real-camera/HDR comparisons still need work.
+
+Earlier saved stabilization edits keep their Strength slider and original
+processing. Choose Use stabilization levels to convert a particular edit;
+Cancel leaves it unchanged. New level-based edits require the updated app.
+
 Kaleidoscope starts with two divisions and offers 2–9, including odd counts.
 Drag the picture to pan its source and twist with two fingers to rotate it.
 Drag the center or round handle to move or rotate the split. Fine adjustments
@@ -148,11 +186,41 @@ Intensity. Day for Night separates darkness, blue and moonlight highlights.
 Expressionism combines monochrome contrast, oval/circle vignette and tint.
 Their controls, including choices and toggles, support source-time keys.
 
+New Noir effects separate Contrast, Black crush, Grain and Blue shadows. Grain
+uses the assembled presentation frame, including held footage; seeking back to
+the same frame produces the same grain. Existing saved Noir effects retain their
+original processing. The new controls and source keys use algorithm 4, so older
+versions refuse them rather than silently changing the picture.
+
+New 16mm effects provide Fine/Medium/Coarse grain, Softness, Gate weave,
+Frame edge, and Color/B&W. Softness uses a resolution-scaled linear-light
+Gaussian; grain and weave follow the assembled frame through cuts and holds.
+The Grain size choice appears when Grain is above zero. Existing grain-only
+16mm recipes retain their processing. CPU rendering of these textures can be
+slow on older phones, especially at full export resolution.
+
+Halation separates Glow, Halation red, Shadow lift, and Neutral/Warm/Cool flash
+color. Bright source samples are isolated before downsampling, so small lights
+remain visible between reduced-image centers. Three resolution-scaled Gaussian
+blurs spread their light; the red fringe and shadow lift stay independent.
+Flash color appears when Shadow lift is above zero. Intensity blends in linear
+light, with exact zero bypass; active output uses the reference's bounded color
+range, including on a half-float canvas. Its numeric and color-choice keys remain
+anchored to the source through cuts and retiming. Existing Noir/16mm recipes keep
+their older processing.
+
 Video effects use fixed families with primary correction before creative looks.
 Older project controls are converted on loading; there is one renderer and
 inspector per effect. Color passes use linear light; HDR and explicit Log
 retain half-float intermediates. Actual ten-bit media/export and an iOS GPU
 comparison still need capable-device acceptance.
+
+Tools → Select cover samples nine chronological choices from the assembled
+project, selected range or selected clips, including picture underneath selected
+audio. Update refreshes the choices. Opening a choice renders the full project
+canvas with its looks and text; Save JPEG and Share JPEG use that immutable edit
+snapshot. Rotation keeps the choices and selected frame. Like the reference,
+the picker exports JPEGs; it does not replace a saved project-card thumbnail.
 
 Audio filters run in the order shown. Select a container to change its values
 or position. Newly added Low-cut filters use the reference second-order
@@ -250,9 +318,16 @@ images. SDR output maps HDR highlights once per source layer; ordinary SDR
 layers retain their brightness. Bounded creative effects use the reference's
 working highlight shoulder. HDR output requires Main10 encoding, a ten-bit EGL
 recording surface and actual ten-bit HDR decoder samples. Unsupported hardware
-reports the missing capability. Source files stay unchanged. The OnePlus 15 has passed 720p, 1080p and 4K Main10 HLG exports with measured
-highlight headroom and more than eight-bit precision. Broader HDR material and numerical
-iOS comparisons remain open. Mi 8 testing did not expose ten-bit decoder images.
+reports the missing capability. Source files stay unchanged. Broader HDR
+material and numerical comparisons with iOS remain open.
 
-Export and inference run while the app is open. A background export service,
-checksum receipts, and reuse of an unchanged completed export are still missing.
+An unchanged completed movie is reused after checking the edit, output settings,
+source bytes, imported assets, orientation/color sidecars and movie checksum.
+The movie's first and last frames, size, duration and audio are verified before
+publication. Changing or damaging a source/output prevents reuse. A failed or
+cancelled replacement keeps the previous completed movie; a verified replacement
+retires it. The completed render remains available if saving to the gallery fails.
+On Android 9, saving to Movies requires the system storage permission.
+
+Export and inference run while the app is open. A background export service and
+resuming unfinished picture sections remain open.

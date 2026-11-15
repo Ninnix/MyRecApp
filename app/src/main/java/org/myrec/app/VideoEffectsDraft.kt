@@ -92,9 +92,9 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
             val motion = fx.motion
             if (motion != null) {
                 val id = fx.parameter(key)?.id ?: key
-                require(fx.parameter(id)?.kind?.accepts(EffectValue.Number(value.toDouble())) == true)
-                fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = motion.b + (id to value.toDouble()))
-                    else motion.copy(a = motion.a + (id to value.toDouble()))
+                val next = fx.parameter(id)!!.number(value).value
+                fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = motion.b + (id to next))
+                    else motion.copy(a = motion.a + (id to next))
             } else fx.editNumber(key, value, time, c.sourceIn, animate)
         }
         edit.replaceVideoStates(states, kinds)
@@ -124,10 +124,12 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
     fun reset(display: Effect, at: Double) {
         flush()
         for ((_, fx) in entries(display.id)) {
-            val neutral = EffectContracts.parameters(fx.kind)
-            val pose = neutral.associate { it.id to (it.value as EffectValue.Number).value }
+            val neutral = EffectContracts.parameters(fx)
             val motion = fx.motion
-            if (motion != null) fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = pose) else motion.copy(a = pose)
+            if (motion != null) {
+                val pose = neutral.associate { it.id to (it.value as EffectValue.Number).value }
+                fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = pose) else motion.copy(a = pose)
+            }
             else {
                 fx.values.clear(); fx.parameters.clear(); fx.parameters.addAll(neutral)
             }

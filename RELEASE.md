@@ -1,13 +1,13 @@
 # Releasing MyRec
 
-Release 0.1.3 targets ARM64 devices running Android 9 or later. GitHub releases
+Release 0.1.4 targets ARM64 devices running Android 9 or later. GitHub releases
 contain a signed APK, a signed Android App Bundle and SHA-256 checksums. Build
 products and private signing material stay outside Git.
 
 For a local development build:
 
 ```sh
-./tools/build.sh :app:assembleDebug
+./scripts/build.sh :app:assembleDebug
 ```
 
 The APK is `app/build/outputs/apk/debug/app-debug.apk`. Gradle uses its debug key,
@@ -25,7 +25,7 @@ keyPassword=your-private-password
 ```
 
 ```sh
-./tools/build.sh :app:assembleRelease :app:bundleRelease
+./scripts/build.sh :app:assembleRelease :app:bundleRelease
 ```
 
 The signed APK is `app/build/outputs/apk/release/app-release.apk`. Without local
@@ -47,13 +47,13 @@ The package is now `org.myrec.app`. It installs separately from the old
 `org.yourec.app` build. There is no automatic project migration. Do not tell
 users to uninstall the old app before saving what they need from it.
 
-Run the affected checks in [Testing](TESTING.md), verify model checksums and
+Run the affected checks in [Testing](docs/TESTING.md), verify model checksums and
 notices, and check the app label, export folder, and launcher icon. Include
-[LICENCE](../LICENCE) and its APK copy under `licenses/MyRec.txt`, along with
+[LICENSE](LICENSE) and its APK copy under `licenses/MyRec.txt`, along with
 the complete upstream notice under `licenses/YouRec.txt`. YouRec's MIT
 grant covers its source and documentation; it reserves the YouRec name and icon.
 Use MyRec's own name and hippopotamus artwork. VoiceFixer code and model weights
-have separate licenses; see [the notices](../THIRD_PARTY_NOTICES.md).
+have separate licenses; see [the notices](THIRD_PARTY_NOTICES.md).
 
 Run the affected checks, commit the release source, create the version tag and
 push both before publishing. Attach the signed APK and checksum to the matching

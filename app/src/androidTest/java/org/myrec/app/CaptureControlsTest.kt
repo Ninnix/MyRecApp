@@ -35,8 +35,9 @@ object CaptureControlsTest {
                 manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) ==
                     CameraCharacteristics.LENS_FACING_BACK
             }
-        val prefs = a.getSharedPreferences("capture", Context.MODE_PRIVATE)
-        val oldWidth = prefs.getFloat("lightWidth", .06f)
+        val prefs = a.captureSettings
+        val lightKeys = setOf("lightWidth", "lightTone", "lightOpacity", "lightCustom")
+        val oldLight = prefs.all.filterKeys { it in lightKeys }
         onMain { a.showCapture() }
         Thread.sleep(1000)
         val capture =
@@ -44,7 +45,7 @@ object CaptureControlsTest {
                 .map { a.root.getChildAt(it) }
                 .filterIsInstance<Capture>()
                 .single()
-        fun control(title: String, enabled: Boolean = true): android.view.accessibility.AccessibilityNodeInfo {
+        fun control(title: String, enabled: Boolean = true, clickable: Boolean = true): android.view.accessibility.AccessibilityNodeInfo {
             val deadline = SystemClock.uptimeMillis() + 4000
             val visible = StringBuilder()
             while (SystemClock.uptimeMillis() < deadline) {
@@ -54,7 +55,7 @@ object CaptureControlsTest {
                 while (nodes.isNotEmpty()) {
                     val node = nodes.removeFirst()
                     visible.append("${node.text} / ${node.contentDescription} (click=${node.isClickable}, enabled=${node.isEnabled})\n")
-                    if ((node.contentDescription?.toString() == title || node.text?.toString() == title) && node.isClickable && node.isEnabled == enabled) return node
+                    if ((node.contentDescription?.toString() == title || node.text?.toString()?.equals(title, ignoreCase = true) == true) && (!clickable || node.isClickable) && node.isEnabled == enabled) return node
                     for (i in 0 until node.childCount) node.getChild(i)?.let { nodes.add(it) }
                 }
                 Thread.sleep(100)
@@ -66,8 +67,13 @@ object CaptureControlsTest {
             error("Missing $title control (enabled=$enabled)\n$visible")
         }
         fun click(title: String) {
-            check(control(title).performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
-            Thread.sleep(200)
+            repeat(3) {
+                if (control(title).performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)) {
+                    Thread.sleep(200); return
+                }
+                Thread.sleep(100)
+            }
+            error("Could not click $title")
         }
         fun tap(id: String) {
             if (id == "torch") {
@@ -146,6 +152,7 @@ object CaptureControlsTest {
                 )) {
                 onMain {
                     capture.setTorch(false)
+                    capture.setFrontLight(tone = "White", opacity = 1f)
                     capture.setDualLayout(4)
                     a.requestedOrientation = orientation
                 }
@@ -215,9 +222,9 @@ object CaptureControlsTest {
                     drag(2f, y, short * .34f, y)
                     render("$name-light-wide", true).also {
                         val pixel = it.getPixel(probeX, y.toInt())
-                        check(Color.alpha(pixel) in 190..210 && Color.red(pixel) > 250)
+                        check(Color.alpha(pixel) >= 250 && Color.red(pixel) > 250)
                         val corner = (short * prefs.getFloat("lightWidth", .06f) + 3).toInt()
-                        check(Color.alpha(it.getPixel(corner, corner)) in 190..210) {
+                        check(Color.alpha(it.getPixel(corner, corner)) >= 250) {
                             "Inner light corner is square"
                         }
                         if (texture.top > 3) check(it.getPixel(it.width / 2, 1) == Color.WHITE)
@@ -230,12 +237,15 @@ object CaptureControlsTest {
                         check(Color.alpha(it.getPixel(1, y.toInt())) >= 190)
                         check(Color.alpha(it.getPixel(probeX, y.toInt())) == 0)
                         val border = short * prefs.getFloat("lightWidth", .06f)
-                        val right = min(capture.width - border, texture.right.toFloat()).toInt() - 3
-                        val bottom =
-                            min(capture.height - border, texture.bottom.toFloat()).toInt() - 3
-                        check(Color.alpha(it.getPixel(right, bottom)) in 190..210) {
-                            "Light corner at the video boundary is square"
+                        val right = (capture.width - border).toInt() - 3
+                        val bottom = (capture.height - border).toInt() - 3
+                        check(Color.alpha(it.getPixel(right, bottom)) >= 250) {
+                            "Light corner at the window boundary is square"
                         }
+                        if (texture.top > border * 3)
+                            check(Color.alpha(it.getPixel(capture.width / 3, ((border + texture.top) / 2).toInt())) == 0) {
+                                "The front light filled the letterbox instead of keeping its window border"
+                            }
                         it.recycle()
                     }
                     render("$name-light-preview").recycle()
@@ -271,9 +281,56 @@ object CaptureControlsTest {
                     tap("torch")
                     check(a.window.attributes.screenBrightness == .42f)
                 }
+                test("$name front light exposes width color and opacity without baking the border into video") {
+                    onMain { capture.setFrontLight(width = .085f, tone = "White", opacity = 1f) }
+                    tap("torch"); tap("light")
+                    click("Warm"); click("Thin")
+                    check(prefs.getString("lightTone", "") == "Warm" && abs(prefs.getFloat("lightWidth", 0f) - .045f) < .001)
+                    fun opacity(value: Int) {
+                        val args = Bundle().apply { putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value.toFloat()) }
+                        check(control("Front light opacity", clickable = false).performAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id, args))
+                        Thread.sleep(150)
+                    }
+                    opacity(10)
+                    render("$name-light-warm-half", true).also { image ->
+                        val p = image.getPixel(1, image.height / 2)
+                        check(Color.alpha(p) in 126..129 && Color.red(p) >= 250 && abs(Color.green(p) - 209) <= 2 && abs(Color.blue(p) - 158) <= 2)
+                        image.recycle()
+                    }
+                    opacity(0)
+                    check(a.window.attributes.screenBrightness == .42f)
+                    render("$name-light-zero", true).also { image -> check(Color.alpha(image.getPixel(1, image.height / 2)) == 0); image.recycle() }
+                    opacity(20)
+                    check(a.window.attributes.screenBrightness == 1f)
+                    click("Custom"); click("Cancel")
+                    click("Close front light controls")
+                    onMain { a.editor.load(Project(name = "Front light source check")); capture.start() }
+                    Thread.sleep(1100); check(capture.recording)
+                    val frameWidth = if (name == "portrait") 180 else 320
+                    val frameHeight = if (name == "portrait") 320 else 180
+                    onMain { capture.stop() }
+                    val clip = a.editor.project.clips.single()
+                    VideoDecoder(clip.path).use { decoder ->
+                        val frame = decoder.frame(.5, frameWidth, frameHeight) ?: error("No saved light frame")
+                        val lamp = prefs.getInt("lightCustom", Color.rgb(255, 179, 201))
+                        // The opaque lamp covers these screen edges. Even a dark or noisy
+                        // camera scene must retain source pixels at the encoded edges.
+                        val error = (0 until 16).sumOf { index ->
+                            val y = (index + 1) * frame.height / 17
+                            listOf(frame.getPixel(1, y), frame.getPixel(frame.width - 2, y)).sumOf { pixel ->
+                                abs(Color.red(pixel) - Color.red(lamp)) + abs(Color.green(pixel) - Color.green(lamp)) + abs(Color.blue(pixel) - Color.blue(lamp))
+                            }
+                        } / (32.0 * 3)
+                        check(error > 30) { "The saved picture contains the opaque front-light border (error=$error)" }
+                        frame.recycle()
+                    }
+                    tap("torch")
+                    check(a.window.attributes.screenBrightness == .42f)
+                }
                 if (pair == null) continue
                 test("$name picture-in-picture swaps, moves and resizes during one recording") {
                     onMain {
+                        a.requestedOrientation = orientation
                         a.editor.load(Project(name = "Inset controls check"))
                         capture.switchCamera(pair[0])
                     }
@@ -377,7 +434,14 @@ object CaptureControlsTest {
                 capture.setTorch(false)
                 capture.suspendCamera()
                 a.showEditor()
-                prefs.edit().putFloat("lightWidth", oldWidth).apply()
+                prefs.edit().apply {
+                    for (key in lightKeys) remove(key)
+                    for ((key, value) in oldLight) when (value) {
+                        is Float -> putFloat(key, value)
+                        is Int -> putInt(key, value)
+                        is String -> putString(key, value)
+                    }
+                }.apply()
             }
         }
     }

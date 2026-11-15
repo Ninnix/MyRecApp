@@ -7,8 +7,9 @@ import java.io.File
 
 object VideoFrameIndex {
     private val cache = linkedMapOf<String, FrameIndex>()
-    @Synchronized fun get(path: String, progress: (Float?) -> Unit): FrameIndex {
-        val file = File(path); val key = "$path:${file.length()}:${file.lastModified()}:decoded-pts-1"
+    fun get(path: String, progress: (Float?) -> Unit): FrameIndex = get(path,null,progress)
+    @Synchronized fun get(path: String, identity: String?, progress: (Float?) -> Unit): FrameIndex {
+        val file = File(path); val key = "$path:${identity ?: "${file.length()}:${file.lastModified()}"}:decoded-pts-1"
         cache[key]?.let { return it }
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null

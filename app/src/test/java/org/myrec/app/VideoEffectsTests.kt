@@ -11,6 +11,43 @@ object VideoEffectsTests {
             val second = Clip(path = "b.mp4", sourceIn = 10.0, sourceOut = 14.0, start = 4.0)
             return Editor(Project(clips = mutableListOf(first, second))).apply { selected.addAll(project.clips.map { it.id }) }
         }
+        test("decimal slider endpoints accept UI floats while rejecting invalid controls and serialized values") {
+            val effect = Effect.create("Noir")
+            effect.setNumber("crush",.3f)
+            check(effect.parameter("crush")!!.value == EffectValue.Number(.3))
+            effect.editNumber("crush",.3f,.5,0.0,true)
+            effect.editNumber("crush",0f,1.0,0.0,true)
+            check(effect.parameters.all { it.valid() })
+            check(runCatching { effect.setNumber("crush",.31f) }.isFailure)
+            check(runCatching { effect.setNumber("crush",Float.NaN) }.isFailure)
+            check(!effect.parameter("crush")!!.kind.accepts(EffectValue.Number(.30000001)))
+            for (kind in FilmColor.definitions.keys + listOf("Noir","16mm")) {
+                val fx = Effect.create(kind)
+                for (p in fx.parameters) (p.kind as? ParameterKind.Slider)?.let {
+                    fx.setNumber(p.id,it.max.toFloat()); check(p.valid())
+                    fx.editNumber(p.id,it.min.toFloat(),.5,0.0,true); check(p.valid())
+                }
+            }
+        }
+        test("reset restores typed picker toggle and numeric defaults without creating a numeric pose") {
+            for (kind in FilmColor.definitions.keys + listOf("Negative Strobe","Noir","16mm")) {
+                val e = fixture()
+                val effect = Effect.create(kind)
+                e.project.clips[0].effects.add(effect)
+                val work = VideoEffectsDraft(e,setOf(kind))
+                val editable = work.chain.single()
+                for (parameter in editable.parameters) when (val spec = parameter.kind) {
+                    is ParameterKind.Picker -> parameter.value = EffectValue.Choice(spec.values.last())
+                    ParameterKind.Toggle -> parameter.value = EffectValue.Toggle(!(parameter.value as EffectValue.Toggle).value)
+                    is ParameterKind.Slider -> parameter.value = EffectValue.Number(spec.max)
+                    else -> Unit
+                }
+                work.reset(editable,0.0)
+                check(work.chain.single().parameters == EffectContracts.parameters(effect))
+                work.commit(e)
+                check(e.project.clips[0].effects.single().parameters == EffectContracts.parameters(effect))
+            }
+        }
         test("effects draft keeps distinct looks and duplicate effect kinds on different clips") {
             val e = fixture()
             val a = Effect(kind = "RGB Offset").apply { setNumber("redX", .2f) }

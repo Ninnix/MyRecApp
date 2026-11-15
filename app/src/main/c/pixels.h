@@ -8,6 +8,9 @@
 #include <string.h>
 
 static inline float yr_float(uint16_t h) {
+#if defined(__aarch64__)
+    __fp16 value; memcpy(&value, &h, 2); return (float)value;
+#else
     uint32_t sign = (uint32_t)(h & 0x8000) << 16, exp = (h >> 10) & 31, mantissa = h & 1023, bits;
     if (exp == 0) {
         if (!mantissa) bits = sign;
@@ -18,10 +21,15 @@ static inline float yr_float(uint16_t h) {
         }
     } else bits = sign | (exp == 31 ? 255u : exp + 112) << 23 | mantissa << 13;
     float value; memcpy(&value, &bits, 4); return value;
+#endif
 }
 static inline uint16_t yr_half(float value) {
     if (!isfinite(value)) value = 0;
     value = yr_clamp(value, -65504, 65504);
+#if defined(__aarch64__)
+    __fp16 half = (__fp16)value;
+    uint16_t bits; memcpy(&bits, &half, 2); return bits;
+#else
     uint32_t bits; memcpy(&bits, &value, 4);
     uint32_t sign = bits >> 16 & 0x8000, mantissa = bits & 0x7fffff;
     int exp = (int)(bits >> 23 & 255) - 127 + 15;
@@ -35,6 +43,7 @@ static inline uint16_t yr_half(float value) {
     mantissa += 0xfff + ((mantissa >> 13) & 1);
     if (mantissa & 0x800000) { mantissa = 0; exp++; }
     return (uint16_t)(sign | (uint32_t)exp << 10 | mantissa >> 13);
+#endif
 }
 
 typedef struct { AndroidBitmapInfo info; uint8_t *data; float linear[256]; } YrPixels;

@@ -20,13 +20,21 @@ class Playback(
     private val ui = Handler(Looper.getMainLooper())
     private val video = Executors.newSingleThreadExecutor()
     private val audio = Executors.newSingleThreadExecutor()
-    private val frames = Frames { progress -> ui.post { onAnalysis(progress) } }
+    @Volatile private var preparationEpoch = 0
+    private var activePreparationEpoch = 0
+    private val frames = Frames(cancelled = { closed || activePreparationEpoch != preparationEpoch }) { progress -> ui.post { onAnalysis(progress) } }
     private val rendering = AtomicBoolean(false)
     private var pendingRender: Pair<Project, Double>? = null
-    private var closed = false
+    @Volatile private var closed = false
     @Volatile
     var playing = false
         private set
+
+    var originalStabilization = false
+        set(value) {
+            if (field == value) return
+            field = value; cancelPreparation()
+        }
 
     @Volatile private var generation = 0
     private var baseTime = 0.0
@@ -81,6 +89,8 @@ class Playback(
         enqueue(project.duplicate(), editor.cursor)
     }
 
+    fun cancelPreparation() { preparationEpoch++ }
+
     private fun enqueue(snapshot: Project, position: Double) {
         if (closed) return
         if (!rendering.compareAndSet(false, true)) {
@@ -90,12 +100,15 @@ class Playback(
         val ratio = snapshot.width.toDouble() / snapshot.height
         val w = if (ratio >= 1) 768 else (768 * ratio).toInt().coerceAtLeast(2)
         val h = if (ratio >= 1) (768 / ratio).toInt().coerceAtLeast(2) else 768
+        val preparation = preparationEpoch
+        val original = originalStabilization
         video.execute {
             try {
-                val bitmap = frames.render(snapshot, position, w, h)
-                ui.post { onFrame(bitmap) }
+                activePreparationEpoch = preparation
+                val bitmap = frames.render(snapshot, position, w, h,originalStabilization = original)
+                ui.post { if (!closed && preparation == preparationEpoch) onFrame(bitmap) else bitmap.recycle() }
             } catch (e: Exception) {
-                ui.post { onError(e.message ?: "Cannot render video") }
+                if (!closed && preparation == preparationEpoch) ui.post { onError(e.message ?: "Cannot render video") }
             } finally {
                 ui.post {
                     rendering.set(false)

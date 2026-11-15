@@ -15,6 +15,10 @@ import kotlin.math.abs
 object FilmColorTests {
     fun run(instrumentation: Instrumentation, a: MainActivity, onMain: (() -> Unit) -> Unit,
         test: (String, () -> Unit) -> Unit) {
+        HalfFloatTests.run(test)
+        HalationTests.run(instrumentation, a, test)
+        NoirTests.run(instrumentation,a,test)
+        SixteenMmTests.run(instrumentation,a,test)
         test("five film colors match 58 source-equation fixtures within one SDR code value") {
             val data = instrumentation.context.assets.open("film-color-reference.json").bufferedReader().use { JSONObject(it.readText()) }
             val fixtures = data.getJSONArray("fixtures")
@@ -60,11 +64,11 @@ object FilmColorTests {
             for (orientation in listOf(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
                 onMain { a.panels.close(); a.requestedOrientation = orientation }
                 Thread.sleep(550)
-                for ((kind, definition) in FilmColor.definitions) {
+                for ((kind, definition) in FilmColor.definitions + mapOf("Noir" to Noir.definition,"16mm" to SixteenMm.definition)) {
                     onMain {
                         a.editor.project.clips.forEach { it.effects.clear() }
                         a.editor.clearSelection(); a.editor.cursor = 0.0
-                        a.editor.applyEffect(Effect(kind = kind))
+                        a.editor.applyEffect(Effect.create(kind))
                         a.panels.videoEffects(a.editor.project.clips.first().effects.single())
                     }
                     Thread.sleep(150)
