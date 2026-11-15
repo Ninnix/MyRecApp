@@ -73,21 +73,16 @@ reference; see the editing guide for current limits.
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
-Release 0.1.4 adds independent selfie preview/recording mirrors,
-per-camera focus and zoom recall, front-light controls, and expanded Halation,
-Noir and 16mm effects. Projects offers original-file review, verified bulk saves,
-and recovery into a separate project. The cover picker saves composed JPEGs;
-completed movie exports can be reused or saved again without re-encoding.
-Stabilization adds timestamp-based Light/Standard/Strong levels with bounded
-cropping and retained framing through cuts and trims.
-Projects headings render correctly, and the editor accounts for camera cutouts
-without a fixed portrait top gap. HDR checks the graphics driver
-before interrupting a working SDR camera.
+Release 0.1.5 reduces the offline caption download to 636 MB, including the
+tokenizer, while retaining Qwen3-ASR-0.6B. Its C11 GGUF backend keeps the decoder
+weights packed and adds parallel float/NEON processing. Small English/Italian
+comparisons showed faster recognition and lower memory use; results depend on
+the phone and audio. Existing projects and subtitles remain usable.
 
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.4](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.4), install it, and
+[release 0.1.5](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.5), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 
@@ -130,7 +125,7 @@ when you choose captions or a neural audio filter.
 | DeepFilterNet3 | Noise reduction | 8.6 MB |
 | VoiceFixer | Studio restoration | 415 MB |
 | LavaSR v2 | Speech detail | 56 MB |
-| Qwen3-ASR-0.6B | Captions | 1.9 GB |
+| Qwen3-ASR-0.6B Q4_K | Captions | 636 MB |
 
 Inference runs on the CPU. [Models](docs/MODELS.md) explains storage,
 processing, and licenses. Downloads are pinned in [data/models.json](data/models.json).

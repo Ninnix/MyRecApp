@@ -24,13 +24,4 @@ if(EXISTS "${RUNTIME_ROOT}/rnnoise-0.1/src/denoise.c")
     target_compile_options(rnnoise PRIVATE -O3)
     target_link_libraries(rnnoise m)
 endif()
-if(EXISTS "${RUNTIME_ROOT}/qwen-asr-main/qwen_asr.c")
-    set(QW "${RUNTIME_ROOT}/qwen-asr-main")
-    add_library(qwen_asr SHARED "${QW}/qwen_asr.c" "${QW}/qwen_asr_kernels.c"
-        "${QW}/qwen_asr_kernels_generic.c" "${QW}/qwen_asr_kernels_neon.c" "${QW}/qwen_asr_kernels_avx.c"
-        "${QW}/qwen_asr_audio.c" "${QW}/qwen_asr_encoder.c" "${QW}/qwen_asr_decoder.c"
-        "${QW}/qwen_asr_tokenizer.c" "${QW}/qwen_asr_safetensors.c")
-    target_compile_definitions(qwen_asr PRIVATE _GNU_SOURCE)
-    target_compile_options(qwen_asr PRIVATE -O3 -ffast-math)
-    target_link_libraries(qwen_asr m)
-endif()
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../../scripts/qwen" qwen)

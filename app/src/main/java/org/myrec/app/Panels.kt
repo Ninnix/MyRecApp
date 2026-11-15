@@ -4065,7 +4065,7 @@ class Panels(private val a: MainActivity) {
         } else {
             hint(
                 controls,
-                "Download Qwen3-ASR 0.6B once (1.9 GB). Transcription then works offline.",
+                "Download Qwen3-ASR 0.6B once (636 MB). Transcription then works offline.",
             )
             button(controls, "Download caption model") {
                 progress("Downloading caption model", 0f) { job.cancelled = true }

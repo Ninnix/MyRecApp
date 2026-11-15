@@ -13,13 +13,12 @@ class Captions(private val cache: AudioCache, val directory: File) {
     }
 
     @Volatile var cancelled = false
-    private val revision = "5eb144179a02acc5e5ba31e748d22b0cf3e303b0"
+    private val revision = "58bd3202f835f46b24b17142cb503b0860c737a5"
+    private val model = "qwen3-asr-0.6b-q4_k.gguf"
     private val files = linkedMapOf(
-        "config.json" to (6193L to "76d3ae4601ce939830b2517f4a6cadb86cc51316c3900af6b020b051c21a478c"),
-        "generation_config.json" to (142L to "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"),
         "vocab.json" to (2776833L to "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"),
         "merges.txt" to (1671853L to "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"),
-        "model.safetensors" to (1876091704L to "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea"),
+        model to (631026336L to "f63771c02dfa486d9399d41ab6ab8cd2d8ca24e077cd32130ea1f67f4fd8dade"),
     )
     val ready get() = files.all { (name, spec) -> File(directory, name).isFile && File(directory, name).length() == spec.first }
 
@@ -47,7 +46,9 @@ class Captions(private val cache: AudioCache, val directory: File) {
             if (partial.length() > spec.first) partial.delete()
             if (partial.length() < spec.first) {
                 val offset = partial.length()
-                val connection = URI("https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/$revision/$name").toURL().openConnection() as HttpURLConnection
+                val base = if (name == model) "https://huggingface.co/cstr/qwen3-asr-0.6b-GGUF/resolve/$revision/"
+                    else "https://huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/"
+                val connection = URI(base + name).toURL().openConnection() as HttpURLConnection
                 connection.connectTimeout = 30000; connection.readTimeout = 60000
                 if (offset > 0) connection.setRequestProperty("Range", "bytes=$offset-")
                 try {
@@ -125,7 +126,7 @@ class Captions(private val cache: AudioCache, val directory: File) {
             }
             val plan = SubtitleTiming.plan(levels, samples / 16000.0)
             check(plan.isNotEmpty()) { "No speech was detected in this range. Try a range with audible speech." }
-            val signature = "$revision:qwen-asr-92469425-bf16:speech-sinc-v1:$language:$start:$end:${SourceAudio.hash(audio) { cancelled }}:$plan"
+            val signature = "$revision:qwen-c-92469425-q4k-v1:speech-sinc-v1:$language:$start:$end:${SourceAudio.hash(audio) { cancelled }}:$plan"
             val identity = java.security.MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
                 .joinToString("") { "%02x".format(it) }
             val checkpoints = File(cache.root, "transcriptions").apply { mkdirs() }
@@ -133,7 +134,7 @@ class Captions(private val cache: AudioCache, val directory: File) {
             val saved = checkpoint.load()
             val words = saved.words.toMutableList()
             if (saved.completed < plan.size) {
-                handle = Native.asrLoad(directory.absolutePath, min(6, Runtime.getRuntime().availableProcessors()))
+                handle = Native.asrLoad(File(directory, model).absolutePath, min(6, Runtime.getRuntime().availableProcessors()))
                 check(handle != 0L) { "Cannot load the caption model" }
                 java.io.RandomAccessFile(audio, "r").use { input ->
                     for ((i, chunk) in plan.withIndex().drop(saved.completed)) {
@@ -144,7 +145,8 @@ class Captions(private val cache: AudioCache, val directory: File) {
                         input.seek(first * 4); input.readFully(bytes)
                         val mono = FloatArray(count).also { java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(it) }
                         val text = Native.asrTranscribe(handle, mono, language)?.toString(Charsets.UTF_8)
-                            ?.substringAfter("<asr_text>")?.trim().orEmpty()
+                            ?.substringAfter("<asr_text>")?.trim()
+                            ?: error("Speech recognition failed. Please retry this range.")
                         val speech = chunk.speech.map { (start + it.start)..(start + it.endInclusive) }
                         words.addAll(SubtitleTiming.estimate(text, speech))
                         checkpoint.save(CaptionCheckpoint.State(i + 1, words))

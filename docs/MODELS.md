@@ -75,21 +75,32 @@ it is not an iOS Core ML waveform or listening comparison.
 
 ## Captions
 
-Qwen3-ASR-0.6B downloads a 1.9 GB weight file plus tokenizer and configuration
-files. Tools → Auto captions offers the download. Transcription then works
-offline. A band-limited mono conversion feeds 20 ms speech-island planning
-and recognition sections of at most twelve seconds. Estimated word anchors
-support transcript correction, regrouping and copy. Completed sections are
-checkpointed by edited-audio hash, language, range, speech plan and runtime/model
-identity. Corrupt or stale progress starts again; up to eight jobs are retained
-in the app cache. An active C inference call must finish before cancellation
-returns. All five model/tokenizer/configuration files have pinned sizes and
-SHA-256 checks. The speech suite uses a fresh recognition job for each run
-before checking completed-section reuse.
+Qwen3-ASR-0.6B uses a pinned [Q4_K GGUF pack](https://huggingface.co/cstr/qwen3-asr-0.6b-GGUF):
+631 MB of weights, with a Q8_0 audio encoder and Q4_K decoder. The original
+Qwen tokenizer adds 4.4 MB, for a 636 MB download. The underlying model remains
+Qwen3-ASR-0.6B. Tools → Auto captions offers the download; recognition then works
+offline. An existing BF16 download is retained when upgrading and can be removed
+from the model directory after the new pack is installed.
 
-The iOS app uses a smaller 4-bit MLX pack; Android uses the external Qwen C
-runtime and BF16 checkpoint. Those are different numerical backends. Neither
-implementation uses forced alignment.
+The Android backend uses C11 GGUF loading and quantized decoding with the external
+Qwen C runtime's audio encoder, tokenizer, normalization and attention kernels.
+Float matrix and convolution work shares its persistent workers and uses NEON
+on ARM64. Packed decoder rows stay mapped during generation; the current prefill
+matrix and audio encoder weights are expanded to float. Model size is not peak RAM.
+No C++ runtime or new inference dependency is required.
+
+A band-limited mono conversion feeds 20 ms speech-island planning and recognition
+sections of at most twelve seconds. Estimated word anchors support transcript
+correction, regrouping and copy. Completed sections are checkpointed by edited-audio
+hash, language, range, speech plan and runtime/model identity, separately from BF16
+results. Up to eight jobs are retained in the app cache. An active C inference call
+must finish before cancellation returns. All three files have pinned sizes and
+SHA-256 checks. Failed recognition does not mark a section complete.
+
+The iOS app uses a 4-bit MLX pack. Quantization and numerical backends differ;
+identical transcripts are not guaranteed. Neither implementation uses forced
+alignment. Small English/Italian comparisons and ARM64 kernel checks are described
+in [testing](TESTING.md); these are not a corpus-wide quality or speed guarantee.
 
 ```sh
 python3 scripts/prepare-model.py
@@ -103,7 +114,7 @@ storage and is not migrated automatically.
 
 ## Licenses
 
-RNNoise is BSD-3-Clause. The Qwen C runtime is MIT. Qwen weights, LavaSR, and
+RNNoise is BSD-3-Clause. The Qwen C runtime and GGUF quantization reference are MIT. Qwen weights, LavaSR, and
 PPHumanSeg are Apache-2.0. DeepFilterNet offers MIT or Apache-2.0; its MIT notice
 is bundled. ONNX Runtime is MIT with additional component notices.
 

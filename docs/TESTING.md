@@ -65,7 +65,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 | No option | Native image/audio calls, runtimes, persistence, decode/export, stabilization, composition, camera switching, pause/resume, AF, microphone labels, portrait recording |
 | `--parity` | Portrait/landscape tools, drafts, cancellation, rotation, placement, volume, sliders, timeline, Settings, Animate controls |
 | `--exports` | Transition pixels, person-isolation ranges, 720p/1080p/4K and longer multitrack export |
-| `--speech` | RNNoise, actual offline Qwen transcription and completed-section reuse with stable word identities; caption model required |
+| `--speech` | RNNoise, offline Qwen transcription, automatic language detection, completed-section reuse with stable word identities, cancellation and invalid-input rejection; caption model required |
 | `--studio` | Neural filters, order, ranges, mute, cache, cancellation, live changes, audio export; models required |
 | `--gaps` | DeepFilterNet3/VoiceFixer inference, all neural ranges, multi-model order, camera inventory, Kaleidoscope/Widescreen pixels |
 | `--orientation` | Asymmetric markers, four metadata rotations, different input sizes, real camera switches, frame orientation, AV timing |
@@ -182,3 +182,48 @@ The reference's real-depth integration tests require `YOUREC_CINEMATIC_FIXTURE`;
 they skip without it. Synthetic maps test rendering separately from decoding.
 The landscape excerpt used locally came from the user-supplied YouTube link;
 it is kept under `.build/` and is not a redistributed test asset.
+
+## Quantized captions
+
+```sh
+python3 scripts/test-gguf.py
+cmake -S scripts/qwen -B .build/qwen-host -DCMAKE_BUILD_TYPE=Release
+cmake --build .build/qwen-host --parallel 2
+cc -std=c11 scripts/test-qwen-kernels.c -o .build/test-qwen-kernels -ldl -lm
+.build/test-qwen-kernels .build/qwen-host/libqwen_asr.so
+```
+
+The GGUF tests exercise F32/F16/Q8_0/Q4_K decoding, packed six-bit scales and
+minima, multiple blocks, truncated headers/data, invalid shapes, wrong model
+architecture and unsupported types. The kernel probe compares parallel matrix
+and convolution outputs against the runtime's scalar implementations, including
+bias, odd dimensions and stride. Compile and run the same probe with the NDK/ADB
+to exercise ARM64 NEON; maximum observed difference was below 0.000001.
+
+A four-thread ARM64 comparison used the previous BF16 caption library and the
+C11 Q4_K backend on the same audio, sequentially, without model-loading time:
+
+| Audio | Duration | BF16 | Q4_K |
+| --- | ---: | ---: | ---: |
+| Existing speech fixture | 3.64 s | 13.29 s | 6.13 s |
+| Existing JFK fixture | 11.00 s | 37.46 s | 11.93 s |
+| Existing film dialogue | 6.86 s | 23.47 s | 7.09 s |
+| FLEURS Italian test sample | 11.52 s | 50.55 s | 14.87 s |
+
+Peak process RSS was approximately 2.5 GiB with BF16 and 1.3 GiB with Q4_K.
+The change includes parallel float/NEON kernels as well as packed weights.
+Italian, JFK and film-dialogue words matched BF16 after ignoring punctuation.
+Both backends misrecognized the invented system name in the speech fixture,
+with different spellings. A deterministic 10 dB white-noise version of the speech fixture also kept the
+spoken sentence, with different proper-name errors on both backends (6.78 s Q4_K
+versus 17.49 s BF16). These few samples do not establish corpus-wide WER,
+speed on every phone, or equivalence to the iOS MLX backend.
+The Italian sample is `test/10000151032537989529.wav` from
+[google/fleurs, it_it](https://huggingface.co/datasets/google/fleurs/tree/main/data/it_it),
+used locally for validation and not bundled in the application.
+
+Run `scripts/prepare-model.py`, `scripts/install-model.py` and the device
+`--speech` suite to check the complete mixer/resampler/JNI/checkpoint path.
+The installed caption runtime requires only libc, libdl and libm, and keeps
+16 KB ELF alignment. The model download is 635,475,022 bytes including the
+tokenizer. Previous BF16 files are retained rather than deleted during migration.

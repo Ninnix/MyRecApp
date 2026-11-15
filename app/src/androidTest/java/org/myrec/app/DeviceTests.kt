@@ -3468,11 +3468,11 @@ class DeviceTests : Instrumentation() {
 
     private fun speech() {
         try {
-            val file = File(targetContext.filesDir, "speech-test.wav")
+            val cache = AudioCache(File(targetContext.cacheDir, "speech-test/$testSessionId"))
+            val file = File(cache.root, "speech.wav")
             context.assets.open("speech.wav").use { src ->
                 file.outputStream().use { src.copyTo(it) }
             }
-            val cache = AudioCache(File(targetContext.cacheDir, "speech-test/$testSessionId"))
             val directory = File(targetContext.getExternalFilesDir(null), "models/qwen3-asr-0.6b")
             val captions = Captions(cache, directory)
             test("RNNoise processes actual audio samples") {
@@ -3513,6 +3513,30 @@ class DeviceTests : Instrumentation() {
                 val repeated = captions.generate(project, "English") {}
                 check(repeated == recognized && repeated.flatMap { it.words }.all { it.valid() })
                 check(repeated.flatMap { it.words }.zipWithNext().all { it.first.end <= it.second.start + .000001 })
+            }
+            test("Qwen automatic language detection returns only the transcript") {
+                val transcript = captions.generate(project, "") {}.joinToString(" ") { it.text }.lowercase()
+                check("test" in transcript && "speech" in transcript)
+                check("language" !in transcript && "<asr_text>" !in transcript)
+            }
+            test("Qwen rejects invalid audio and unsupported language") {
+                val handle = Native.asrLoad(File(directory, "qwen3-asr-0.6b-q4_k.gguf").path, 4)
+                check(handle != 0L)
+                try {
+                    check(Native.asrTranscribe(handle, FloatArray(0), "English") == null)
+                    check(Native.asrTranscribe(handle, floatArrayOf(Float.NaN), "English") == null)
+                    check(Native.asrTranscribe(handle, FloatArray(16000 * 13), "English") == null)
+                    check(Native.asrTranscribe(handle, FloatArray(160), "Not a language") == null)
+                } finally { Native.asrFree(handle) }
+            }
+            test("Qwen cancels before preparing speech audio") {
+                captions.cancelled = true
+                try {
+                    captions.generate(project, "English") {}
+                    error("Cancelled transcription completed")
+                } catch (_: java.io.InterruptedIOException) {
+                    check(recognized.isNotEmpty())
+                } finally { captions.cancelled = false }
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
         } catch (e: Throwable) {

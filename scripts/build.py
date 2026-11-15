@@ -46,7 +46,7 @@ def native():
     run(clang, '-std=c11', '-O3', '-Wall', '-Wextra', '-Werror', '-fPIC', '-shared',
         '-I' + str(ROOT / '.build/runtime-sources/onnxruntime-current'),
         '-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384',
-        *sorted(ROOT.glob('app/src/main/c/*.c')), '-o', lib / 'libmyrec.so',
+        *sorted(p for p in ROOT.glob('app/src/main/c/*.c') if p.name not in ('qwen.c', 'gguf.c')), '-o', lib / 'libmyrec.so',
         ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so',
         '-landroid', '-ljnigraphics', '-llog', '-lm', '-ldl')
     shutil.copyfile(ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so', lib / 'libonnxruntime.so')
@@ -57,14 +57,16 @@ def native():
             *[rn / ('src/' + s + '.c') for s in ['denoise', 'rnn', 'rnn_data', 'pitch', 'kiss_fft', 'celt_lpc']],
             '-o', lib / 'librnnoise.so', '-lm')
 
-    qwen = ROOT / '.build/runtime-sources/qwen-asr-main'
-    if qwen.exists():
-        sources = ['qwen_asr', 'qwen_asr_kernels', 'qwen_asr_kernels_generic', 'qwen_asr_kernels_neon',
-                   'qwen_asr_kernels_avx', 'qwen_asr_audio', 'qwen_asr_encoder', 'qwen_asr_decoder',
-                   'qwen_asr_tokenizer', 'qwen_asr_safetensors']
-        run(clang, '-std=c11', '-D_GNU_SOURCE', '-O3', '-fPIC', '-shared', '-ffast-math',
-            '-Wl,-z,max-page-size=16384', *[qwen / (s + '.c') for s in sources],
-            '-o', lib / 'libqwen_asr.so', '-lm')
+    qwen_build = BUILD / 'qwen'
+    cmake = SDK / 'cmake/3.31.6/bin/cmake'
+    ninja = SDK / 'cmake/3.31.6/bin/ninja'
+    run(cmake, '-S', ROOT / 'scripts/qwen', '-B', qwen_build, '-G', 'Ninja',
+        '-DCMAKE_MAKE_PROGRAM=' + str(ninja),
+        '-DCMAKE_TOOLCHAIN_FILE=' + str(ndk / 'build/cmake/android.toolchain.cmake'),
+        '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-28',
+        '-DANDROID_STL=none', '-DCMAKE_BUILD_TYPE=Release')
+    run(cmake, '--build', qwen_build, '--parallel', '2')
+    shutil.copyfile(qwen_build / 'libqwen_asr.so', lib / 'libqwen_asr.so')
 
 
 def build():
@@ -77,7 +79,7 @@ def build():
     manifest.write_text(source)
     run(TOOLS / 'aapt2', 'link', '-o', apk, '-I', ANDROID, '--manifest', manifest,
         '-A', ROOT / 'app/src/main/assets',
-        '--min-sdk-version', '28', '--target-sdk-version', '35', '--version-code', '5', '--version-name', '0.1.4', compiled)
+        '--min-sdk-version', '28', '--target-sdk-version', '35', '--version-code', '6', '--version-name', '0.1.5', compiled)
     classes = BUILD / 'classes'
     if classes.exists(): shutil.rmtree(classes)
     kotlin(sorted(ROOT.glob('app/src/main/java/**/*.kt')), classes)
