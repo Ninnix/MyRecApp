@@ -35,9 +35,7 @@ static double similarity(const float *source, const float *reference, const floa
 
 // Both channels share one alignment. Caching the original source preserves the
 // same waveform and phase when clips are split, moved, sought, or exported.
-JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env, jobject self,
-    jstring input_path, jstring output_path, jdouble speed, jobject progress) {
-    (void)self;
+static jlong stretch(JNIEnv *env,jstring input_path,jstring output_path,double speed,jdoubleArray plan,jobject progress) {
     if (!isfinite(speed) || speed < .1 || speed > 128) return -1;
     const char *input = (*env)->GetStringUTFChars(env, input_path, NULL);
     if (!input) return -1;
@@ -46,6 +44,7 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env, jobj
     FILE *in = fopen(input, "rb"), *out = NULL;
     float *memory = NULL;
     int64_t result = -1;
+    double *rates=NULL;int pieces=0;
     jmethodID callback = NULL;
     if (progress) {
         jclass cls = (*env)->GetObjectClass(env, progress);
@@ -57,6 +56,18 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env, jobj
     off_t bytes = ftello(in);
     if (bytes < 0 || bytes % 8) goto done;
     int64_t frames = bytes / 8, total = llround(frames / speed);
+    if (plan) {
+        int n=(*env)->GetArrayLength(env,plan);
+        if (n<3 || n%3 || n>300000) goto done;
+        rates=(*env)->GetDoubleArrayElements(env,plan,NULL); if (!rates) goto done;pieces=n/3;
+        double duration=0;
+        for (int i=0;i<pieces;i++) {
+            double a=rates[i*3],b=rates[i*3+1],r=rates[i*3+2];
+            if (!isfinite(a) || !isfinite(b) || !isfinite(r) || a<0 || b<=a || b>604800 || r<=0 || r>128 || (i && fabs(a-rates[i*3-2])>1e-6)) goto done;
+            duration+=fmax(0,fmin(b,frames/48000.0)-a)/r;
+        }
+        total=llround(duration*48000);
+    }
     int fd = open(output, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) goto done;
     out = fdopen(fd, "wb");
@@ -73,7 +84,17 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env, jobj
             jboolean keep = (*env)->CallBooleanMethod(env, progress, callback, (jlong)(position < 0 ? 0 : position), (jlong)total);
             if ((*env)->ExceptionCheck(env) || !keep) goto done;
         }
-        int64_t predicted = llround((position + WINDOW / 2) * speed) - WINDOW / 2;
+        double center=(position+WINDOW/2)/48000.0,source_time=center*speed;
+        if (rates) {
+            double remaining=center;
+            for (int i=0;i<pieces;i++) {
+                double a=rates[i*3],b=rates[i*3+1],r=rates[i*3+2],duration=(b-a)/r;
+                source_time=a+remaining*r;
+                if (remaining<=duration || i==pieces-1) break;
+                remaining-=duration;
+            }
+        }
+        int64_t predicted=llround(source_time*48000)-WINDOW/2;
         int64_t minimum = frames, maximum = 0;
         for (int i = 0; i < BUFFER; i++) {
             int64_t at = reflected(predicted - SEARCH + i, frames);
@@ -123,6 +144,7 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env, jobj
     if (fflush(out)) goto done;
     result = total;
 done:
+    if (rates) (*env)->ReleaseDoubleArrayElements(env,plan,rates,JNI_ABORT);
     free(memory);
     if (in) fclose(in);
     if (out && fclose(out)) result = -1;
@@ -130,4 +152,11 @@ done:
     (*env)->ReleaseStringUTFChars(env, input_path, input);
     (*env)->ReleaseStringUTFChars(env, output_path, output);
     return result;
+}
+
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioStretch(JNIEnv *env,jobject self,jstring input,jstring output,jdouble speed,jobject progress) {
+    (void)self;return stretch(env,input,output,speed,NULL,progress);
+}
+JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_audioRamp(JNIEnv *env,jobject self,jstring input,jstring output,jdoubleArray plan,jobject progress) {
+    (void)self;return stretch(env,input,output,1,plan,progress);
 }

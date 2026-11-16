@@ -33,6 +33,7 @@ fun main() {
     CameraAssistanceTests.run(::test)
     BackgroundTests.run(::test)
     FrameEffectsTests.run(::test)
+    ExistingEffectsTests.run(::test)
     test("new recordings remain through undo redo and restored editing sessions") {
         val e = Editor()
         val first = Clip(path = "first.mp4", sourceOut = 5.0)

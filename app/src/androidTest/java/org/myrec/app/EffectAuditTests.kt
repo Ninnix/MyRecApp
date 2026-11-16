@@ -94,7 +94,7 @@ object EffectAuditTests {
         }
         test("every available spatial effect changes pixels when its non-neutral controls are set") {
             val kinds=(Effects.categories.filterKeys { it!="Presets" }.values.flatten()+FilmColor.definitions.keys+"Color LUTs")
-                .distinct().filter { it !in TimeEffects.kinds && it !in setOf("Strobe","Freeze","Echo","Undercranking") }
+                .distinct().filter { it !in TimeEffects.kinds && it !in setOf("Strobe","Freeze","Freeze Frame","Echo","Undercranking") }
             for (kind in kinds) {
                 val fx=Effect.create(kind)
                 when (kind) {

@@ -67,6 +67,23 @@ class AudioCache(internal val root: File) {
         } finally { partial.delete() }
     }
 
+    @Synchronized fun rampPcm(source: File,plan: SpeedRamp,cancelled: ()->Boolean,progress: (Float)->Unit): File {
+        val identity=SourceAudio.hash(source,cancelled)+":wsola-ramp-1:"+plan.native.joinToString(",") { it.toBits().toString() }
+        val key=MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
+        val result=File(root,"$key.ramp.f32")
+        val frames=(plan.outputTime(source.length()/8/48000.0)*48000).roundToLong()
+        if (result.isFile && result.length()==frames*8) return result
+        val partial=File(root,"$key-${uid()}.partial")
+        try {
+            val written=Native.audioRamp(source.path,partial.path,plan.native) { done,total ->
+                progress(if (total>0) done.toFloat()/total else 1f);!cancelled()
+            }
+            if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
+            check(written==frames && partial.length()==frames*8 && partial.renameTo(result)) { "Cannot prepare continuous speed ramp" }
+            return result
+        } finally { partial.delete() }
+    }
+
     fun head(path: String, frames: Int): FloatArray {
         val temporary = File(root, "probe-${uid()}.partial")
         try {
@@ -260,6 +277,8 @@ class AudioMixer(
     private val states = mutableMapOf<String, Long>()
     private val stretched = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
     private val studio = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
+    private data class RampAudio(val clock: SpeedRamp,val dry: RandomAccessFile,val wet: RandomAccessFile?)
+    private val ramps=mutableMapOf<String,RampAudio>()
     private var framePosition = 0L
     private val backgrounds=BackgroundAudio(cache)
 
@@ -278,6 +297,12 @@ class AudioMixer(
             .forEach { files[it] = RandomAccessFile(cache.get(it, cancelled), "r") }
         for (clip in project.clips.filter { it.audio }) {
             val wet = Studio.prepare(clip, cache, cancelled, progress)
+            val ramp=SpeedRamp.forClip(clip)
+            if (ramp!=null) {
+                ramps[clip.id]=RampAudio(ramp,RandomAccessFile(cache.rampPcm(cache.get(clip.path,cancelled),ramp,cancelled,progress),"r"),
+                    wet?.let { RandomAccessFile(cache.rampPcm(it,ramp,cancelled,progress),"r") })
+                continue
+            }
             for (speed in clip.playbackPieces().map { it.effectiveRate }.distinct()) {
                 if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
                 if (speed != 1.0 && clip.path to speed !in stretched) {
@@ -336,12 +361,23 @@ class AudioMixer(
             val outgoing = left?.group == clip.group || sameSource(left)
             val incoming = right?.group == clip.group || sameSource(right)
             if (!outgoing && !incoming) continue
+            val clock=transition.controls?.let { TransitionClock(transition) }
+            val sound=clock?.let { if (outgoing) it.audioOut else it.audioIn }
+            val origin=if (clock!=null) transition.pictureOrigin else 0.0
             for (i in 0 until pcm.size / 2) {
                 val at = time + (first + i) / 48000.0
-                if (at < transition.begin || at > transition.end) continue
+                val controls=transition.controls
+                val soundBegin=transition.begin
+                val soundEnd=transition.end
+                if (at < soundBegin || at > soundEnd) continue
                 val position = transition.progress(at).toDouble()
                 val fade =
-                    if (linear) (if (outgoing) 1-position else position).toFloat()
+                    if (sound!=null) {
+                        val length=sound.endInclusive-sound.start
+                        val position=if (length<=0) (if (at-origin>=sound.start) 1.0 else 0.0) else ((at-origin-sound.start)/length).coerceIn(0.0,1.0)
+                        (if (outgoing) 1-position else position).toFloat()
+                    }
+                    else if (linear) (if (outgoing) 1-position else position).toFloat()
                     else if (outgoing) cos(position * Math.PI / 2).toFloat()
                     else sin(position * Math.PI / 2).toFloat()
                 pcm[i * 2] *= fade
@@ -357,19 +393,33 @@ class AudioMixer(
         val end = (framePosition + frames) / 48000.0
         for (original in project.clips) for (clip in original.playbackPieces()) {
             if (!clip.audio || clip.start >= end || clip.end <= time) continue
-            val prepared = studio[clip.id to clip.effectiveRate]
-            val drySource = if (clip.effectiveRate == 1.0) files[clip.path]
+            val ramp=ramps[clip.id]
+            val prepared = ramp?.wet ?: studio[clip.id to clip.effectiveRate]
+            val drySource = ramp?.dry ?: if (clip.effectiveRate == 1.0) files[clip.path]
                 else stretched[clip.path to clip.effectiveRate] ?: error("Pitch-preserved audio has not been prepared")
             val file = prepared ?: drySource ?: continue
             val first = max(0, ceil((clip.start - time) * 48000).toInt())
             val last = min(frames, ceil((clip.end - time) * 48000).toInt())
             if (last <= first) continue
-            val startSource = (if (clip.frozen == null) clip.sourceTime(time + first / 48000.0)
-                else clip.frozen!!.sourceTime + clip.frozen!!.offset + time + first / 48000.0 - clip.start) * 48000 / clip.effectiveRate
+            val sourceTime=if (clip.frozen==null) clip.sourceTime(time+first/48000.0)
+                else clip.frozen!!.sourceTime+clip.frozen!!.offset+time+first/48000.0-clip.start
+            val startSource=if (ramp!=null) ramp.clock.outputTime(sourceTime)*48000 else sourceTime*48000/clip.effectiveRate
             val pcm = readSource(file, max(0.0, startSource), last - first)
             val gain =
                 if (clip.gainDb <= -60f) 0f else 10f.pow(clip.gainDb / 20)
-            for (i in pcm.indices) pcm[i] *= gain
+            val under=original.effects.filter { it.enabled && it.kind=="Undercranking" && ExistingEffects.modern(it) }
+            val freeze=original.effects.firstOrNull { it.kind=="Freeze Frame" }
+            fun mediaGain(at: Double): Float {
+                val source=clip.sourceIn+(at-clip.start)*clip.rate
+                val mute=under.any { fx -> fx.active(at-original.start) && (fx.parameter("mute")?.at(source) as? EffectValue.Toggle)?.value==true }
+                val fade=if (freeze?.values?.get("audio")=="Fade out") {
+                    val held=original.frozen!!;1-((held.offset+at-original.start)/freeze.number("hold",(held.offset+held.duration).toFloat())).toFloat().coerceIn(0f,1f)
+                } else 1f
+                return if (mute) 0f else gain*fade
+            }
+            for (i in 0 until pcm.size/2) {
+                val scale=mediaGain(time+(first+i)/48000.0);pcm[i*2]*=scale;pcm[i*2+1]*=scale
+            }
             fade(project, clip, pcm, time, first)
             val originalPower =
                 if (!matchListening) 0.0
@@ -379,11 +429,12 @@ class AudioMixer(
                     val dry =
                         readSource(
                             raw,
-                            clip.sourceTime(time + first / 48000.0) * 48000 / clip.effectiveRate,
+                            startSource,
                             last - first,
                         )
-                    val dryGain = if (clip.gainDb <= -60f) 0f else 10f.pow(clip.gainDb / 20)
-                    for (i in dry.indices) dry[i] *= dryGain
+                    for (i in 0 until dry.size/2) {
+                        val scale=mediaGain(time+(first+i)/48000.0);dry[i*2]*=scale;dry[i*2+1]*=scale
+                    }
                     fade(project, clip, dry, time, first)
                     dry.sumOf { it.toDouble() * it }
                 }
@@ -425,6 +476,7 @@ class AudioMixer(
         studio.clear()
         states.values.forEach { Native.audioDestroy(it) }
         states.clear()
+        ramps.values.forEach { it.dry.close();it.wet?.close() };ramps.clear()
         stretched.values.forEach { it.close() }
         stretched.clear()
         files.values.forEach { it.close() }

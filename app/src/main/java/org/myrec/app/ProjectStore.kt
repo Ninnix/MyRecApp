@@ -39,8 +39,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 9) throw NewerProject()
-        require(version in 1L..9L) { "Invalid project version" }
+        if (version > 10) throw NewerProject()
+        require(version in 1L..10L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -220,7 +220,7 @@ class ProjectStore(val root: File) {
             }
         }
         val o = JSONObject().apply {
-            put("version", 9); put("id", p.id); put("name", p.name)
+            put("version", 10); put("id", p.id); put("name", p.name)
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
@@ -672,6 +672,7 @@ class ProjectStore(val root: File) {
                     require(StabilizationSettings.valid(effect,c)) { "Invalid stabilization settings" }
                 if (effect.kind in AudioFilter.direct && AudioFilter.modern(effect))
                     require(AudioFilter.valid(effect)) { "Invalid direct audio controls" }
+                if (ExistingEffects.modern(effect)) require(effect.parameters.all { ExistingEffects.animatable(effect.kind,it.id) || it.keyframes.isEmpty() }) { "This effect control cannot be animated" }
                 val expected = EffectContracts.parameters(effect).associateBy { it.id }
                 require(effect.parameters.size == expected.size && effect.parameters.map { it.id }.distinct().size == expected.size &&
                     effect.parameters.all { it.kind == expected[it.id]?.kind && it.valid() }) { "Invalid effect parameters" }
@@ -684,13 +685,13 @@ class ProjectStore(val root: File) {
             listOf(t.at, t.duration, t.hold, t.overlap, t.amount.toDouble(),
                 t.angle.toDouble(), t.phaseFrom.toDouble(), t.phaseTo.toDouble()).all { it.isFinite() } &&
                 t.duration >= 0 && t.hold >= 0 && t.duration + t.hold > 0 &&
-                t.phaseFrom in 0f..1f && t.phaseTo in t.phaseFrom..1f
+                t.phaseFrom in 0f..1f && t.phaseTo in t.phaseFrom..1f && t.controls?.valid()!=false && listOfNotNull(t.windowFrom,t.windowTo).all { it.isFinite() && kotlin.math.abs(it)<=604800 } && (t.windowFrom==null && t.windowTo==null || t.windowFrom!=null && t.windowTo!=null && t.windowTo!!>t.windowFrom!!)
         }) { "Invalid transition timing" }
     }
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 9)
+            put("version", 10)
             put("captureCount", p.captureCount)
             put("id", p.id)
             put("name", p.name)
@@ -743,6 +744,7 @@ class ProjectStore(val root: File) {
                                                     if (StabilizationSettings.modern(e)) put("algorithm", 5)
                                                     if (e.kind in BackgroundEffect.kinds) put("algorithm", 6)
                                                     if (FrameEffects.modern(e)) put("algorithm", 7)
+                                                    if (ExistingEffects.modern(e)) put("algorithm", 8)
                                                     put("parameters", EffectJson.encode(e))
                                                     e.phase?.let { put("phase", TimeEffectJson.encode(it)) }
                                                     e.subtitle?.let { put("subtitle", SubtitleJson.encode(it)) }
@@ -775,7 +777,13 @@ class ProjectStore(val root: File) {
                                 put("angle", t.angle)
                                 put("soft", t.soft)
                                 put("phaseFrom", t.phaseFrom)
-                                put("phaseTo", t.phaseTo)
+                                put("phaseTo", t.phaseTo);put("windowFrom",t.windowFrom);put("windowTo",t.windowTo)
+                                t.controls?.let { c -> put("controls",JSONObject().apply {
+                                    put("vertical",c.vertical);put("divider",c.divider);put("reverse",c.reverse);put("audio",c.audio);put("color",c.color)
+                                    put("audioOffset",c.audioOffset);put("audioBlend",c.audioBlend);put("flashCount",c.flashCount);put("flashAcceleration",c.flashAcceleration);put("stillDissolve",c.stillDissolve)
+                                    fun framing(f: TransitionFraming)=JSONObject().put("x",f.x).put("y",f.y).put("zoom",f.zoom)
+                                    put("first",framing(c.first));put("second",framing(c.second))
+                                }) }
                             }
                         )
                     }
@@ -832,12 +840,13 @@ class ProjectStore(val root: File) {
                 val values = e.getJSONObject("values")
                 val algorithm = integer(e, "algorithm", 0)
                 require(algorithm >= 0) { "Invalid effect algorithm" }
-                if (algorithm > 7 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
+                if (algorithm > 8 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
                     algorithm == 3L && e.getString("kind") !in AudioFilter.direct ||
                     algorithm == 4L && e.getString("kind") !in listOf("Halation","Noir","16mm") ||
                     algorithm == 5L && e.getString("kind") != "Stabilize" ||
                     algorithm == 6L && e.getString("kind") !in BackgroundEffect.kinds ||
-                    algorithm == 7L && e.getString("kind") !in FrameEffects.kinds) throw NewerProject()
+                    algorithm == 7L && e.getString("kind") !in FrameEffects.kinds ||
+                    algorithm == 8L && e.getString("kind") !in ExistingEffects.kinds) throw NewerProject()
                 val fx =
                     Effect(
                         e.getString("id"),
@@ -846,6 +855,7 @@ class ProjectStore(val root: File) {
                         e.getDouble("to"),
                         e.getBoolean("enabled"),
                         parameters = when {
+                            algorithm == 8L -> ExistingEffects.parameters(e.getString("kind"))
                             algorithm == 7L -> FrameEffects.parameters(e.getString("kind"))
                             algorithm == 4L && e.getString("kind") == "Noir" -> Noir.parameters()
                             algorithm == 4L && e.getString("kind") == "16mm" -> SixteenMm.parameters()
@@ -859,10 +869,13 @@ class ProjectStore(val root: File) {
                 else EffectJson.decode(fx, if (e.has("parameters")) e.getJSONArray("parameters") else null)
                 EffectJson.decodeMotion(fx, if (e.has("motion") && !e.isNull("motion")) e.getJSONObject("motion") else null)
                 if (fx.parameters.isNotEmpty()) {
+                    val retained=if (ExistingEffects.modern(fx)) fx.values.filterKeys { it in setOf("origin","clockEnd","release","phaseOffset","captured","rangeStart","rangeEnd") } else emptyMap()
+                    for ((key,value) in retained) require(value.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..(if (key=="phaseOffset") 24*604800.0 else 604800.0) }==true) { "Invalid effect clock $key" }
                     val origin=if (fx.kind in BackgroundEffect.kinds) fx.values["origin"] else null
                     if (origin!=null) require(origin.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..604800.0 }==true) { "Invalid background origin" }
                     fx.values.clear()
                     if (origin!=null) fx.values["origin"]=origin
+                    fx.values.putAll(retained)
                 }
                 if (e.has("phase")) fx.phase = TimeEffectJson.decode(e.getJSONObject("phase"))
                 if (e.has("subtitle")) fx.subtitle = SubtitleJson.decode(e.getJSONObject("subtitle"))
@@ -888,6 +901,14 @@ class ProjectStore(val root: File) {
                     t.optBoolean("soft", true),
                     t.optDouble("phaseFrom", 0.0).toFloat(),
                     t.optDouble("phaseTo", 1.0).toFloat(),
+                    t.optJSONObject("controls")?.let { c ->
+                        fun framing(key: String)=c.getJSONObject(key).let { TransitionFraming(it.getDouble("x"),it.getDouble("y"),it.getDouble("zoom")) }
+                        TransitionControls(c.getBoolean("vertical"),c.getDouble("divider"),c.getBoolean("reverse"),c.getString("audio"),framing("first"),framing("second"),
+                            c.getLong("color"),if (c.has("audioOffset")) c.getDouble("audioOffset") else null,if (c.has("audioBlend")) c.getDouble("audioBlend") else null,
+                            c.getInt("flashCount"),c.getDouble("flashAcceleration"),c.getDouble("stillDissolve"))
+                    },
+                    if (t.has("windowFrom")) t.getDouble("windowFrom") else null,
+                    if (t.has("windowTo")) t.getDouble("windowTo") else null,
                 )
             )
         }

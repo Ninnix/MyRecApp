@@ -170,6 +170,18 @@ class Capture(
     private var zoomSeconds = prefs.getFloat("zoomSeconds", 1f)
     private var zoomAnimator: ValueAnimator? = null
     private var zoomMenu = false
+    private val effectFaces=CameraFaceTarget()
+    private var dollyFollower: DollyZoomFollower?=null
+    private var dollyEnabled=false
+    private var dollyDeadline=Double.POSITIVE_INFINITY
+    private var dollyPreparing=Double.NEGATIVE_INFINITY
+    private var lastCameraEffect=0.0
+    private var lastCadence: Pair<Int,Long>?=null
+    @Volatile private var selectedEffectTarget: CameraPoint?=null
+    @Volatile private var targetGeneration=0
+    private var trackedGeneration=-1
+    private var trackedFrame: Bitmap?=null
+    private var trackedBounds=floatArrayOf(.5f,.5f,.2f,.2f)
     private var liveEffects = mutableListOf<Effect>()
     private val effectHistory = mutableListOf<Effect>()
     private var effectSince = 0.0
@@ -697,7 +709,7 @@ class Capture(
             r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             r.set(CaptureRequest.CONTROL_AE_LOCK, false)
             val characteristics=manager.getCameraCharacteristics(cameraId)
-            r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (faceFollowEnabled) CameraFaces.mode(characteristics) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
+            r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (faceFollowEnabled || cameraTracking()) CameraFaces.mode(characteristics) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
             val inputZoom=assistInputZoom ?: zoom
             r.set(
                 CaptureRequest.FLASH_MODE,
@@ -752,6 +764,11 @@ class Capture(
                         if (session !== this@Capture.session) return
                         latestResult = result
                         focusState = result.get(CaptureResult.CONTROL_AF_STATE)
+                        if (cameraTracking()) {
+                            val faces=CameraFaces.boxes(characteristics,result,captureSize.width,captureSize.height)
+                            val time=CameraFaces.time(characteristics,result);val applied=CameraFaces.zoom(characteristics,result)
+                            ui.post { if (!closed) observeCameraEffects(faces,time,applied) }
+                        }
                         composition?.faces(cameraId,if (faceFollowEnabled) CameraFaces.boxes(characteristics,result,captureSize.width,captureSize.height) else emptyList(),CameraFaces.time(characteristics,result),CameraFaces.zoom(characteristics,result))
                     }
                 },
@@ -1199,8 +1216,11 @@ class Capture(
         val file=File(store.media,"recording-${System.currentTimeMillis()}.mp4")
         var next: CaptureRecorder?=null
         try {
-            for (fx in liveEffects.filter { it.kind in BackgroundEffect.kinds }) fx.values["origin"]="0.0"
-            receipt=store.beginCapture(activity.editor.project,file,liveEffects,activity.recordingInsertion())
+            for (fx in liveEffects.filter { it.kind in BackgroundEffect.kinds || ExistingEffects.modern(it) }) {
+                fx.values["origin"]="0.0";fx.values.remove("release");fx.values.remove("triggered");fx.values.remove("rangeStart");fx.values.remove("rangeEnd");fx.values.remove("phaseOffset")
+                for (id in listOf("targetX","targetY")) fx.parameter(id)?.keyframes?.clear()
+            }
+            receipt=store.beginCapture(activity.editor.project,file,liveEffects.filter { it.kind !in setOf("Dolly Zoom","Crash Zoom") },activity.recordingInsertion())
             recordingDisplayRotation=activity.windowManager.defaultDisplay.rotation
             recordingOrientation=cameraOrientation()
             val r=CaptureRecorder(file,videoSize.width,videoSize.height,prefs.getInt("fps",30),recordingOrientation,hdr,activity.audioCache) { error ->
@@ -2012,7 +2032,118 @@ class Capture(
         strobePreviewUntil = strobePreviewSince + (seconds.coerceIn(.1f, 10f) * 1000).toLong()
     }
 
+    private fun cameraTracking()=dollyEnabled || liveEffects.any { it.enabled && it.kind=="Crash Zoom" && ExistingEffects.toggle(it,"trackFace") }
+    private fun effectClock()=if (recording) elapsedSeconds() else (SystemClock.elapsedRealtime()-backgroundPreviewStart)/1000.0
+    internal fun triggerCameraEffect(returning: Boolean=false): Boolean {
+        val crash=liveEffects.firstOrNull { it.enabled && it.kind=="Crash Zoom" } ?: return false
+        if (recording) finishEffectRange(elapsedSeconds())
+        if (returning && crash.values["triggered"]=="1") crash.values["release"]=(effectClock()-(crash.values["origin"]?.toDoubleOrNull() ?: 0.0)).toString()
+        else {
+            crash.values["origin"]=effectClock().toString();crash.values["triggered"]="1";crash.values.remove("release")
+            for (id in listOf("targetX","targetY")) crash.parameter(id)?.keyframes?.clear()
+        }
+        effectGeneration++;checkpointReceipt();return true
+    }
+    internal fun toggleDolly(): Boolean {
+        if (liveEffects.none { it.enabled && it.kind=="Dolly Zoom" }) return false
+        val time=System.nanoTime()/1e9
+        if (dollyEnabled && dollyFollower!=null) dollyFollower?.stop(time)
+        else { dollyEnabled=!dollyEnabled;dollyFollower=null;dollyPreparing=Double.NEGATIVE_INFINITY;dollyDeadline=Double.POSITIVE_INFINITY }
+        if (dollyEnabled && faceFollowEnabled) setFaceFollow(false)
+        updateRequest();return true
+    }
+    private fun advanceDolly(height: Double?,applied: Double,time: Double) {
+        if (!dollyEnabled) return
+        val effect=liveEffects.firstOrNull { it.enabled && it.kind=="Dolly Zoom" } ?: run { dollyEnabled=false;return }
+        if (dollyFollower==null && height!=null && height in .04.. .8 && time>=dollyPreparing) {
+            if (dollyPreparing==Double.NEGATIVE_INFINITY && ExistingEffects.choice(effect,"direction")=="Stretch") {
+                val desired=min(zoomRange.upper.toDouble(),max(applied,min(2.0,.7/height*applied)))
+                if (desired>applied*1.05) {
+                    dollyPreparing=time+1.15
+                    zoomAnimator?.cancel()
+                    zoomAnimator=ValueAnimator.ofFloat(zoom,desired.toFloat()).apply {
+                        duration=800;addUpdateListener { zoom=it.animatedValue as Float;assistInputZoom=null;updateRequest() };start()
+                    }
+                    return
+                }
+            }
+            val stretch=ExistingEffects.choice(effect,"direction")=="Stretch"
+            val headroom=if (stretch) applied/zoomRange.lower else zoomRange.upper/applied
+            if (headroom<1.12) { dollyEnabled=false;activity.message("Change direction or zoom to leave room for the move");return }
+            dollyFollower=DollyZoomFollower(height,applied,zoomRange.lower.toDouble(),zoomRange.upper.toDouble(),time)
+            dollyDeadline=time+effect.number("duration",2.5f)
+        }
+        dollyFollower?.let { follower ->
+            if (height!=null) follower.observe(height,applied,time)
+            if (time>=dollyDeadline) follower.stop(time)
+            zoom=follower.value(time).toFloat();assistInputZoom=null;updateRequest()
+            if (follower.hasStopped(time)) { dollyFollower=null;dollyEnabled=false;rememberLens() }
+        }
+    }
+    private fun observeCameraEffects(faces: List<CameraRect>,time: Double,applied: Double) {
+        if (time-lastCameraEffect<.04) return
+        lastCameraEffect=time;effectFaces.observe(faces,time)
+        val box=effectFaces.current(time)
+        if (dollyEnabled && selectedEffectTarget==null) {
+            val subject=box?.takeIf { it.left>.005 && it.top>.005 && it.right<.995 && it.bottom<.995 }
+            advanceDolly(subject?.let { if (cameraOrientation()%180==0) it.height else it.width },applied,time)
+        }
+        if (box==null || selectedEffectTarget!=null) return
+        val target=composition?.framePoint(cameraId,box.center,mirrorRecording)
+            ?: CameraFraming.oriented(box.center,cameraOrientation(),front && mirrorRecording)
+        for (fx in liveEffects.filter { it.enabled && it.kind=="Crash Zoom" && ExistingEffects.toggle(it,"trackFace") }) {
+            val clock=effectClock()
+            for ((id,value) in listOf("targetX" to target.x,"targetY" to target.y)) {
+                val parameter=fx.parameter(id) ?: continue
+                val next=parameter.number(value.toFloat())
+                if (recording && fx.values["triggered"]=="1") {
+                    if (parameter.keyframes.size<100000 && (parameter.keyframes.lastOrNull()?.time ?: -1.0)<clock-.05) parameter.setKeyframe(clock,next)
+                } else parameter.value=next
+            }
+        }
+    }
+
+    private fun trackEffectTarget(bitmap: Bitmap,clock: Double) {
+        val target=selectedEffectTarget ?: return
+        val small=Bitmap.createScaledBitmap(bitmap,if (bitmap.width>=bitmap.height) 320 else 180,if (bitmap.width>=bitmap.height) 180 else 320,true)
+        val current=if (small===bitmap) small.copy(small.config!!,false) else small
+        val generation=targetGeneration
+        if (generation!=trackedGeneration) {
+            trackedBounds=floatArrayOf(target.x.toFloat(),target.y.toFloat(),.2f,.2f)
+            trackedFrame?.recycle();trackedFrame=null;trackedGeneration=generation
+        }
+        val previous=trackedFrame
+        val measurement=if (previous==null) trackedBounds+1f else Native.trackSubject(previous,current,trackedBounds)
+        if (measurement!=null && measurement[4]>.6f) {
+            trackedBounds=measurement.copyOfRange(0,4)
+            val actual=latestResult?.let { CameraFaces.zoom(manager.getCameraCharacteristics(cameraId),it) } ?: zoom.toDouble()
+            val time=System.nanoTime()/1e9
+            val box=trackedBounds.copyOf()
+            ui.post {
+                if (generation!=targetGeneration || closed) return@post
+                advanceDolly(box[3].toDouble(),actual,time)
+                for (fx in liveEffects.filter { it.enabled && it.kind=="Crash Zoom" }) for ((id,value) in listOf("targetX" to box[0],"targetY" to box[1])) {
+                    val parameter=fx.parameter(id) ?: continue
+                    if (recording && fx.values["triggered"]=="1" && parameter.keyframes.size<100000) parameter.setKeyframe(clock,parameter.number(value))
+                    else parameter.value=parameter.number(value)
+                }
+            }
+            trackedFrame?.recycle();trackedFrame=current
+        } else {
+            current.recycle()
+            ui.post { advanceDolly(null,zoom.toDouble(),System.nanoTime()/1e9) }
+        }
+    }
+
     private fun updateLiveFrame() {
+        val now=SystemClock.elapsedRealtime()
+        val clock=effectClock()
+        val cadence=EffectCadence(liveEffects.filter { ExistingEffects.modern(it) }.map { it.copyEffect().apply {
+            from=values["rangeStart"]?.toDoubleOrNull() ?: values["origin"]?.toDoubleOrNull() ?: 0.0;to=604800.0
+        } }).hold(clock)
+        val cadenceKey=cadence?.let { effectGeneration to it.index }
+        if (cadenceKey!=null && lastCadence==cadenceKey && liveFrame!=null) return
+        val renderClock=cadence?.boundary ?: clock
         val backdrop=liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }
         val frame = cameraFrame(if (backdrop) if (width>height) 512 else 288 else 640,
             if (backdrop) if (width>height) 288 else 512 else if (width > height) 360 else 1138) ?: return
@@ -2020,15 +2151,14 @@ class Capture(
         var raw = if (flip) SourceMirror.flip(frame) else frame
         rendering = true
         val generation = effectGeneration
-        val now = SystemClock.elapsedRealtime()
-        val clock = if (recording) elapsedSeconds() else (now - strobePreviewSince) / 1000.0
-        val backgroundClock=if (recording) clock else (now-backgroundPreviewStart)/1000.0
+        val backgroundClock=renderClock
         val backgroundKey="$cameraId:$dualLayout:$displayRotation:$flip:$generation"
         val effects = EffectOrder.ordered(liveEffects).filter {
-            it.enabled && (it.kind != "Negative Strobe" || recording || now < strobePreviewUntil)
+            it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") && (it.kind != "Negative Strobe" || recording || now < strobePreviewUntil)
         }.map { it.copyEffect() }
         imageWorker.execute {
             try {
+            trackEffectTarget(raw,clock)
             val person =
                 if (
                     effects.any {
@@ -2040,13 +2170,13 @@ class Capture(
                     Person.mask(raw)
                 else null
             for (original in effects) {
-                val fx = original.sampled(clock)
+                val fx = original.sampled(renderClock)
                 if (fx.kind == "Negative Strobe" && TimeEffects.negative(original.copy(phase = EffectPhase(0.0)), clock, prefs.getInt("fps", 30).toDouble()))
                     Native.workingNegative(raw, fx.strength(0.0, 1.0))
                 if (fx.kind in BackgroundEffect.kinds) backgroundEffects.render(raw,fx,backgroundClock,
                     fx.values["origin"]?.toDoubleOrNull() ?: 0.0,backgroundKey)
-                else Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = clock,
-                    frame = floor(clock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong(),decorate=false)
+                else Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = renderClock-(fx.values["origin"]?.toDoubleOrNull() ?: 0.0),
+                    frame = floor(renderClock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong(),decorate=false)
                 FrameEffects.liveGeometry(raw,fx,fx.strength(0.0,1.0))
                 var kind = fx.kind
                 val id = Effects.pixelId(fx)
@@ -2072,6 +2202,7 @@ class Capture(
                 rendering = false
                 if (generation != effectGeneration || closed) raw.recycle()
                 else {
+                    lastCadence=cadenceKey
                     liveFrame?.recycle()
                     liveFrame = raw
                     overlay.invalidate()
@@ -2110,9 +2241,12 @@ class Capture(
     private fun checkpointReceipt() {
         val take = receipt ?: return
         val marks = recordingMarks.toList()
-        val effects = effectHistory.map { it.copyEffect() } + liveEffects.filter { it.enabled }.map {
+        val effects = effectHistory.map { it.copyEffect() } + liveEffects.filter { it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") }.map {
             it.copyEffect().apply {
-                from = effectSince; to = Double.MAX_VALUE
+                from = max(effectSince,if (kind=="Crash Zoom") values["origin"]?.toDoubleOrNull() ?: effectSince else effectSince); to = Double.MAX_VALUE
+                if (ExistingEffects.modern(this)) {
+                    values["clockEnd"]=elapsedSeconds().toString();values["rangeStart"]=from.toString();values["rangeEnd"]=values["clockEnd"]!!
+                }
                 if (kind == "Negative Strobe") phase = EffectPhase(0.0)
             }
         }
@@ -2124,10 +2258,13 @@ class Capture(
 
     private fun finishEffectRange(end: Double) {
         if (end <= effectSince) return
-        for (fx in liveEffects.filter { it.enabled }) effectHistory.add(
+        for (fx in liveEffects.filter { it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") }) effectHistory.add(
             fx.copyEffect(true).apply {
-                from = effectSince
+                from = max(effectSince,if (kind=="Crash Zoom") values["origin"]?.toDoubleOrNull() ?: effectSince else effectSince)
                 to = end
+                if (ExistingEffects.modern(this)) {
+                    values["clockEnd"]=end.toString();values["rangeStart"]=from.toString();values["rangeEnd"]=end.toString()
+                }
                 if (kind == "Negative Strobe") phase = EffectPhase(0.0)
             }
         )
@@ -2137,11 +2274,28 @@ class Capture(
     fun effects() {
         activity.captureEffects(liveEffects) {
             val next = it.map { fx -> fx.copyEffect() }.toMutableList()
+            for (fx in next.filter { it.kind=="Crash Zoom" }) liveEffects.firstOrNull { it.id==fx.id }?.let { old ->
+                for (key in listOf("triggered","origin","release")) old.values[key]?.let { fx.values[key]=it }
+                for (id in listOf("targetX","targetY")) if (recording) old.parameter(id)?.let { measured ->
+                    fx.parameter(id)?.apply { value=measured.value;keyframes.clear();keyframes.addAll(measured.keyframes) }
+                }
+            }
             for (fx in next.filter { it.kind in BackgroundEffect.kinds && liveEffects.none { old -> old.id==it.id } })
                 fx.values["origin"]=(if (recording) elapsedSeconds() else 0.0).toString()
-            if (recording && next != liveEffects) finishEffectRange(elapsedSeconds())
+            if (recording && next != liveEffects) {
+                val time=elapsedSeconds()
+                val phase=EffectCadence(liveEffects.filter { ExistingEffects.modern(it) }.map { fx -> fx.copyEffect().apply {
+                    from=values["rangeStart"]?.toDoubleOrNull() ?: values["origin"]?.toDoubleOrNull() ?: 0.0;to=604800.0
+                } }).phase(time)
+                finishEffectRange(time)
+                for (fx in next.filter { ExistingEffects.modern(it) }) {
+                    fx.values["rangeStart"]=time.toString()
+                    if (fx.kind in setOf("Super 8","Undercranking")) fx.values["phaseOffset"]=phase.toString()
+                }
+            }
             if (next != liveEffects) effectGeneration++
             liveEffects = next
+            updateRequest()
             checkpointReceipt()
             if (it.none { fx -> fx.enabled }) {
                 liveFrame?.recycle()
@@ -2152,6 +2306,8 @@ class Capture(
     }
 
     private fun closeCamera() {
+        dollyFollower=null;dollyEnabled=false;lastCadence=null;selectedEffectTarget=null;targetGeneration++
+        if (!imageWorker.isShutdown) imageWorker.execute { trackedFrame?.recycle();trackedFrame=null }
         rememberLayout()
         assistZoomAnimator?.let { assistZoomAnimator=null; it.cancel() }
         zoomAnimator?.cancel()
@@ -2816,6 +2972,17 @@ class Capture(
                 if (e.actionMasked == MotionEvent.ACTION_UP) {
                     focusTouch = false
                     if (moved) { rememberLens(); return true }
+                    if (liveEffects.any { it.enabled && it.kind in setOf("Dolly Zoom","Crash Zoom") }) {
+                        val x=((e.x-texture.left)/texture.width).coerceIn(0f,1f)
+                        val y=((e.y-texture.top)/texture.height).coerceIn(0f,1f)
+                        for (fx in liveEffects.filter { it.kind in setOf("Dolly Zoom","Crash Zoom") }) {
+                            fx.setNumber("targetX",if (front && mirrorPreview!=mirrorRecording) 1-x else x);fx.setNumber("targetY",y)
+                            fx.parameter("trackFace")?.value=EffectValue.Toggle(false)
+                        }
+                        selectedEffectTarget=CameraPoint((if (front && mirrorPreview!=mirrorRecording) 1-x else x).toDouble(),y.toDouble())
+                        targetGeneration++;dollyFollower=null
+                        effectGeneration++;return true
+                    }
                     if (e.eventTime - e.downTime >= 450) { toggleFocusPeaking(); return true }
                 }
             }

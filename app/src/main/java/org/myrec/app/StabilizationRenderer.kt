@@ -28,7 +28,7 @@ object StabilizationRenderer {
         return stat(File(path))+"|"+stat(File(path+".mirror"))+"|"+stat(File(path+".primaries"))
     }
     private fun cancelled() = Thread.currentThread().isInterrupted
-    private fun identity(path: String, requestCancelled: () -> Boolean): String {
+    internal fun identity(path: String, requestCancelled: () -> Boolean): String {
         val stamp = stamp(path)
         synchronized(sources) { sources[path]?.takeIf { it.stamp == stamp }?.let { return it.hash } }
         val stop = { requestCancelled() || cancelled() }

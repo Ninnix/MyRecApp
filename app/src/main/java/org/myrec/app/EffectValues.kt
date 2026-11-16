@@ -134,6 +134,7 @@ object EffectContracts {
     }
 
     fun parameters(effect: Effect) = when {
+        ExistingEffects.modern(effect) -> ExistingEffects.parameters(effect.kind)
         FrameEffects.modern(effect) -> FrameEffects.parameters(effect.kind)
         Noir.modern(effect) -> Noir.parameters()
         SixteenMm.modern(effect) -> SixteenMm.parameters()

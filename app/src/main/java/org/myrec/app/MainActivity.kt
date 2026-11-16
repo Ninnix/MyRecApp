@@ -126,6 +126,7 @@ class MainActivity : Activity() {
         Person.configure(this)
         TitleStyle.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))
+        NightRestore.directory = File(cacheDir,"night-restoration")
         Stabilizer.directory = File(cacheDir, "stabilization")
         StabilizationRenderer.directory = if (testSession) File(cacheDir,"test-stabilization/$testSessionId") else File(cacheDir,"stabilization-paths")
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
@@ -1413,6 +1414,13 @@ class MainActivity : Activity() {
         }
     }
 
+    fun triggerZoom(returning: Boolean=false) { capture?.triggerCameraEffect(returning) }
+    fun toggleDolly() { capture?.toggleDolly() }
+    override fun onKeyDown(keyCode: Int,event: android.view.KeyEvent): Boolean {
+        if (captureMode && event.repeatCount==0 && keyCode in listOf(android.view.KeyEvent.KEYCODE_VOLUME_UP,android.view.KeyEvent.KEYCODE_VOLUME_DOWN) &&
+            capture?.triggerCameraEffect(keyCode==android.view.KeyEvent.KEYCODE_VOLUME_DOWN)==true) return true
+        return super.onKeyDown(keyCode,event)
+    }
     fun tryStrobe(seconds: Float) { capture?.tryStrobe(seconds) }
 
     fun captureEffects(current: List<Effect>, done: (List<Effect>) -> Unit) {

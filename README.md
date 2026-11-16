@@ -63,11 +63,16 @@ HDR export requires a decoder and recording surface that preserve ten bits.
 
 Color LUTs accepts project-owned 1D/3D CUBE files and explicit Apple Log
 interpretation. Subtitles have transcript review and regrouping; Pauses saves
-reviewable source cuts. Freeze Frame inserts a hold, and Dolly Zoom separates
-a person from the background. Step Printing repeats and smears source frame
-groups; Negative Strobe alternates positive and negative frames. Neural audio
-prepares independent source channels
-before timeline speed and gain. These paths still have differences from the
+reviewable source cuts. Freeze Frame inserts a hold with Clean/Print styling and
+Cut, Continue or Fade-out sound.
+Dolly Zoom follows a subject during capture or separates a person from the
+background in the editor. Crash Zoom provides a timed push and return, triggered
+on screen or with volume keys. Night fix offers spatial cleanup and three- or
+nine-frame motion restoration. Undercranking and Super 8 hold the complete film
+look at their selected cadence. Animated speed uses a continuous source clock
+and pitch-preserved sound; Step Printing repeats and smears source frame groups.
+Negative Strobe alternates positive and negative frames. Neural audio
+prepares independent source channels before timeline speed and gain. These paths still have differences from the
 reference; see the editing guide for current limits.
 
 Read the [recording guide](docs/RECORDING.md) and

@@ -127,8 +127,14 @@ effect to reopen it. Most numeric readouts accept exact values. Text and placeme
 can be dragged or pinched in the preview.
 
 Crop includes 4:5, Frame/Inspect, and quarter turns. Original restores the source
-shape. Transitions overlap neighboring footage and shorten the composition;
-range edits keep surviving portions of a transition.
+shape. Dissolves overlap neighboring footage; solid-color and Still holds can
+add time. Transition controls include split axis, divider and separate framing,
+fade color, wipe direction and feathering, Hitchcock brightness order, Flash Cut
+count and acceleration, Still dissolve and optical Defocus amount. Audio can
+crossfade or favor either side of a split, with optional offset and blend time.
+The union of picture and sound determines the required source handles. Range
+edits keep the surviving transition clock. Older transitions keep their original
+rendering until you choose Use full transition controls.
 
 Stabilize offers Off, Light, Standard and Strong. Original/Stabilized compares
 the same edit without changing the source. The inspector reports the actual
@@ -320,18 +326,37 @@ checkpointed. Retrying the same edited audio, range and language resumes them;
 changed audio starts a new job. Cancellation waits for an active recognition
 call to return.
 
+Night fix runs before the grade and composition. Fast applies spatial and
+chroma cleanup; Medium and Precise align three and nine source frames, rejecting
+cuts, inconsistent motion and dissimilar pixels. Shadow brightness is a fixed
+0–8-stop curve, with separate Noise reduction and Preserve detail controls.
+Completed restorations are cached independently of those adjustments. Cancelling
+stops within the current frame; a retry reuses completed frames. The Android
+backend uses C11 local flow rather than Apple's Vision optical flow, so its
+motion estimates can differ.
+
 Freeze Frame inserts a hold at the playhead and resumes the following footage.
-Choose its duration, push-in and Silence or Continue audio. Split and copy keep
-the held source frame. Print styling and fading sound over the hold remain open.
+Choose duration, push-in, Clean or Print styling, and Cut, Continue or Fade-out
+audio. Print adds restrained saturation, vignette and moving grain. Split and
+copy preserve the held source frame and the progress through its push and fade.
 Dolly Zoom separates a person from the background for a Stretch or Compress
-move. Imported Cinematic depth, matte refinement and live lens compensation
-remain open.
+move, using a refined person matte and a finite source history. Imported
+Cinematic depth remains unsupported. Crash Zoom has push duration, amount,
+optional return, hold, radial motion blur and target coordinates.
+
+Undercranking offers 12/16/18 fps, 1–1.5× speed-up, Flicker, Gate weave and Mute
+source audio. Animate Speed-up to draw a continuous ramp. Super 8 offers Fade,
+coarse Grain, Weave, 18/24 fps, moving Light leaks and a rounded frame border.
+Their cadence holds the complete rendered look; source phase survives trims
+and seeks. Background sound remains separate from Undercranking's source mute.
 
 Step Printing groups two to six actual source frames, including variable-rate
 footage. Smear mixes their linear-light average with the first frame; Speed
-can be 1× or 0.5× with linked picture and pitch-preserved sound. Animate can author held source-time Speed keys. Picture, audio, seeking and
-timeline duration share those rate spans, including through splits and pauses.
-Continuous speed ramps and the remaining Undercranking controls still need work.
+can be 1× or 0.5× with linked picture and pitch-preserved sound. Animate can
+author held source-time Speed keys. Picture, audio, seeking and timeline duration
+share those rate spans, including through splits and pauses. Audio uses one
+stretch operation across the rate plan rather than joining separately stretched
+files at each speed change. Video-background sound uses the same clock.
 Negative Strobe alternates positive and negative frames with selectable cycle
 frequency and an optional timed burst. Its source clock survives cuts. In the
 camera inspector, Try strobe previews a burst; recording starts a fresh phase.

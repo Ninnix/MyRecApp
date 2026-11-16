@@ -8,9 +8,9 @@ import kotlin.math.*
 object Effects {
     val categories=linkedMapOf(
         "Color & style" to listOf("Night fix","Color Correction","RGB Offset","Silent Tint","Three-Strip",
-            "Bleach Bypass","Day for Night","Color Isolation","Noir","Expressionism","Quantization","Halation","16mm"),
-        "Camera & frame" to listOf("Dolly Zoom","Kaleidoscope","Widescreen 1953"),
-        "Time" to listOf("Negative Strobe","Step Printing"),
+            "Bleach Bypass","Day for Night","Color Isolation","Noir","Expressionism","Quantization","Halation","16mm","Super 8"),
+        "Camera & frame" to listOf("Dolly Zoom","Crash Zoom","Kaleidoscope","Widescreen 1953"),
+        "Time" to listOf("Negative Strobe","Freeze Frame","Step Printing","Undercranking"),
         "Background" to listOf("Auto Background","Chroma Key"),
         "Extra effects" to listOf("Zoom","Mirror","Rotation","Saturation","Exposure","Vignette","Film grain",
             "Blur","Letterbox","Strobe","Freeze","Echo","Sepia","Invert","Contrast","Warmth"),
@@ -19,7 +19,7 @@ object Effects {
     val video
         get() = categories.values.flatten() + legacy
 
-    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null, elapsed: Double = 0.0, frame: Long = 0, decorate: Boolean=true) {
+    fun correct(bitmap: Bitmap, effect: Effect, strength: Float, person: FloatArray? = null, elapsed: Double = 0.0, frame: Long = 0, decorate: Boolean=true,personWidth: Int=192,personHeight: Int=192) {
         if (effect.kind == "Color LUTs") {
             val cube = effect.values["path"]?.let { LutAssets.load(it) }
                 ?: CubeLut.builtin(effect.values["lut"] ?: "Natural")
@@ -34,6 +34,28 @@ object Effects {
         if (strength <= 0f) return
         if (effect.kind in BackgroundEffect.kinds) {
             BackgroundRenderer().use { it.render(bitmap,effect,elapsed,0.0,"still") }
+            return
+        }
+        if (ExistingEffects.modern(effect)) {
+            when (effect.kind) {
+                "Night fix" -> {
+                    val original=bitmap.copy(bitmap.config!!,false)
+                    try { Native.nightRestore(bitmap,original,strength,effect.number("brightness",2.5f),effect.number("reduction",1f),effect.number("detail",.5f)) }
+                    finally { original.recycle() }
+                }
+                "Crash Zoom" -> {
+                    val (zoom,velocity)=ExistingEffects.zoom(effect,elapsed)
+                    Native.crashZoom(bitmap,zoom.toFloat(),min(.12,abs(velocity)*.002*effect.number("motionBlur",.6f)).toFloat(),effect.number("targetX",.5f),effect.number("targetY",.5f))
+                }
+                "Undercranking" -> Native.timeFilm(bitmap,0,strength,floatArrayOf(effect.number("flicker",.5f),effect.number("weave",.4f)),floor(max(0.0,elapsed)*effect.number("fps",16f)+.000001).toLong(),elapsed)
+                "Super 8" -> Native.timeFilm(bitmap,1,strength,FilmColor.uniforms(effect),frame,elapsed)
+                "Dolly Zoom" -> if (effect.values["captured"]!="1") {
+                    var t=(elapsed/effect.number("duration",2.5f)).toFloat().coerceIn(0f,1f)
+                    if (ExistingEffects.choice(effect,"easing")!="Linear") t=if (t<.5f) 4*t*t*t else 1-(-2*t+2).pow(3)/2
+                    val scale=1+effect.number("strength",.3f)*(if (ExistingEffects.choice(effect,"direction")=="Compress") 1-t else t)
+                    Native.dollyMask(bitmap,person ?: Person.mask(bitmap),personWidth,personHeight,scale,effect.number("targetX",.5f),effect.number("targetY",.5f),strength)
+                }
+            }
             return
         }
         if (FrameEffects.modern(effect)) {
@@ -143,7 +165,7 @@ object Effects {
             else -> Color.rgb(51, 179, 221)
         }
 
-    fun pixelId(effect: Effect) = if (FrameEffects.modern(effect) || Noir.modern(effect) || SixteenMm.modern(effect)) 0 else pixelId(effect.kind)
+    fun pixelId(effect: Effect) = if (ExistingEffects.modern(effect) || FrameEffects.modern(effect) || Noir.modern(effect) || SixteenMm.modern(effect)) 0 else pixelId(effect.kind)
 
     fun pixelId(kind: String) =
         when (kind) {
@@ -178,6 +200,17 @@ object Effects {
 class Frames(private val cancelled: () -> Boolean = { false }, private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
     private val backgroundDelegate=lazy { BackgroundRenderer() }
     private val backgrounds by backgroundDelegate
+    private data class CadenceEntry(val sourceIn: Double,val sourceOut: Double,val rate: Double,val effects: List<Effect>,val clock: EffectCadence)
+    private val cadences=linkedMapOf<String,CadenceEntry>()
+    private fun cadence(clip: Clip): EffectCadence {
+        val effects=clip.effects.filter { it.kind in setOf("Super 8","Undercranking","Step Printing") }
+        val previous=cadences[clip.id]
+        if (previous!=null && previous.sourceIn==clip.sourceIn && previous.sourceOut==clip.sourceOut && previous.rate==clip.rate && previous.effects==effects) return previous.clock
+        val clock=ExistingEffects.cadence(clip)
+        if (cadences.size>=8) cadences.remove(cadences.keys.first())
+        cadences[clip.id]=CadenceEntry(clip.sourceIn,clip.sourceOut,clip.rate,effects.map { it.copyEffect() },clock)
+        return clock
+    }
     private var fps = 30
     private var extended = false
     private var tenBit = false
@@ -261,8 +294,9 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         preserveHdr = keepLinear
         val hasHdr = project.clips.any { it.video && WorkingColor.hdr(it.path) }
         extended = keepLinear || hasHdr || project.clips.any { it.video && it.effects.any { fx -> fx.enabled &&
-            (fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2")) } }
+            (ExistingEffects.modern(fx) && (fx.kind in ExistingEffects.noIntensity || fx.number("intensity",1f)>0 || fx.parameter("intensity")?.keyframes?.any { (it.value as? EffectValue.Number)?.value?.let { it>0 }==true }==true) || fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2")) } }
         val output = if (extended) WorkingColor.bitmap(width, height) else Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
         val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
@@ -313,6 +347,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             else drawTransition(output, layer.transition!!, layer.before, layer.after, t)
         }
         return if (extended && !keepLinear) WorkingColor.display(output, toneMap = false).also { output.recycle() } else output
+        } catch (error: Throwable) { if (!output.isRecycled) output.recycle();throw error }
     }
 
     private fun drawTransition(
@@ -329,7 +364,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 drawClip(
                     Canvas(a),
                     before,
-                    t.coerceIn(before.start, before.end - .001),
+                    (if (transition.kind=="Still" && transition.controls!=null) max(before.start,(ceil(transition.pictureOrigin*fps-.000001)-1)/fps) else t).coerceIn(before.start, before.end - .001),
                     output.width,
                     output.height,
                 )
@@ -342,7 +377,17 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                     output.height,
                 )
             val progress = transition.progress(t)
-            Native.blend(
+            val settings=transition.controls
+            if (settings!=null) {
+                val frame=floor(progress*transition.duration*fps+.000001).toInt()
+                val color=settings.color.toInt()
+                val p=floatArrayOf(if (settings.vertical) 1f else 0f,settings.divider.toFloat(),if (settings.reverse) 1f else 0f,
+                    settings.first.x.toFloat(),settings.first.y.toFloat(),settings.first.zoom.toFloat(),settings.second.x.toFloat(),settings.second.y.toFloat(),settings.second.zoom.toFloat(),
+                    Color.red(color)/255f,Color.green(color)/255f,Color.blue(color)/255f,if (frame in settings.flashes(transition.duration,fps)) 1f else 0f,0f)
+                for (i in 9..11) p[i]=if (p[i]<=.04045f) p[i]/12.92f else ((p[i]+.055f)/1.055f).pow(2.4f)
+                Native.transition(a,b,output,Effects.transitionId(transition.kind),progress,transition.amount,
+                    transition.angle+(if (settings.reverse) 180f else 0f),transition.soft,p)
+            } else Native.blend(
                 a,
                 b,
                 output,
@@ -382,21 +427,30 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
 
     private fun drawClip(canvas: Canvas, c: Clip, at: Double, width: Int, height: Int, decorate: Boolean=true) {
         val local = at - c.start
+        val cadence=if (c.photo || c.frozen!=null) null else cadence(c).hold(c.sourceTime(at))
+        val heldTime=cadence?.boundary ?: c.sourceTime(at)
+        val effectFrame=if (cadence!=null) floor(heldTime*fps+.000001).toLong() else presentationFrame
         val fx = EffectOrder.ordered(c.effects)
-            .filter { it.active(local) }.map { it.sampled(c.sourceTime(at)) }
+            .filter { it.active(local) }.map { it.sampled(heldTime) }
             .filter { it.kind !in setOf("Freeze","Strobe","Echo","Zoom","Mirror","Rotation","Crop","Letterbox","Blur","Widescreen 1953") || it.strength(local,c.duration)>0 }
         val frames=fx.filter { FrameEffects.modern(it) && it.kind!="Blur" }
-        if (decorate && frames.isNotEmpty()) {
+        val print=fx.firstOrNull { c.frozen!=null && it.kind=="Freeze Frame" && it.values["style"]=="Print" }
+        if (decorate && (frames.isNotEmpty() || print!=null)) {
             val layer=WorkingColor.bitmap(width,height)
             try {
                 drawClip(Canvas(layer),c,at,width,height,false)
+                if (print!=null) Native.timeFilm(layer,2,1f,floatArrayOf(1f),effectFrame,heldTime)
                 for (effect in frames) FrameEffects.decorate(layer,effect,effect.strength(local,c.duration))
                 canvas.drawBitmap(layer,0f,0f,paint.apply { alpha=255;colorFilter=null })
                 annotations(canvas,c,fx,local,at,width,height)
             } finally { layer.recycle() }
             return
         }
-        var sourceTime = c.sourceTime(at)
+        var sourceTime = heldTime
+        if (cadence!=null) {
+            val index=VideoFrameIndex.get(c.path,onAnalysis)
+            sourceTime=index.times[index.first(max(c.sourceIn,heldTime)).coerceAtMost(index.first(c.sourceOut)-1).coerceIn(0,index.times.lastIndex)]
+        }
         fx.firstOrNull { it.kind == "Freeze" }
             ?.let { sourceTime = c.sourceIn + it.number("time").toDouble() }
         fx.firstOrNull { it.kind == "Strobe" }
@@ -416,14 +470,20 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         val bitmap =
             if (raw.isMutable && raw.config == (if (extended) Bitmap.Config.RGBA_F16 else Bitmap.Config.ARGB_8888)) raw
             else raw.copy(if (extended) Bitmap.Config.RGBA_F16 else Bitmap.Config.ARGB_8888, true).also { raw.recycle() }
+        try {
+        fx.filter { it.kind=="Night fix" && ExistingEffects.modern(it) }.forEach { effect ->
+            NightRestore.apply(bitmap,c,effect,sourceTime,rawLog,cancelled,onAnalysis) { time ->
+                frame(c.path,time,width,height,"${c.path}:night-source",rawColor=rawLog)
+            }
+        }
         grade?.let { Effects.correct(bitmap, it, it.strength(local, c.duration)) }
         val mapped = extended && WorkingColor.hdr(c.path) && (!preserveHdr || fx.any { it.kind in Effects.video &&
-            it.kind !in setOf("Kaleidoscope", "Zoom", "Crop", "Mirror", "Rotation", "Stabilize", "Placement") || it.kind == "Freeze Frame" })
+            it.kind !in setOf("Kaleidoscope", "Zoom", "Crop", "Mirror", "Rotation", "Stabilize", "Placement", "Night fix", "Dolly Zoom", "Crash Zoom") || it.kind=="Night fix" && !ExistingEffects.modern(it) || it.kind == "Freeze Frame" })
         if (mapped) Native.workingToneMap(bitmap)
         val person =
             if (
                 fx.any {
-                    (it.kind == "Dolly Zoom" || it.kind == "Color Isolation" && it.values["mode"] == "Person") &&
+                    (it.kind == "Dolly Zoom" && !ExistingEffects.modern(it) || it.kind == "Color Isolation" && it.values["mode"] == "Person") &&
                         it.strength(local, c.duration) > 0f
                 }
             )
@@ -451,16 +511,37 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                     }
                 }
             }
-        for (e in fx.filter { it.kind != "Color LUTs" }) {
+        for (e in fx.filter { it.kind != "Color LUTs" && !(it.kind=="Night fix" && ExistingEffects.modern(it)) }) {
             if (e.kind == "Negative Strobe") {
                 val original = c.effects.first { it.id == e.id }
                 if (TimeEffects.negative(original, sourceTime, fps.toDouble(), c.frozen?.let { it.offset + local }))
                     Native.workingNegative(bitmap, e.strength(local, c.duration))
             }
             if (e.kind in BackgroundEffect.kinds) applyBackground(bitmap,c,e,sourceTime,
-                c.frozen?.let { it.sourceTime+it.offset+at-c.start } ?: c.sourceTime(at))
+                c.frozen?.let { it.sourceTime+it.offset+at-c.start } ?: if (cadence!=null) heldTime else c.sourceTime(at))
+            else if (e.kind=="Dolly Zoom" && ExistingEffects.modern(e) && e.values["captured"]!="1") {
+                val index=if (c.photo || c.frozen!=null) null else VideoFrameIndex.get(c.path,onAnalysis)
+                val point=index?.last(sourceTime) ?: 0
+                val previous=if (index==null) emptyList() else ((point-1) downTo max(0,point-7)).map { index.times[it] }
+                val subject=backgrounds.subject(bitmap,sourceTime,"${c.path}:${c.effects.hashCode()}:dolly",previous) { time,w,h ->
+                    val raw=frame(c.path,time,w,h,"${c.path}:dolly-subject",rawColor=rawLog)
+                    raw?.let {
+                        val input=if (it.config==bitmap.config && it.isMutable) it else it.copy(bitmap.config!!,true).also { _ -> it.recycle() }
+                        try {
+                            val prefix=EffectOrder.ordered(c.effects).takeWhile { it.id!=e.id }.filter { it.active(c.timelineOffset(time)) }.map { it.sampled(time) }
+                            for (night in prefix.filter { it.kind=="Night fix" && ExistingEffects.modern(it) })
+                                NightRestore.apply(input,c,night,time,rawLog,cancelled,onAnalysis) { source -> frame(c.path,source,w,h,"${c.path}:night-source",rawColor=rawLog) }
+                            grade?.let { Effects.correct(input,it.sampled(time),it.strength(local,c.duration)) }
+                            if (mapped) Native.workingToneMap(input)
+                            for (prior in prefix) if (prior.kind in BackgroundEffect.kinds) applyBackground(input,c,prior,time)
+                            input
+                        } catch (error: Throwable) { input.recycle();throw error }
+                    }
+                }
+                Effects.correct(bitmap,e,1f,subject.alpha,sourceTime-ExistingEffects.start(e,c),effectFrame,false,subject.width,subject.height)
+            }
             else Effects.correct(bitmap, e, e.strength(local, c.duration), person,
-                sourceTime - (e.values["origin"]?.toDoubleOrNull() ?: c.sourceTime(c.start + e.from)),frame = presentationFrame,decorate=false)
+                (if (cadence!=null) heldTime else sourceTime) - (e.values["origin"]?.toDoubleOrNull() ?: c.sourceTime(c.start + e.from)),frame = effectFrame,decorate=false)
             var kind = e.kind
             val id = Effects.pixelId(e)
             if (id > 0)
@@ -584,7 +665,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             }
         }
         canvas.restore()
-        bitmap.recycle()
+        } finally { bitmap.recycle() }
         for (e in fx.filter { it.kind=="Letterbox" && !FrameEffects.modern(it) }) {
             paint.color=Color.BLACK
             val margin=height*e.number("strength",.12f).coerceIn(0f,.4f)
@@ -687,6 +768,9 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             val raw=sequenceFrame(clip,active,at,w,h,rawLog) ?: return@render null
             val input=if (raw.isMutable && raw.config==bitmap.config) raw else raw.copy(bitmap.config!!,true).also { raw.recycle() }
             try {
+                active.filter { it.kind=="Night fix" && ExistingEffects.modern(it) }.forEach { night ->
+                    NightRestore.apply(input,clip,night,at,rawLog,cancelled,onAnalysis) { time -> frame(clip.path,time,w,h,"${clip.path}:night-source",rawColor=rawLog) }
+                }
                 grade?.let { Effects.correct(input,it,it.strength(local,clip.duration)) }
                 val mapped=extended && WorkingColor.hdr(clip.path)
                 if (mapped) Native.workingToneMap(input)
@@ -704,7 +788,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 for (prior in active) {
                     if (prior.id==effect.id) break
                     if (prior.kind in BackgroundEffect.kinds) applyBackground(input,clip,prior,at)
-                    else if (prior.kind=="Night fix") Effects.correct(input,prior,prior.strength(local,clip.duration))
+                    else if (prior.kind=="Night fix" && !ExistingEffects.modern(prior)) Effects.correct(input,prior,prior.strength(local,clip.duration))
                 }
                 input
             } catch (error: Throwable) { input.recycle();throw error }
@@ -712,6 +796,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
     }
 
     override fun close() {
+        cadences.clear()
         if (backgroundDelegate.isInitialized()) backgrounds.close()
         photos.values.forEach { it.recycle() }
         photos.clear(); photoPaths.clear()

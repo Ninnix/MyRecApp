@@ -1766,6 +1766,7 @@ class Panels(private val a: MainActivity) {
         when {
             fx.subtitle != null -> reviewSubtitles(SubtitlesDraft(editor))
             Effects.audio.contains(fx.kind) -> audio(fx)
+            fx.kind=="Freeze Frame" -> effect(fx.kind,fx)
             fx.kind in Effects.video -> videoEffects(fx)
             else -> effect(fx.kind, fx)
         }
@@ -2589,6 +2590,9 @@ class Panels(private val a: MainActivity) {
                     chain.addAll(kinds.map { Effect.create(it) })
                     appliedVideo(parent, chain)
                     renderDraft()
+                } else if (kind=="Freeze Frame") {
+                    videoDraft?.flush()
+                    freezeFrame(base=videoDraft?.project?.duplicate())
                 } else {
                     val fx = Effect.create(kind)
                     chain.add(fx)
@@ -2807,7 +2811,7 @@ class Panels(private val a: MainActivity) {
         add(parent, actions, 41f)
         if (fx.parameters.isNotEmpty() && rgbAnimating)
             hint(parent, "Animating · changes add keyframes at ${timeLabel(editor.cursor)}")
-        if (fx.kind !in setOf("Color Correction", "Step Printing") && !(fx.kind=="Letterbox" && !FrameEffects.modern(fx))) {
+        if (fx.kind !in setOf("Color Correction", "Step Printing") && !(fx.kind=="Letterbox" && !FrameEffects.modern(fx)) && !(ExistingEffects.modern(fx) && fx.kind in ExistingEffects.noIntensity)) {
             slider(parent, "Intensity", readNumber(if (fx.parameters.isEmpty()) "strength" else "intensity", 1f), 0f, 1f, color = orange) {
                 if (fx.parameters.isNotEmpty()) editNumber("intensity", it) else fx.setNumber("strength", it)
                 renderDraft()
@@ -2938,15 +2942,20 @@ class Panels(private val a: MainActivity) {
             } else hint(parent, "Repeat actual source frames and blend motion within each group. Speed applies to the selection.")
         } else if (FilmColor.definition(fx) != null) {
             val definition = FilmColor.definition(fx)!!
+            if (captureDraft!=null && fx.kind=="Crash Zoom") {
+                button(parent,"Zoom now") { a.triggerZoom() }
+                button(parent,"Return") { a.triggerZoom(true) }
+            }
+            if (captureDraft!=null && fx.kind=="Dolly Zoom") button(parent,"Start / stop tracking") { a.toggleDolly() }
             fun current(id: String) = videoDraft?.value(fx, id, editor.cursor) ?: fx.parameter(id)?.at(sourceTime())
             fun edit(id: String, value: EffectValue) {
                 val work = videoDraft
-                if (work != null) work.editValue(fx, id, value, editor.cursor, rgbAnimating)
+                if (work != null) work.editValue(fx, id, value, editor.cursor, rgbAnimating && ExistingEffects.animatable(fx.kind,id))
                 else fx.parameter(id)?.let { p -> require(p.kind.accepts(value)); p.value = value }
                 videoParameters(parent, fx, chain)
                 renderDraft()
             }
-            for (control in definition.controls) when (val kind = control.kind) {
+            for (control in definition.controls.filter { ExistingEffects.editable(fx.sampled(sourceTime()),it.id,captureDraft!=null) }) when (val kind = control.kind) {
                 is ParameterKind.Slider -> {
                     fun reset() {
                         editNumber(control.id, (control.initial as EffectValue.Number).value.toFloat())
@@ -2954,7 +2963,14 @@ class Panels(private val a: MainActivity) {
                         renderDraft()
                     }
                     val bar = slider(parent, control.title, readNumber(control.id), kind.min.toFloat(), kind.max.toFloat(),
-                        format = { if (fx.kind=="Blur" && control.id=="radius") "%.1f px".format(java.util.Locale.US,it) else "%.0f%%".format(it*100) },
+                        format = { when {
+                            fx.kind=="Blur" && control.id=="radius" -> "%.1f px".format(java.util.Locale.US,it)
+                            ExistingEffects.modern(fx) && control.id in setOf("duration","hold") || fx.kind=="Crash Zoom" && control.id=="speed" -> "%.2f s".format(it)
+                            fx.kind=="Crash Zoom" && control.id=="zoom" || fx.kind=="Undercranking" && control.id=="speed" -> "%.2f×".format(it)
+                            fx.kind=="Night fix" && control.id=="brightness" -> "+%.1f EV".format(it)
+                            fx.kind=="Night fix" && control.id=="reduction" -> "%.2f".format(it)
+                            else -> "%.0f%%".format(it*100)
+                        } },
                         color = orange, reset = ::reset) {
                         editNumber(control.id, ((it / kind.step).roundToInt() * kind.step).toFloat().coerceIn(kind.min.toFloat(), kind.max.toFloat()))
                         val dependent = when (control.id) { "vignette" -> "iris"; "flash" -> "flashColor"; "grain" -> "grainSize"; else -> null }
@@ -2976,6 +2992,13 @@ class Panels(private val a: MainActivity) {
                         }
                     }.apply { tag = "film.${control.id}"; visibility = if (visible) View.VISIBLE else View.GONE }
                 }
+                is ParameterKind.Stepper -> {
+                    label(parent,control.title)
+                    val values=kind.values.map { if (it%1==0.0) it.toInt().toString() else it.toString() }
+                    choices(parent,values,readNumber(control.id).let { if (it%1==0f) it.toInt().toString() else it.toString() },orange) {
+                        edit(control.id,EffectValue.Number(kind.values[it]))
+                    }
+                }
                 ParameterKind.Toggle -> toggle(parent, control.title,
                     (current(control.id) as? EffectValue.Toggle)?.value ?: false) {
                     edit(control.id, EffectValue.Toggle(it))
@@ -2983,7 +3006,11 @@ class Panels(private val a: MainActivity) {
                 else -> error("Invalid color control")
             }
             hint(parent, definition.help)
-        } else when (fx.kind) {
+        } else {
+            if (fx.kind in ExistingEffects.kinds) button(parent,"Use current effect controls") {
+                ExistingEffects.upgrade(fx);videoParameters(parent,fx,chain);renderDraft()
+            }
+            when (fx.kind) {
             "Letterbox" -> slider(parent,"Bar size",fx.number("strength",.12f),0f,.4f,color=orange) {
                 editNumber("strength",it);renderDraft()
             }
@@ -3378,6 +3405,7 @@ class Panels(private val a: MainActivity) {
                     renderDraft()
                 }
         }
+        }
         button(parent, "Remove effect") {
             chain.remove(fx)
             appliedVideo(parent, chain)
@@ -3594,7 +3622,7 @@ class Panels(private val a: MainActivity) {
             editor.project.transitions.firstOrNull {
                 it.id == value?.id || abs(it.cut - at) <= max(.05, it.duration / 2) + .001
             }
-        val t = value ?: current?.copy() ?: Transition(at = at)
+        val t = value ?: current?.copy() ?: Transition(at = at,controls=TransitionControls())
         val left =
             editor.project.clips.firstOrNull { it.id == t.leftId }
                 ?: editor.project.clips.firstOrNull { it.video && abs(it.end - at) < .02 }
@@ -3630,14 +3658,14 @@ class Panels(private val a: MainActivity) {
             add(controls, style, 40f)
             val length = text("", 6f, MUTED)
             fun updateLength() {
-                val delta = t.duration - (current?.overlap ?: 0.0)
+                val delta = (if (t.controls!=null) TransitionClock(t).overlap else t.duration) - (current?.overlap ?: 0.0)
                 val change =
                     if (abs(delta) < .005) "Project length unchanged"
                     else
                         "Project %.2f s ${if (delta > 0) "shorter" else "longer"}"
                             .format(java.util.Locale.US, abs(delta))
                 length.text =
-                    "%.2f s total · %s".format(java.util.Locale.US, t.duration + t.hold, change)
+                    "%.2f s total · %s".format(java.util.Locale.US, if (t.controls!=null) TransitionClock(t).videoDuration else t.duration + t.hold, change)
             }
             slider(
                 controls,
@@ -3679,6 +3707,51 @@ class Panels(private val a: MainActivity) {
             add(controls, presets, 30f)
             updateLength()
             add(controls, length, 20f)
+            if (t.controls==null) button(controls,"Use full transition controls") { t.controls=TransitionControls();parameters();renderDraft() }
+            t.controls?.let { settings ->
+                fun update(next: TransitionControls) { t.controls=next;renderDraft() }
+                if (t.kind in listOf("Split screen","Whip pan","Wipe")) {
+                    choices(controls,listOf("Left / right","Top / bottom"),if (settings.vertical) "Top / bottom" else "Left / right") {
+                        if (t.kind=="Wipe") t.angle=if (it==1) 90f else 0f
+                        update(t.controls!!.copy(vertical=it==1));parameters()
+                    }
+                    choices(controls,listOf("Forward","Reverse"),if (settings.reverse) "Reverse" else "Forward") {
+                        update(t.controls!!.copy(reverse=it==1))
+                    }
+                }
+                if (t.kind=="Split screen") {
+                    slider(controls,"Divider",settings.divider.toFloat(),.15f,.85f,color=color) { update(t.controls!!.copy(divider=it.toDouble())) }
+                    choices(controls,listOf("Crossfade","First clip","Second clip"),settings.audio) { update(t.controls!!.copy(audio=listOf("Crossfade","First clip","Second clip")[it])) }
+                    for (index in 0..1) {
+                        val framing=if (index==0) settings.first else settings.second
+                        label(controls,if (index==0) "First clip framing" else "Second clip framing")
+                        fun frame(key: String,value: Float) {
+                            val current=if (index==0) t.controls!!.first else t.controls!!.second
+                            val next=when (key) { "x" -> current.copy(x=value.toDouble());"y" -> current.copy(y=value.toDouble());else -> current.copy(zoom=value.toDouble()) }
+                            update(if (index==0) t.controls!!.copy(first=next) else t.controls!!.copy(second=next))
+                        }
+                        slider(controls,"Horizontal position",framing.x.toFloat(),0f,1f,color=color) { frame("x",it) }
+                        slider(controls,"Vertical position",framing.y.toFloat(),0f,1f,color=color) { frame("y",it) }
+                        slider(controls,"Zoom",framing.zoom.toFloat(),1f,4f,format={ "%.2f×".format(it) },color=color) { frame("zoom",it) }
+                    }
+                }
+                if (t.kind=="Fade through color") button(controls,"Fade color") {
+                    FrontLightColorPicker(a,settings.color.toInt(),px(1f).toFloat(),title="Fade color") { update(t.controls!!.copy(color=it.toLong() and 0xffffffffL)) }.show()
+                }
+                if (t.kind=="Flash Cut") {
+                    slider(controls,"Flash count",settings.flashCount.toFloat(),1f,20f,format={ it.roundToInt().toString() },color=color) { update(t.controls!!.copy(flashCount=it.roundToInt())) }
+                    slider(controls,"Acceleration",settings.flashAcceleration.toFloat(),.25f,4f,color=color) { update(t.controls!!.copy(flashAcceleration=it.toDouble())) }
+                }
+                if (t.kind=="Still") slider(controls,"Dissolve after hold",settings.stillDissolve.toFloat(),0f,min(3f,t.duration.toFloat()),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(stillDissolve=it.toDouble())) }
+                label(controls,"Audio timing")
+                choices(controls,listOf("Automatic","Custom"),if (settings.audioOffset==null && settings.audioBlend==null) "Automatic" else "Custom") {
+                    update(t.controls!!.copy(audioOffset=if (it==0) null else 0.0,audioBlend=if (it==0) null else t.duration+t.hold));parameters()
+                }
+                if (settings.audioOffset!=null || settings.audioBlend!=null) {
+                    slider(controls,"Audio offset",(settings.audioOffset ?: 0.0).toFloat(),-t.duration.toFloat(),t.duration.toFloat(),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioOffset=it.toDouble())) }
+                    slider(controls,"Audio blend",(settings.audioBlend ?: t.duration).toFloat(),0f,max(3f,t.duration.toFloat()),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioBlend=it.toDouble())) }
+                }
+            }
             if (t.kind == "Wipe") {
                 choices(
                     controls,
@@ -3724,7 +3797,7 @@ class Panels(private val a: MainActivity) {
                     t.amount = it
                     renderDraft()
                 }
-            slider(
+            if (t.kind !in setOf("Flash Cut","Still")) slider(
                 controls,
                 "Hold at halfway",
                 t.hold.toFloat(),
@@ -3967,21 +4040,23 @@ class Panels(private val a: MainActivity) {
         renderDraft()
     }
 
-    fun freezeFrame(existing: Effect? = null) {
-        val original = editor.project.duplicate()
+    fun freezeFrame(existing: Effect? = null,base: Project?=null) {
+        val expected=editor.project.duplicate()
+        val original = base ?: expected.duplicate()
         val held = existing?.let { fx -> original.clips.firstOrNull { c -> c.frozen != null && c.effects.any { it.id == fx.id } } }
         val position = held?.start ?: editor.cursor
         var seconds = held?.duration?.toFloat() ?: 3f
         var push = existing?.number("pushIn", .05f) ?: .05f
-        var continueAudio = existing?.values?.get("audio") == "Continue"
+        var audioStyle=existing?.values?.get("audio")?.takeIf { it in listOf("Continue","Fade out") } ?: "Cut"
+        var style=existing?.values?.get("style") ?: "Clean"
         fun rebuild() {
             val temporary = Editor(original.duplicate()).apply { cursor = position }
-            if (held == null) temporary.insertFreeze(seconds.toDouble(), push, continueAudio)
-            else temporary.resizeFreeze(held.id, seconds.toDouble(), push, continueAudio)
+            if (held == null) temporary.insertFreeze(seconds.toDouble(),push,audioStyle!="Cut",style,audioStyle)
+            else temporary.resizeFreeze(held.id,seconds.toDouble(),push,audioStyle!="Cut",style,audioStyle)
             freezeDraft = temporary.project
             previewSpan = position..min(temporary.project.duration, position + seconds + 1)
         }
-        val body = setup("Freeze Frame", { editor.commitDraft(original, checkNotNull(freezeDraft)); close() })
+        val body = setup("Freeze Frame", { editor.commitDraft(expected, checkNotNull(freezeDraft)); close() })
         rebuild()
         val controls = contentWithPreview(body)
         label(controls, if (held == null) "Insert a held frame" else "Edit held frame")
@@ -3990,9 +4065,8 @@ class Panels(private val a: MainActivity) {
             seconds = it; rebuild(); renderDraft()
         }
         slider(controls, "Push-in", push, 0f, .15f) { push = it; rebuild(); renderDraft() }
-        choices(controls, listOf("Silence", "Continue"), if (continueAudio) "Continue" else "Silence") {
-            continueAudio = it == 1; rebuild(); renderDraft()
-        }
+        choices(controls,listOf("Clean","Print"),style) { style=listOf("Clean","Print")[it];rebuild();renderDraft() }
+        choices(controls,listOf("Cut","Continue","Fade out"),audioStyle) { audioStyle=listOf("Cut","Continue","Fade out")[it];rebuild();renderDraft() }
         if (held != null) button(controls, "Remove hold") {
             val temporary = Editor(original.duplicate()).apply {
                 selected.add(held.id); deleteSelection()

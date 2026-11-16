@@ -3,6 +3,12 @@ package org.myrec.app
 import android.graphics.Bitmap
 
 object Native {
+    external fun transition(first: Bitmap,second: Bitmap,result: Bitmap,kind: Int,progress: Float,amount: Float,angle: Float,soft: Boolean,parameters: FloatArray)
+    external fun nightFuse(original: Bitmap, fused: Bitmap, neighbor: Bitmap, mass: FloatArray, distance: Int, precise: Boolean, progress: AudioProgress?=null)
+    external fun nightRestore(bitmap: Bitmap, fused: Bitmap, strength: Float, brightness: Float, reduction: Float, detail: Float, progress: AudioProgress?=null)
+    external fun trackSubject(previous: Bitmap,current: Bitmap,bounds: FloatArray): FloatArray?
+    external fun timeFilm(bitmap: Bitmap, kind: Int, strength: Float, parameters: FloatArray, frame: Long, elapsed: Double)
+    external fun crashZoom(bitmap: Bitmap, scale: Float, blur: Float, targetX: Float, targetY: Float)
     external fun frameBlur(bitmap: Bitmap,strength: Float,sigma: Float)
     external fun widescreenFrame(bitmap: Bitmap,strength: Float,ratio: Int,blurFill: Boolean,flares: Float,color: Int)
     external fun legacyVisual(bitmap: Bitmap,kind: Int,strength: Float,value: Float)
@@ -12,6 +18,7 @@ object Native {
     external fun hlgSurface(surface: android.view.Surface): Boolean
     external fun workingToneMap(bitmap: Bitmap)
     external fun workingDisplay(bitmap: Bitmap, output: Bitmap, toneMap: Boolean)
+    external fun dollyMask(bitmap: Bitmap,mask: FloatArray,width: Int,height: Int,scale: Float,targetX: Float,targetY: Float,intensity: Float)
     external fun dolly(bitmap: Bitmap, mask: FloatArray, scale: Float, targetX: Float, targetY: Float, intensity: Float)
     external fun colorLut(bitmap: android.graphics.Bitmap, entries: FloatArray, size: Int,
         oneDimensional: Boolean, bounds: FloatArray, input: Int, strength: Float, exposure: Float, highlights: Float, source: Int = 0,
@@ -51,6 +58,7 @@ object Native {
 
     fun interface AudioProgress { fun step(frames: Long, total: Long): Boolean }
     external fun audioResample(input: String, output: String, from: Int, to: Int, frames: Long, channels: Int = 2, progress: AudioProgress): Long
+    external fun audioRamp(input: String, output: String, plan: DoubleArray, progress: AudioProgress): Long
     external fun audioStretch(input: String, output: String, speed: Double, progress: AudioProgress): Long
 
     external fun noiseCreate(): Long

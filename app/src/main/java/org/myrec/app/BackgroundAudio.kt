@@ -5,8 +5,10 @@ import java.nio.*
 import kotlin.math.*
 
 class BackgroundAudio(private val cache: AudioCache) : Closeable {
-    private data class Source(val file: RandomAccessFile,val duration: Double,val frames: Long,var block: Long=-1,var data: FloatArray=FloatArray(0))
+    private data class Source(val file: RandomAccessFile,val duration: Double,val frames: Long,var block: Long=-1,var data: FloatArray=FloatArray(0),val identity: String=uid())
     private val sources=mutableMapOf<Pair<String,Double>,Source>()
+    private data class Ramp(val clock: SpeedRamp,val source: Source)
+    private val ramps=mutableMapOf<Triple<String,String,String>,Ramp>()
     private val chunks=linkedMapOf<Triple<String,Double,Long>,FloatArray>()
 
     fun prepare(project: Project,cancelled: ()->Boolean,progress: (Float)->Unit) {
@@ -22,6 +24,16 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                 for (path in paths) {
                     val info=ProjectStore.inspect(File(path))
                     if (!info.audio || info.sourceOut<=.001) continue
+                    val ramp=SpeedRamp.forClip(clip)
+                    if (ramp!=null) {
+                        val pcm=cache.get(path,cancelled)
+                        val raw=sources.getOrPut(path to 1.0) { Source(RandomAccessFile(pcm,"r"),info.sourceOut,pcm.length()/8) }
+                        val origin=fx.values["origin"]?.toDoubleOrNull() ?: clip.sourceTime(clip.start+fx.from)
+                        val sequence=loopSource(path,raw,origin,ramp.spans.last().end,cancelled)
+                        val rendered=cache.rampPcm(sequence,ramp,cancelled,progress)
+                        ramps[Triple(clip.id,fx.id,path)]=Ramp(ramp,Source(RandomAccessFile(rendered,"r"),ramp.duration,rendered.length()/8))
+                        continue
+                    }
                     for (rate in clip.playbackPieces().map { it.effectiveRate }.distinct()) {
                         if (path to rate in sources) continue
                         val pcm=cache.stretched(path,rate,cancelled,progress)
@@ -30,6 +42,34 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                 }
             }
         }
+    }
+
+    private fun loopSource(path: String,source: Source,origin: Double,end: Double,cancelled: ()->Boolean): File {
+        val hash=SourceAudio.hash(File(path),cancelled)+":background-source-loop-1:$origin:$end"
+        val key=java.security.MessageDigest.getInstance("SHA-256").digest(hash.toByteArray()).joinToString("") { "%02x".format(it) }
+        val file=File(cache.root,"$key.loop.f32");val frames=(end*48000).roundToLong()
+        if (file.isFile && file.length()==frames*8) return file
+        val partial=File(cache.root,"$key-${uid()}.partial")
+        try {
+            check(cache.root.usableSpace>frames*8+16L*1024*1024) { "Not enough storage to prepare background audio" }
+            partial.outputStream().buffered().use { output ->
+                var at=0L
+                while (at<frames) {
+                    if (cancelled()) throw InterruptedIOException("Background audio preparation cancelled")
+                    val n=min(4096L,frames-at).toInt();val bytes=ByteBuffer.allocate(n*8).order(ByteOrder.LITTLE_ENDIAN)
+                    repeat(n) { i ->
+                        val phase=BackgroundEffect.loop((at+i)/48000.0-origin,source.duration)
+                        for (ch in 0..1) {
+                            val incoming=sample(path,1.0,source,phase.incoming,ch)
+                            val outgoing=phase.outgoing?.let { sample(path,1.0,source,it,ch) }
+                            bytes.putFloat(if (outgoing==null) incoming else (incoming*phase.blend+outgoing*(1-phase.blend)).toFloat())
+                        }
+                    }
+                    output.write(bytes.array());at+=n
+                }
+            }
+            check(partial.renameTo(file));return file
+        } finally { partial.delete() }
     }
 
     private fun sample(path: String,rate: Double,source: Source,time: Double,channel: Int): Float {
@@ -84,7 +124,8 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                 if ((fx.parameter("backgroundAudio")?.at(setting) as? EffectValue.Toggle)?.value!=true ||
                     (fx.parameter("background")?.at(setting) as? EffectValue.Choice)?.value!="Video") continue
                 val path=(fx.parameter("media")?.at(setting) as? EffectValue.Media)?.path ?: continue
-                val source=sources[path to rate] ?: continue
+                val ramp=ramps[Triple(original.id,fx.id,path)]
+                val source=ramp?.source ?: sources[path to rate] ?: continue
                 val clock=if (freeze==null) setting else freeze.sourceTime+freeze.offset+local
                 val phase=BackgroundEffect.loop(clock-origin,source.duration)
                 var gain=10.0.pow(-18.0/20)*min(1.0,max(0.0,at-begin)/.008)*
@@ -94,13 +135,13 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                     if (next>0) gain*=min(1.0,max(0.0,setting-changes[next-1])/rate/.008)
                     if (next<changes.size) gain*=min(1.0,max(0.0,changes[next]-setting)/rate/.008)
                 }
-                if (freeze!=null && freezeMode=="Fade out over hold") {
+                if (freeze!=null && freezeMode in listOf("Fade out","Fade out over hold")) {
                     val hold=freezeEffect?.number("hold",freeze.duration.toFloat())?.toDouble() ?: freeze.duration
                     gain*=max(0.0,1-(freeze.offset+local)/max(.001,hold))
                 }
                 for (ch in 0..1) {
-                    val incoming=sample(path,rate,source,phase.incoming,ch)
-                    val outgoing=phase.outgoing?.let { sample(path,rate,source,it,ch) }
+                    val incoming=if (ramp!=null) sample(source.identity,1.0,source,ramp.clock.outputTime(clock),ch) else sample(path,rate,source,phase.incoming,ch)
+                    val outgoing=if (ramp!=null) null else phase.outgoing?.let { sample(path,rate,source,it,ch) }
                     pcm[i*2+ch]+=((if (outgoing==null) incoming.toDouble() else incoming*phase.blend+outgoing*(1-phase.blend))*gain).toFloat()
                 }
             }
@@ -108,5 +149,5 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
         return pcm
     }
 
-    override fun close() { sources.values.forEach { it.file.close() }; sources.clear(); chunks.clear() }
+    override fun close() { ramps.values.forEach { it.source.file.close() };ramps.clear();sources.values.forEach { it.file.close() }; sources.clear(); chunks.clear() }
 }

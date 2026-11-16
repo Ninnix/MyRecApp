@@ -67,6 +67,17 @@ class BackgroundRenderer : Closeable {
         } finally { plate?.recycle() }
     }
 
+    private val dollySubject=Effect.create("Auto Background")
+    fun subject(bitmap: Bitmap,time: Double,key: String,previous: List<Double> = emptyList(),source: ((Double,Int,Int)->Bitmap?)?=null): BackgroundMatte {
+        val current=matte(bitmap,dollySubject,time,key,null)
+        val history=mutableListOf(current)
+        if (source!=null) for (at in previous.take(7)) {
+            val input=source(at,bitmap.width,bitmap.height) ?: continue
+            try { history.add(matte(input,dollySubject,at,key,null)) } finally { input.recycle() }
+        }
+        return current.copy(alpha=BackgroundTemporal.apply(history,false))
+    }
+
     internal fun background(bitmap: Bitmap,effect: Effect,time: Double): Bitmap {
         val selected=BackgroundEffect.choice(effect,"background")
         val mode=if (selected in listOf("Image","Video") && BackgroundEffect.media(effect,"media")==null) "Solid" else selected

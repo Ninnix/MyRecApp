@@ -43,7 +43,8 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
             val effects = c.effects.filter { it.kind in kinds && it.id !in removed }.map { it.copyEffect() }.toMutableList()
             for (fx in added) effects.add(fx.copyEffect().apply {
                 from = 0.0; to = c.duration
-                if (kind == "Dolly Zoom" || kind in BackgroundEffect.kinds) values.putIfAbsent("origin", c.sourceIn.toString())
+                if (kind == "Dolly Zoom" || kind in BackgroundEffect.kinds || kind in ExistingEffects.kinds) values.putIfAbsent("origin", c.sourceIn.toString())
+                if (kind in ExistingEffects.kinds) values.putIfAbsent("clockEnd",c.sourceOut.toString())
             })
             for (next in changed) {
                 val before = previous.getValue(next.id)
@@ -52,7 +53,7 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
                     for (key in before.values.keys + next.values.keys) if (before.values[key] != next.values[key]) {
                         next.values[key]?.let { fx.values[key] = it } ?: fx.values.remove(key)
                     }
-                    if (FrameEffects.modern(next) && before.parameters.isEmpty()) {
+                    if ((FrameEffects.modern(next) || ExistingEffects.modern(next)) && before.parameters.isEmpty()) {
                         fx.parameters.clear();fx.parameters.addAll(next.parameters.map { it.duplicate() })
                     }
                     for (p in next.parameters) if (p != before.parameter(p.id)) {
@@ -86,19 +87,20 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
     }
 
     fun editNumber(display: Effect, key: String, value: Float, at: Double, animate: Boolean) {
+        val keyed=animate && ExistingEffects.animatable(display.kind,key)
         flush()
         val active = clip(at)
         val time = active?.sourceTime(at) ?: 0.0
         val states = clips.associate { c -> c.id to c.effects.filter { it.kind in kinds }.map { it.copyEffect() } }
         for (c in clips) for (fx in states.getValue(c.id).filter { it.id == display.id }) {
-            if (animate && c.id != active?.id) continue
+            if (keyed && c.id != active?.id) continue
             val motion = fx.motion
             if (motion != null) {
                 val id = fx.parameter(key)?.id ?: key
                 val next = fx.parameter(id)!!.number(value).value
                 fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = motion.b + (id to next))
                     else motion.copy(a = motion.a + (id to next))
-            } else fx.editNumber(key, value, time, c.sourceIn, animate)
+            } else fx.editNumber(key, value, time, c.sourceIn, keyed)
         }
         edit.replaceVideoStates(states, kinds)
         adopt(display, at)
@@ -110,16 +112,17 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
     }
 
     fun editValue(display: Effect, key: String, value: EffectValue, at: Double, animate: Boolean) {
+        val keyed=animate && ExistingEffects.animatable(display.kind,key)
         flush()
         val active = clip(at)
         val time = active?.sourceTime(at) ?: 0.0
         for ((c, fx) in entries(display.id)) {
-            if (animate && c.id != active?.id) continue
+            if (keyed && c.id != active?.id) continue
             val p = fx.parameter(key) ?: continue
             require(p.kind.accepts(value))
             if (p.at(time) == value) continue
-            if (animate && p.keyframes.isEmpty() && time > c.sourceIn + .001) p.setKeyframe(c.sourceIn, p.value)
-            if (animate || p.keyframes.isNotEmpty()) p.setKeyframe(time, value) else p.value = value
+            if (keyed && p.keyframes.isEmpty() && time > c.sourceIn + .001) p.setKeyframe(c.sourceIn, p.value)
+            if (keyed || p.keyframes.isNotEmpty()) p.setKeyframe(time, value) else p.value = value
         }
         adopt(display, at)
     }
@@ -134,9 +137,11 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
                 fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = pose) else motion.copy(a = pose)
             }
             else {
+                val clocks=if (ExistingEffects.modern(fx)) fx.values.filterKeys { it in setOf("origin","clockEnd","phaseOffset","captured","rangeStart","rangeEnd") } else emptyMap()
                 val origin=if (fx.kind in BackgroundEffect.kinds) fx.values["origin"] else null
                 fx.values.clear(); fx.parameters.clear(); fx.parameters.addAll(neutral)
                 if (origin!=null) fx.values["origin"]=origin
+                fx.values.putAll(clocks)
             }
         }
         adopt(display, at)

@@ -39,6 +39,20 @@ and longer movements accelerate. The percentage runs toward infinity at 100%.
 Hold the focus control to toggle red focus peaking. It marks sharp edges in the
 preview and is never recorded. Fixed-focus cameras are labelled Fixed.
 
+Dolly Zoom can follow a face or a tapped subject while you move. Stretch can
+first zoom in to leave room for compensation; Compress follows as you move away.
+Start / stop tracking starts the move or brakes it smoothly. The duration,
+subject loss and lens limits bound the move. Face measurements use the applied
+camera zoom; a tapped subject uses image tracking. The physical compensation is
+already in the recorded source, so editing does not apply it again.
+
+With Crash Zoom enabled, Zoom now or Volume up triggers a push. Return or
+Volume down releases the hold. Push duration, amount and motion blur shape the
+move. Tapping selects a target; Follow face uses the camera's face detections.
+The recording retains the actual trigger, return timing and measured target
+keys for editor rendering. Tracking depends on the reported camera features
+and visible detail; it is not a guarantee of a locked subject.
+
 Camera and zoom choices come from Android's reported capabilities. Switching
 keeps the same recording and its encoded frame size. Frames are rotated to
 that initial orientation; timestamps follow the recording clock.

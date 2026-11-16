@@ -11,7 +11,7 @@ import kotlin.math.*
 
 /** The lamp is opaque; its separate opacity control belongs to the recorder. */
 class FrontLightColorPicker(a: MainActivity, initial: Int, scale: Float,
-    private val change: (Int) -> Unit) : Dialog(a) {
+    title: String="Front light color", private val change: (Int) -> Unit) : Dialog(a) {
     private val u=InspectorUi(a,min(scale,a.root.height/520f))
     private val body=u.column().apply {
         background=u.shape(Color.rgb(28,28,30),18f)
@@ -33,16 +33,16 @@ class FrontLightColorPicker(a: MainActivity, initial: Int, scale: Float,
         val handle=View(a).apply { background=u.shape(Color.rgb(90,90,94),2f) }
         body.addView(handle,LinearLayout.LayoutParams(u.px(28f),u.px(3f)).apply { gravity=Gravity.CENTER; bottomMargin=u.px(6f) })
         val header=u.row()
-        header.addView(u.text("Front light color",14f,bold=true),LinearLayout.LayoutParams(0,u.px(44f),1f))
+        header.addView(u.text(title,14f,bold=true),LinearLayout.LayoutParams(0,u.px(44f),1f))
         header.addView(u.text("×",22f,Color.LTGRAY).apply {
             gravity=Gravity.CENTER; background=u.shape(Color.rgb(58,58,60),20f)
-            contentDescription="Close front light color"; isFocusable=true; setOnClickListener { dismiss() }
+            contentDescription="Close ${title.lowercase()}"; isFocusable=true; setOnClickListener { dismiss() }
         },LinearLayout.LayoutParams(u.px(34f),u.px(34f)))
         u.add(body,header); u.gap(body,6f); u.add(body,tabs); u.gap(body,12f); u.add(body,content)
         u.divider(body)
         val values=u.row()
         swatch.background=u.shape(color,10f,Color.GRAY)
-        swatch.contentDescription="Selected front light color"
+        swatch.contentDescription="Selected ${title.lowercase()}"
         values.addView(swatch,LinearLayout.LayoutParams(u.px(42f),u.px(42f)).apply { rightMargin=u.px(12f) })
         values.addView(u.text("Hex color",11f),LinearLayout.LayoutParams(0,u.px(44f),1f))
         hex.apply {

@@ -93,15 +93,16 @@ def evaluate(width,height,extended,p,frame,strength):
     points.update(((j*137)%(width*height)%width,(j*137)%(width*height)//width) for j in range(min(90,width*height)))
     return [[x,y,[half(v) for v in sample(x,y)] if extended else [int(clamp(srgb(v))*255+.5) for v in sample(x,y)]] for x,y in sorted(points)]
 
-recipes = [[.5,1,.3,.2,0,0],[0,0,0,0,0,0],[1,0,1,1,1,1],[.8,2,.6,.5,1,0],[.5,1,0,0,1,1],[0,2,1,1,0,0]]
-fixtures = []
-for index in range(24):
-    width,height = [(17,13),(13,17),(640,360),(360,640),(1,7),(7,1)][index%6]
-    p = recipes[(index//6+index)%6]; extended = index >= 12
-    frame = [0,1,17,1234][index//6]; strength = [1,.3,.5,1][index//6]
-    if index == 23: width,height,p = 1920,1080,recipes[0]
-    output = evaluate(width,height,extended,p,frame,strength)
-    fixtures.append(dict(width=width,height=height,linear=extended,parameters=p,frame=frame,intensity=strength,output=output))
-path = ROOT/'app/src/androidTest/assets/sixteen-mm-reference.json'
-path.write_text(json.dumps(dict(source=f'YouRec VideoEffects.metal {SOURCE}; independent 16mm equations with paired Gaussian and half-float grain',colors=COLORS,fixtures=fixtures),separators=(',',':'))+'\n')
-print(f'{len(fixtures)} fixtures written to {path.relative_to(ROOT)}')
+if __name__ == '__main__':
+    recipes = [[.5,1,.3,.2,0,0],[0,0,0,0,0,0],[1,0,1,1,1,1],[.8,2,.6,.5,1,0],[.5,1,0,0,1,1],[0,2,1,1,0,0]]
+    fixtures = []
+    for index in range(24):
+        width,height = [(17,13),(13,17),(640,360),(360,640),(1,7),(7,1)][index%6]
+        p = recipes[(index//6+index)%6]; extended = index >= 12
+        frame = [0,1,17,1234][index//6]; strength = [1,.3,.5,1][index//6]
+        if index == 23: width,height,p = 1920,1080,recipes[0]
+        output = evaluate(width,height,extended,p,frame,strength)
+        fixtures.append(dict(width=width,height=height,linear=extended,parameters=p,frame=frame,intensity=strength,output=output))
+    path = ROOT/'app/src/androidTest/assets/sixteen-mm-reference.json'
+    path.write_text(json.dumps(dict(source=f'YouRec VideoEffects.metal {SOURCE}; independent 16mm equations with paired Gaussian and half-float grain',colors=COLORS,fixtures=fixtures),separators=(',',':'))+'\n')
+    print(f'{len(fixtures)} fixtures written to {path.relative_to(ROOT)}')

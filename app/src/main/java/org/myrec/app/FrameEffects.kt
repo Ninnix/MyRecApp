@@ -62,5 +62,5 @@ object FrameEffects {
             if (fx.kind=="Mirror" && strength<1) Native.workingAverage(bitmap,source,1-strength)
         } finally { source.recycle() }
     }
-    val editorOnly=setOf("Night fix","Dolly Zoom","Step Printing","Freeze","Strobe","Echo")
+    val editorOnly=setOf("Night fix","Freeze Frame","Step Printing","Freeze","Strobe","Echo")
 }

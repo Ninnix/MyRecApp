@@ -36,10 +36,8 @@ static int gaussian(float *p, int w, int h, float sigma) {
     free(weights); free(tmp); return 1;
 }
 
-JNIEXPORT void JNICALL Java_org_myrec_app_Native_dolly(JNIEnv *env, jobject self,
-    jobject bitmap, jfloatArray matte, jfloat scale, jfloat target_x, jfloat target_y, jfloat strength) {
-    (void)self;
-    if ((*env)->GetArrayLength(env, matte) != 192 * 192 || !isfinite(scale) || scale < 1 || scale > 1.5f ||
+static void dolly(JNIEnv *env,jobject bitmap,jfloatArray matte,int mask_width,int mask_height,jfloat scale,jfloat target_x,jfloat target_y,jfloat strength) {
+    if (mask_width<1 || mask_height<1 || mask_width>4096 || mask_height>4096 || (*env)->GetArrayLength(env, matte) < mask_width * mask_height || !isfinite(scale) || scale < 1 || scale > 1.5f ||
         !isfinite(target_x) || !isfinite(target_y) || !isfinite(strength)) return;
     YrPixels image;
     AndroidBitmapInfo info;
@@ -59,7 +57,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_dolly(JNIEnv *env, jobject self
         float u = (x + .5f) / w, v = (y + .5f) / h;
         int sx = (int)yr_clamp(u * info.width, 0, info.width - 1), sy = (int)yr_clamp(v * info.height, 0, info.height - 1);
         float pixel[4]; yr_read(&image, sx, sy, pixel);
-        float weight = 1 - yr_clamp(at(mask, 192, 192, 1, u * 192 - .5f, v * 192 - .5f, 0), 0, 1);
+        float weight = 1 - yr_clamp(at(mask, mask_width, mask_height, 1, u * mask_width - .5f, v * mask_height - .5f, 0), 0, 1);
         float *p = layers[0] + (y * w + x) * 4;
         for (int c = 0; c < 3; c++) p[c] = pixel[c] * weight;
         p[3] = weight;
@@ -97,7 +95,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_dolly(JNIEnv *env, jobject self
     strength = yr_clamp(strength, 0, 1); target_x = yr_clamp(target_x, 0, 1); target_y = yr_clamp(target_y, 0, 1);
     for (unsigned y = 0; y < info.height; y++) for (unsigned x = 0; x < info.width; x++) {
         float u = (x + .5f) / info.width, v = (y + .5f) / info.height;
-        float a = yr_clamp(at(mask, 192, 192, 1, u * 192 - .5f, v * 192 - .5f, 0), 0, 1);
+        float a = yr_clamp(at(mask, mask_width, mask_height, 1, u * mask_width - .5f, v * mask_height - .5f, 0), 0, 1);
         float bu = (u - target_x) / scale + target_x, bv = (v - target_y) / scale + target_y;
         float pixel[4]; yr_read(&image, x, y, pixel);
         for (int c = 0; c < 3; c++) {
@@ -111,4 +109,11 @@ done:
     if (locked) AndroidBitmap_unlockPixels(env, bitmap);
     for (int i = 0; i < 24; i++) free(layers[i]);
     (*env)->ReleaseFloatArrayElements(env, matte, mask, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_dolly(JNIEnv *env,jobject self,jobject bitmap,jfloatArray mask,jfloat scale,jfloat x,jfloat y,jfloat strength) {
+    (void)self;dolly(env,bitmap,mask,192,192,scale,x,y,strength);
+}
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_dollyMask(JNIEnv *env,jobject self,jobject bitmap,jfloatArray mask,jint width,jint height,jfloat scale,jfloat x,jfloat y,jfloat strength) {
+    (void)self;dolly(env,bitmap,mask,width,height,scale,x,y,strength);
 }

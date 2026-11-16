@@ -42,7 +42,7 @@ object FilmColor {
     }?.toMutableList() ?: mutableListOf()
 
     fun definition(effect: Effect): Definition? = definitions[effect.kind]
-        ?: if (FrameEffects.modern(effect)) FrameEffects.definitions[effect.kind] else if (Noir.modern(effect)) Noir.definition else if (SixteenMm.modern(effect)) SixteenMm.definition else null
+        ?: if (ExistingEffects.modern(effect)) ExistingEffects.definitions[effect.kind] else if (FrameEffects.modern(effect)) FrameEffects.definitions[effect.kind] else if (Noir.modern(effect)) Noir.definition else if (SixteenMm.modern(effect)) SixteenMm.definition else null
 
     fun uniforms(effect: Effect): FloatArray = definition(effect)!!.controls.map { control ->
         when (val value = effect.parameter(control.id)?.value ?: control.initial) {
