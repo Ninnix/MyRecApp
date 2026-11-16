@@ -63,6 +63,8 @@ archives, including originals, history, overlays, and an OpenTimelineIO source
 conform. Export writes H.264 SDR or, on capable devices, HEVC 10-bit HLG with
 AAC audio to `Movies/MyRec`. HDR and Log editing use half-float working images;
 HDR export requires a decoder and recording surface that preserve ten bits.
+Color grading includes local Log highlight recovery, temperature/tint white
+balance and explicit Apple Log, Apple Log 2 and O-Log interpretation.
 
 Color LUTs accepts project-owned 1D/3D CUBE files and explicit Apple Log
 interpretation. Subtitles have searchable transcript review, shared appearance and motion, and

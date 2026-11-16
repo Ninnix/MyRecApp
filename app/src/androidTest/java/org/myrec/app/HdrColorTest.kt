@@ -14,7 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object HdrColorTest {
-    fun run(test: Instrumentation, activity: MainActivity): JSONObject {
+    fun run(test: Instrumentation, activity: MainActivity,planar: Boolean=HdrGraphics.support.planar): JSONObject {
         fun main(block: () -> Unit) {
             var error: Throwable? = null
             test.runOnMainSync {
@@ -98,7 +98,7 @@ object HdrColorTest {
                 check(available) { "Colour test window unavailable" }
                 main { view.surfaceTexture!!.setDefaultBufferSize(320, 180) }
                 renderer =
-                    CameraComposition(Surface(view.surfaceTexture), 320, 180, hdr) {
+                    CameraComposition(Surface(view.surfaceTexture), 320, 180, hdr,planar=hdr && planar) {
                         failure.set(it)
                     }
                 val input = renderer.input(320, 180, 0, false, primaries)

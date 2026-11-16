@@ -24,11 +24,13 @@ object Effects {
             val cube = effect.values["path"]?.let { LutAssets.load(it) }
                 ?: CubeLut.builtin(effect.values["lut"] ?: "Natural")
             Native.colorLut(bitmap, cube.samples, cube.size, cube.oneDimensional, cube.minimum + cube.maximum,
-                when (effect.values["input"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 },
+                when (effect.values["input"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; "O-Log" -> 3; else -> 0 },
                 if (effect.values["path"] == null && (effect.values["lut"] ?: "Natural") == "Natural") 0f else strength,
                 effect.number("exposure"), effect.number("highlights"),
-                when (effect.values["source"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; else -> 0 },
-                effect.number("warmth"), effect.number("tint"))
+                when (effect.values["source"]) { "Apple Log" -> 1; "Apple Log 2" -> 2; "O-Log" -> 3; else -> 0 },
+                effect.number("warmth"), effect.number("tint"),effect.number("localRecovery"),
+                if (effect.values["balanceModel"]=="2" && (effect.number("warmth")!=0f || effect.number("tint")!=0f)) WhiteBalance.matrix(effect.number("warmth").toDouble(),effect.number("tint").toDouble()) else null,
+                effect.values["path"]==null && effect.values["balanceModel"]=="2")
             return
         }
         if (strength <= 0f) return
@@ -294,7 +296,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         preserveHdr = keepLinear
         val hasHdr = project.clips.any { it.video && WorkingColor.hdr(it.path) }
         extended = keepLinear || hasHdr || project.clips.any { it.video && it.effects.any { fx -> fx.enabled &&
-            (ExistingEffects.modern(fx) && (fx.kind in ExistingEffects.noIntensity || fx.number("intensity",1f)>0 || fx.parameter("intensity")?.keyframes?.any { (it.value as? EffectValue.Number)?.value?.let { it>0 }==true }==true) || fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2")) } }
+            (ExistingEffects.modern(fx) && (fx.kind in ExistingEffects.noIntensity || fx.number("intensity",1f)>0 || fx.parameter("intensity")?.keyframes?.any { (it.value as? EffectValue.Number)?.value?.let { it>0 }==true }==true) || fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2", "O-Log")) } }
         val output = if (extended) WorkingColor.bitmap(width, height) else Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
         val canvas = Canvas(output)
@@ -467,7 +469,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             StabilizationRenderer.originalTime(c.path,sourceTime,cancelled,onAnalysis)
         else StabilizationRenderer.frameTime(c,sourceStabilization,sourceTime,cancelled,onAnalysis)
         val grade = fx.lastOrNull { it.kind == "Color LUTs" }
-        val rawLog = grade?.values?.get("source") in listOf("Apple Log", "Apple Log 2")
+        val rawLog = grade?.values?.get("source") in listOf("Apple Log", "Apple Log 2", "O-Log")
         val raw = sequenceFrame(c, fx, sourceTime, width, height, rawLog) ?: return
         val bitmap =
             if (raw.isMutable && raw.config == (if (extended) Bitmap.Config.RGBA_F16 else Bitmap.Config.ARGB_8888)) raw
@@ -767,7 +769,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             val local=clip.timelineOffset(at)
             val active=EffectOrder.ordered(clip.effects).filter { it.active(local) }.map { it.sampled(at) }
             val grade=active.lastOrNull { it.kind=="Color LUTs" }
-            val rawLog=grade?.values?.get("source") in listOf("Apple Log","Apple Log 2")
+            val rawLog=grade?.values?.get("source") in listOf("Apple Log","Apple Log 2","O-Log")
             val raw=sequenceFrame(clip,active,at,w,h,rawLog) ?: return@render null
             val input=if (raw.isMutable && raw.config==bitmap.config) raw else raw.copy(bitmap.config!!,true).also { raw.recycle() }
             try {

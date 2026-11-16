@@ -21,6 +21,7 @@ class CameraComposition(
     private val hdr: Boolean = false,
     private val geometry: CameraLayout = CameraLayout(),
     private val gravity: (Double)->CameraPoint? = { null },
+    private val planar: Boolean = hdr && HdrGraphics.support.planar,
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
     private val thread = HandlerThread("camera-composition").apply { start() }
@@ -88,7 +89,7 @@ class CameraComposition(
 
     private class Input(
         val texture: Int,
-        val image: SurfaceTexture,
+        val image: SurfaceTexture?,
         val surface: Surface,
         val width: Int,
         val height: Int,
@@ -98,10 +99,12 @@ class CameraComposition(
         val id: String,
         val realtime: Boolean,
         var hardwareZoom: Double,
+        val pixels: P010Texture?=null,
     ) {
         val transform = FloatArray(16)
         var ready = false
         var dataSpace = 0
+        var timestamp=0L
         val faces=java.util.ArrayDeque<Faces>()
         var target=CameraFaceTarget()
         var horizon=HorizonEstimate()
@@ -204,7 +207,7 @@ class CameraComposition(
             val support = HdrGraphics.evaluate(
                 EGL14.eglQueryString(display,EGL14.EGL_EXTENSIONS).orEmpty(),
                 GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty(),true,
-                GLES20.glGetString(GLES20.GL_RENDERER).orEmpty())
+                GLES20.glGetString(GLES20.GL_RENDERER).orEmpty(),allowPlanar=planar)
             check(support.reason == null) { "${support.reason} (${support.missing})" }
         }
         val vertex =
@@ -229,11 +232,10 @@ class CameraComposition(
             if (hdr)
                 """
             #version 300 es
-            #extension GL_OES_EGL_image_external_essl3 : require
-            #extension GL_EXT_YUV_target : require
+            ${if (planar) "" else "#extension GL_OES_EGL_image_external_essl3 : require\n#extension GL_EXT_YUV_target : require"}
             precision highp float;
             in vec2 v; in vec2 world; out vec4 color; uniform float side; uniform vec4 circle; uniform float diagonalFlip; uniform vec4 separator;
-            uniform __samplerExternal2DY2YEXT image; uniform float tone; uniform float fullRange; uniform float primaries;
+            ${if (planar) P010Texture.shader else "uniform __samplerExternal2DY2YEXT image;"} uniform float tone; uniform float fullRange; uniform float primaries;
             vec3 linearHLG(vec3 x){return mix(x*x/3.,(exp((x-.55991073)/.17883277)+.28466892)/12.,step(vec3(.5),x));}
             vec3 encodeHLG(vec3 x){return mix(sqrt(3.*max(x,vec3(0.))),.17883277*log(max(12.*x-.28466892,vec3(.000001)))+.55991073,step(vec3(1./12.),x));}
             vec3 srgb(vec3 x){return mix(12.92*x,1.055*pow(max(x,vec3(0.)),vec3(1./2.4))-.055,step(vec3(.0031308),x));}
@@ -242,11 +244,9 @@ class CameraComposition(
                 float distance=diagonalFlip>.5?world.y-world.x:world.x+world.y-1.;
                 if(side<-.5 && distance>0.)discard;
                 if(side>.5 && distance<=0.)discard;
-                vec3 yuv=texture(image,v).xyz-vec3(fullRange>.5 ? 0. : .0625,.5,.5);
-                vec3 c=fullRange>.5 ? vec3(yuv.x+1.4746*yuv.z,
-                    yuv.x-.16455*yuv.y-.57135*yuv.z,yuv.x+1.8814*yuv.y) :
-                    vec3(1.1689*yuv.x+1.6853*yuv.z,1.1689*yuv.x-.1881*yuv.y-.6530*yuv.z,
-                    1.1689*yuv.x+2.1502*yuv.y);
+                vec3 yuv=${if (planar) "p010(v)" else "texture(image,v).xyz"}*1023.-vec3(fullRange>.5 ? 0. : 64.,512.,512.);
+                yuv/=fullRange>.5 ? vec3(1023.) : vec3(876.,896.,896.);
+                vec3 c=vec3(yuv.x+1.4746*yuv.z,yuv.x-.164553*yuv.y-.571353*yuv.z,yuv.x+1.8814*yuv.y);
                 c=clamp(c,0.,1.);
                 if(tone>=0. && primaries>.5){
                     vec3 s=linearHLG(c);
@@ -306,6 +306,19 @@ class CameraComposition(
         id: String="", realtime: Boolean=false,zoom: Double=1.0): Surface =
         call {
             check(inputs.size < 2)
+            if (planar) {
+                val pixels=P010Texture(width,height)
+                val source=Input(0,null,pixels.reader.surface,width,height,sensor,front,primaries,id,realtime,zoom,pixels)
+                inputs.add(source)
+                pixels.reader.setOnImageAvailableListener({ reader ->
+                    if (!closed && source in inputs) try { reader.acquireLatestImage()?.use { frame ->
+                        pixels.upload(frame,source.transform);source.timestamp=frame.timestamp
+                        if (android.os.Build.VERSION.SDK_INT>=33) source.dataSpace=frame.dataSpace
+                        source.ready=true;updateAssistance(source);render()
+                    } } catch (e: Throwable) { failure(e) }
+                },handler)
+                return@call source.surface
+            }
             val names = IntArray(1)
             GLES20.glGenTextures(1, names, 0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, names[0])
@@ -324,6 +337,7 @@ class CameraComposition(
                             image.updateTexImage()
                             if (android.os.Build.VERSION.SDK_INT >= 33)
                                 source.dataSpace = image.dataSpace
+                            source.timestamp=image.timestamp
                             image.getTransformMatrix(source.transform)
                             source.ready = true
                             updateAssistance(source)
@@ -383,8 +397,8 @@ class CameraComposition(
     } }
     private fun updateAssistance(source: Input) {
         val index=inputs.indexOf(source)
-        val time=if (source.image.timestamp<=0) System.nanoTime()/1e9
-            else (source.image.timestamp-(if (source.realtime) android.os.SystemClock.elapsedRealtimeNanos()-System.nanoTime() else 0))/1e9
+        val time=if (source.timestamp<=0) System.nanoTime()/1e9
+            else (source.timestamp-(if (source.realtime) android.os.SystemClock.elapsedRealtimeNanos()-System.nanoTime() else 0))/1e9
         val rotation=CameraOrientation.recording(source.sensor,displayRotation,source.front)
         val previous=source.time
         if (source.rotation!=rotation || time-previous !in 0.0..0.5) {
@@ -707,9 +721,11 @@ class CameraComposition(
                     1f
                 else 0f,
             )
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, source.texture)
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "image"), 0)
+            if (source.pixels!=null) source.pixels.bind(program) else {
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, source.texture)
+                GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"image"),0)
+            }
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
         if (target === encoder) {
@@ -720,13 +736,15 @@ class CameraComposition(
         check(EGL14.eglSwapBuffers(display, target)) { "Cannot submit composition (EGL 0x${EGL14.eglGetError().toString(16)})" }
     }
 
+    internal val inputFormat get()=if (planar && android.os.Build.VERSION.SDK_INT>=33) android.graphics.ImageFormat.YCBCR_P010 else android.graphics.ImageFormat.PRIVATE
+
     internal fun inputDataSpaces(): List<Int> = call { inputs.map { it.dataSpace } }
 
     fun clearInputs() = call {
         inputs.forEach {
-            it.image.setOnFrameAvailableListener(null)
+            it.image?.setOnFrameAvailableListener(null)
             it.surface.release()
-            it.image.release()
+            it.image?.release();it.pixels?.close()
             GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
         }
         inputs.clear(); reserve=1.0; singleFraming=CameraFraming(); manualFraming=false
@@ -738,9 +756,9 @@ class CameraComposition(
         call {
             EGL14.eglMakeCurrent(display, window, window, context)
             inputs.forEach {
-                it.image.setOnFrameAvailableListener(null)
+                it.image?.setOnFrameAvailableListener(null)
                 it.surface.release()
-                it.image.release()
+                it.image?.release();it.pixels?.close()
                 GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
             }
             inputs.clear()

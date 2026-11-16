@@ -14,6 +14,13 @@ import kotlin.math.*
 
 class LutInspector(private val ui: InspectorUi, private val fx: Effect, private val changed: () -> Unit,
                    private val compare: (Boolean) -> Unit) : AutoCloseable {
+    init {
+        if (fx.number("warmth")==0f && fx.number("tint")==0f && fx.motion?.let { motion ->
+            listOf(motion.a,motion.b).any { it["warmth"]!=0.0 || it["tint"]!=0.0 }
+        }!=true) fx.values.putIfAbsent("balanceModel","2")
+        fx.motion?.let { motion ->
+        fx.motion=motion.copy(a=mapOf("localRecovery" to 0.0)+motion.a,b=mapOf("localRecovery" to 0.0)+motion.b)
+    } }
     private val a = ui.a
     private val prefs = a.toolLibrary
     private var category = if (fx.values.containsKey("path")) "Imported" else "Built-in"
@@ -38,6 +45,7 @@ class LutInspector(private val ui: InspectorUi, private val fx: Effect, private 
     private fun sourceTime() = sourceClip()?.sourceTime(a.editor.cursor) ?: 0.0
     private fun value(key: String) = fx.numberAt(key, sourceTime(), if (key == "strength") 1f else 0f)
     private fun change(key: String, value: Float) {
+        if (key in listOf("warmth","tint")) fx.values["balanceModel"]="2"
         val motion = fx.motion
         if (motion != null && endpoint != null) {
             val pose = (if (endpoint == true) motion.b else motion.a).toMutableMap().apply { put(key, value.toDouble()) }
@@ -114,6 +122,12 @@ class LutInspector(private val ui: InspectorUi, private val fx: Effect, private 
         ui.add(parent, heading)
         ui.slider(parent, "Strength", value("strength"), 0f, 1f, enabled = selected != "Natural", inline = true) { change("strength", it) }
         ui.gap(parent, 8f)
+        if (fx.values["source"] in listOf("Apple Log","Apple Log 2","O-Log") || value("localRecovery")>0) {
+            ui.slider(parent,"Local highlight recovery",value("localRecovery"),0f,1f,reset=0f,
+                format={ "${(it*100).roundToInt()}%" }) { change("localRecovery",it) }
+            ui.add(parent,ui.action("Natural recovery",background=Color.TRANSPARENT) { change("localRecovery",1f);rebuild() })
+            ui.add(parent,ui.text("Recovers bright illumination while retaining local detail. Available for Log footage.",8f,Panels.MUTED))
+        }
         ui.slider(parent, "Highlights", value("highlights"), -1f, 1f,
             format = { "%+.0f".format(java.util.Locale.US, it * 100) }, reset = 0f) { change("highlights", it) }
         ui.add(parent, ui.text("Adjusts bright tones before the look. Move left to lower them.", 8f, Panels.MUTED).apply { maxLines = 2 }, 18f)
@@ -185,7 +199,7 @@ class LutInspector(private val ui: InspectorUi, private val fx: Effect, private 
             }
         }
         if (fx.values.containsKey("path")) ui.add(parent, ui.action("LUT expects · ${fx.values["input"] ?: "Rec.709"}", background = Color.TRANSPARENT) {
-            val inputs = listOf("Rec.709", "Apple Log", "Apple Log 2")
+            val inputs = listOf("Rec.709", "Apple Log", "Apple Log 2", "O-Log")
             a.choose("LUT expects", inputs) { index ->
                 fx.values["input"] = inputs[index]
                 val entries = imported
@@ -194,8 +208,8 @@ class LutInspector(private val ui: InspectorUi, private val fx: Effect, private 
             }
         })
         ui.add(parent, ui.action("Source interpretation · ${fx.values["source"] ?: "Recorded"}", background = Color.TRANSPARENT) {
-            val inputs = listOf("Recorded", "Apple Log", "Apple Log 2")
-            a.choose("Source interpretation", inputs) { fx.values["source"] = inputs[it]; rebuild() }
+            val inputs = listOf("Recorded", "Apple Log", "Apple Log 2", "O-Log")
+            a.choose("Source interpretation", inputs) { fx.values["source"] = inputs[it]; rebuild();refreshThumbnails() }
         })
         ui.add(parent, ui.action("Save grade", "Bookmark", background = Color.TRANSPARENT) { saveGrade() })
         tick()
@@ -239,6 +253,10 @@ class LutInspector(private val ui: InspectorUi, private val fx: Effect, private 
         val token = ++generation
         val project = a.editor.project.duplicate()
         project.clips.forEach { it.effects.removeAll { effect -> effect.kind == "Color LUTs" } }
+        val interpretation=fx.values["source"]
+        if (interpretation in listOf("Apple Log","Apple Log 2","O-Log")) project.clips.filter { it.video }.forEach {
+            it.effects.add(Effect(kind="Color LUTs",to=it.duration,values=mutableMapOf("source" to interpretation!!,"lut" to "Natural")))
+        }
         val time = a.editor.cursor
         val looks = CubeLut.looks.map { it to Effect(kind = "Color LUTs", values = mutableMapOf("lut" to it)) }.toMutableList()
         val entries = imported

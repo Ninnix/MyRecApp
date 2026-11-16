@@ -9,19 +9,19 @@ internal object HdrGraphics {
     const val EXTERNAL = "GL_OES_EGL_image_external_essl3"
     const val HLG = "EGL_EXT_gl_colorspace_bt2020_hlg"
 
-    data class Support(val reason: String?, val renderer: String, val missing: String?)
+    data class Support(val reason: String?, val renderer: String, val missing: String?,val planar: Boolean=false)
 
-    fun evaluate(egl: String, gl: String, tenBit: Boolean, renderer: String): Support {
+    fun evaluate(egl: String, gl: String, tenBit: Boolean, renderer: String,allowPlanar: Boolean=false): Support {
         fun has(list: String, name: String) = name in list.split(' ')
         val missing = when {
             !has(egl, HLG) -> HLG
             !tenBit -> "10-bit EGL surface"
-            !has(gl, YUV) -> YUV
-            !has(gl, EXTERNAL) -> EXTERNAL
+            !has(gl, YUV) && !allowPlanar -> YUV
+            !has(gl, EXTERNAL) && !allowPlanar -> EXTERNAL
             else -> null
         }
         return Support(if (missing == null) null else
-            "HDR is unavailable with this graphics driver. Use SDR.", renderer, missing)
+            "HDR is unavailable with this graphics driver. Use SDR.", renderer, missing,allowPlanar && (!has(gl,YUV) || !has(gl,EXTERNAL)))
     }
 
     // Probe the same format as the compositor, before closing a working SDR camera.
@@ -55,7 +55,7 @@ internal object HdrGraphics {
                 check(context != EGL14.EGL_NO_CONTEXT && surface != EGL14.EGL_NO_SURFACE)
                 check(EGL14.eglMakeCurrent(display,surface,surface,context))
                 evaluate(egl,GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty(),true,
-                    GLES20.glGetString(GLES20.GL_RENDERER).orEmpty())
+                    GLES20.glGetString(GLES20.GL_RENDERER).orEmpty(),allowPlanar=true)
             }
         } catch (e: Exception) {
             Log.w("MyRec-HDR","Cannot probe HDR graphics",e)

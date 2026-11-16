@@ -666,7 +666,7 @@ class Capture(
                             if (hdr)
                                 HdrRecorder.colorSpace(
                                     this,
-                                    manager.getCameraCharacteristics(cameraId),
+                                    manager.getCameraCharacteristics(cameraId),composition!!.inputFormat,
                                 )
                         }
                 )
@@ -1266,8 +1266,16 @@ class Capture(
             activity.message("HDR recording is unavailable for this camera combination")
             return
         }
+        if (enabled && HlgEncoder.name(videoSize.width,videoSize.height,prefs.getInt("fps",30))==null) {
+            activity.message("No ten-bit HEVC encoder supports this size and frame rate")
+            return
+        }
         if (enabled) HdrGraphics.support.reason?.let {
             activity.message(it)
+            return
+        }
+        if (enabled && HdrGraphics.support.planar && dualLayout==4 && !HdrRecorder.planarSupported(manager.getCameraCharacteristics(cameraId),captureSize.width,captureSize.height)) {
+            activity.message("This camera does not expose ten-bit P010 at the selected size")
             return
         }
         val ids = if (dualCamera != null) selectedPair().orEmpty() else listOf(cameraId)
@@ -1541,6 +1549,7 @@ class Capture(
 
     private fun newComposition(): CameraComposition {
         texture.surfaceTexture?.setDefaultBufferSize(texture.width, texture.height)
+        val generation=colorGeneration
         val result=CameraComposition(
             Surface(texture.surfaceTexture),
             texture.width,
@@ -1548,7 +1557,9 @@ class Capture(
             hdr,geometry,horizon::gravity,
         ) {
             ui.post {
+                if (closed || generation!=colorGeneration) return@post
                 if (recording) stop()
+                if (hdr) { closeCamera();hdr=false;openDefault() }
                 activity.message(it.message ?: "Camera composition failed")
             }
         }

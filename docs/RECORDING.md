@@ -120,16 +120,12 @@ keeps the chosen recording size.
 
 Choose SDR or HDR under Camera settings → Recording color before recording.
 HDR needs Android 13, an HLG camera output, HEVC Main10 encoding, and a compatible
-10-bit EGL surface. The compositor also needs `EGL_EXT_gl_colorspace_bt2020_hlg`,
-`GL_EXT_YUV_target`, and `GL_OES_EGL_image_external_essl3`. Camera and encoder
-capabilities alone do not establish compositor support. Camera settings checks
-the graphics format and extensions before offering HDR; an unsupported driver
-keeps SDR without closing the working camera. The `MyRec-HDR` log identifies the
-renderer and missing requirement. Recording stores 10-bit BT.2020 HLG; preview
-is tone mapped.
-
-Drivers without `GL_EXT_YUV_target` cannot use the current HDR compositor.
-Direct HDR capture without that compositor is not implemented.
+10-bit EGL surface with `EGL_EXT_gl_colorspace_bt2020_hlg`. When the driver cannot
+sample HDR camera textures directly, the compositor uses the camera's ten-bit
+P010 buffers. This path retains framing, rotation, mirroring and camera layouts;
+it also requires a supported P010 capture size. Camera settings checks graphics
+and encoder support before closing a working SDR camera. A failed HDR compositor
+returns to SDR. Recording stores 10-bit BT.2020 HLG; preview is tone mapped.
 
 The app checks the camera's RGB primaries by comparing registered SDR and HLG
 frames. Keep the camera still briefly when enabling HDR. A clear match may

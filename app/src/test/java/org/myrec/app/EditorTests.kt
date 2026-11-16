@@ -16,6 +16,7 @@ fun main() {
         println("PASS $name")
     }
     TitleModelTests.run(::test)
+    HdrColorModelTests.run(::test)
     TextOwnershipTests.run(::test)
     TimeEffectsTests.run(::test)
     ProcessingTests.run(::test)

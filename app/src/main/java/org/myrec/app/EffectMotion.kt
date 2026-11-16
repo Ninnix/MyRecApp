@@ -90,7 +90,7 @@ data class EffectMotion(
             !timing.release.isFinite() || timing.release < 0 || timing.ramp.hasRise || clock.size > 100000) return false
         if (clock.any { !it.source.isFinite() || !it.elapsed.isFinite() } ||
             clock.zipWithNext().any { (l, r) -> l.source >= r.source || l.elapsed > r.elapsed }) return false
-        if (effect.kind == "Color LUTs") return GradeModel.valid(a) && GradeModel.valid(b)
+        if (effect.kind == "Color LUTs") return a.keys==b.keys && GradeModel.valid(a) && GradeModel.valid(b)
         val expected = effect.parameters.associateBy { it.id }
         return listOf(a, b).all { pose -> pose.keys == expected.keys && pose.all { (id, value) ->
             expected.getValue(id).kind.accepts(EffectValue.Number(value))

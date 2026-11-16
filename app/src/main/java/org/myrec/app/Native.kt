@@ -20,9 +20,11 @@ object Native {
     external fun workingDisplay(bitmap: Bitmap, output: Bitmap, toneMap: Boolean)
     external fun dollyMask(bitmap: Bitmap,mask: FloatArray,width: Int,height: Int,scale: Float,targetX: Float,targetY: Float,intensity: Float)
     external fun dolly(bitmap: Bitmap, mask: FloatArray, scale: Float, targetX: Float, targetY: Float, intensity: Float)
+    external fun packP010(y: java.nio.ByteBuffer,u: java.nio.ByteBuffer,v: java.nio.ByteBuffer,yr: Int,ur: Int,vr: Int,us: Int,vs: Int,
+        width: Int,height: Int,outY: java.nio.ByteBuffer,outUV: java.nio.ByteBuffer): Boolean
     external fun colorLut(bitmap: android.graphics.Bitmap, entries: FloatArray, size: Int,
         oneDimensional: Boolean, bounds: FloatArray, input: Int, strength: Float, exposure: Float, highlights: Float, source: Int = 0,
-        warmth: Float = 0f, tint: Float = 0f)
+        warmth: Float = 0f, tint: Float = 0f,recovery: Float=0f,adaptation: FloatArray?=null,extrapolate: Boolean=false)
 
     init {
         System.loadLibrary("myrec")

@@ -76,8 +76,10 @@ class DualCamera(
             val characteristics = ids.map { manager.getCameraCharacteristics(it) }
             val supported =
                 characteristics.map {
-                    it.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                        ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+                    it.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.let { map ->
+                        if (renderer.inputFormat==android.graphics.ImageFormat.YCBCR_P010) map.getOutputSizes(renderer.inputFormat)
+                        else map.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+                    }
                         ?.toList()
                         .orEmpty()
                 }
@@ -122,7 +124,7 @@ class DualCamera(
                                     },
                                 )
                                 .apply {
-                                    if (hdr) HdrRecorder.colorSpace(this, characteristics[index])
+                                    if (hdr) HdrRecorder.colorSpace(this, characteristics[index],renderer.inputFormat)
                                 }
                     }
                 if (
@@ -177,7 +179,7 @@ class DualCamera(
                                 }
                             },
                         )
-                        .apply { if (hdr) HdrRecorder.colorSpace(this, chars) }
+                        .apply { if (hdr) HdrRecorder.colorSpace(this, chars,renderer.inputFormat) }
                 )
             }
         } catch (e: Exception) {

@@ -19,7 +19,8 @@ class CaptureRecorder(
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
     internal val clock = RecordingClock()
-    private val video=MediaCodec.createEncoderByType(if (hdr) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC)
+    private val video=if (hdr) MediaCodec.createByCodecName(HlgEncoder.name(width,height,fps)
+        ?: error("No ten-bit HEVC encoder supports this size and frame rate")) else MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val videoFile = File(file.path+".video.mp4")
     private val audioFile = File(file.path+".audio.m4a")
     private var audio: CaptureAudio? = null

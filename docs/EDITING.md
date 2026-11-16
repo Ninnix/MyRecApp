@@ -306,12 +306,21 @@ relative warmth and tint controls. These adjustments precede the creative look
 and remain active at zero Strength. The fourteen built-in looks include Natural,
 Warm and Cool shadows. Imported standalone 1D and 3D `.cube` files belong to the
 project, including history and archives. Choose the LUT input separately from
-source interpretation. Recorded uses normal decoding; Apple Log and Apple Log 2
-explicitly interpret unmanaged camera code values. Log viewing uses a highlight
-shoulder and half-float working images. Automatic Log metadata recognition,
-local highlight recovery and exact Core Image white-balance matching remain open.
+source interpretation. Recorded uses normal decoding; Apple Log, Apple Log 2 and
+O-Log explicitly interpret unmanaged camera code values. Log viewing uses a
+highlight shoulder and half-float working images. Local highlight recovery
+separates illumination from detail before the look; Natural recovery selects its
+full amount. Recovery is independent of global Highlights, exposure and Strength,
+and can animate with the other grading controls.
+
+New white-balance adjustments use temperature/tint chromatic adaptation in
+linear light. Existing non-neutral grades retain their earlier balance until
+edited. Built-in looks preserve extended highlight values; imported CUBE files
+retain their declared domain limits. Automatic Log metadata recognition and
+numerical comparison with Core Image white balance remain open.
 New styled titles and animated/balanced grades carry effect algorithm 2, which
 older builds refuse rather than silently discard their appearance or motion.
+Projects saved by this version use format 12 for the new grading controls.
 
 Pauses analyzes original-source RMS, then shows candidates with separate keep
 before/after padding. Automatic mode estimates a threshold; Manual uses the
