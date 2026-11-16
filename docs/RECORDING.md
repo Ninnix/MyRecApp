@@ -21,10 +21,11 @@ it without cropping the scene.
 The top bar has the microphone on the left, the clock in the center, and live
 video effects and Camera settings on the right. Camera settings opens a bottom
 panel in portrait and a side panel in landscape. It contains stabilization,
-the light, Use two cameras, and the SDR/HDR recording-color selector. More
-settings opens resolution, frame rate, microphone priority, and separate selfie
-preview/save mirror switches. Color and
-camera setup changes require stopping the current take.
+horizon leveling, face following, the light, Use two cameras, and the SDR/HDR
+recording-color selector. More settings opens resolution, frame rate, microphone
+priority, separate selfie preview/save mirror switches, Max angle and Reset
+framing. Stop the take to change color or resolution; pause it to change the
+camera setup or horizon settings.
 
 
 ## Choose a camera
@@ -44,8 +45,23 @@ that initial orientation; timestamps follow the recording clock.
 
 Selfie preview is mirrored by default; saved footage is unmirrored. Change the
 two switches independently in More settings before recording. Saved mirroring
-is locked during a take, including while paused. Camera combinations and HDR support depend on the phone and its drivers. Face following
-and horizon leveling from the iOS app are not implemented yet.
+is locked during a take, including while paused. Camera combinations and HDR
+support depend on the phone and its drivers.
+
+## Camera assistance
+
+Follow face uses the camera's face detection and moves smoothly within the
+available crop. Single-camera capture reserves a small amount of zoom at the
+wide end; dual capture follows within each region's existing crop. Brief face
+loss keeps the last framing. Panning a picture manually turns following off.
+Following is unavailable when the active cameras do not report face detection.
+
+Level horizon uses gravity, with coherent scene edges refining small corrections.
+It applies to rear cameras and needs a motion sensor. Max angle selects a limit
+from 0.5° to 10° in half-degree steps. Its fixed crop avoids changing zoom as the
+phone tilts. Large tilts fade back toward normal framing. The angle panel previews
+the crop before enabling the setting. Preview and saved footage use the same
+framing. The guides and controls are not added to the movie.
 
 ## Use the light
 
@@ -69,18 +85,22 @@ light while its front camera is visible. The border is not recorded.
 
 Enable Use two cameras in Camera settings. The lower camera strip then shows
 Swap and Layout. Layout offers rectangular or round picture in picture, side
-by side, top/bottom, and diagonal layouts. This needs a supported concurrent
-front/rear pair. Layout changes become part of the saved composition.
+by side, top/bottom, and diagonal layouts. First and Second choose among the
+camera combinations Android reports. Layout changes become part of the saved
+composition.
 
-Tap the divider to swap views. Use two fingers to pan or zoom a region. In
-picture in picture, the inset's camera-arrow button swaps the large and small
-views. Drag its body to move it, an edge to resize one dimension, or a corner
-to resize both. The round inset stays circular in both orientations.
+Swap exchanges views. Start both fingers inside one picture to pan or zoom it;
+crossing a divider keeps control of that picture. While Layout is
+open, drag a split divider, reverse the diagonal, or move and resize the inset.
+Rectangle and Circle share the inset's position and size; returning to Rectangle
+restores its aspect ratio. Moving or resizing the inset keeps face following
+enabled. Done hides the layout guides.
 
-These gestures work during recording. The circular arrow restores normal
-framing. Enabling two-camera capture requires stopping; returning to normal
-framing works within a dual recording. Inputs negotiate up to 1080p per camera
-and fall back together if needed. Output keeps the chosen recording size.
+These gestures work during recording. More settings → Reset framing restores
+the positions and crops while keeping both cameras and the take active. Pause
+before enabling or disabling two-camera capture or changing its camera pair.
+Inputs negotiate up to 1080p per camera and fall back together if needed. Output
+keeps the chosen recording size.
 
 ## Record HDR
 

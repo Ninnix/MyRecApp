@@ -97,6 +97,8 @@ class DualCamera(
                             chars.get(CameraCharacteristics.LENS_FACING) ==
                                 CameraCharacteristics.LENS_FACING_FRONT,
                             primaries(ids[index]),
+                            ids[index],
+                            android.os.Build.VERSION.SDK_INT<33 && chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)==CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                         )
                     }
                 val configs =
@@ -149,8 +151,10 @@ class DualCamera(
                     output.setDynamicRangeProfile(
                         android.hardware.camera2.params.DynamicRangeProfiles.HLG10
                     )
-                if (Build.VERSION.SDK_INT >= 33)
+                if (Build.VERSION.SDK_INT >= 33) {
                     output.setMirrorMode(OutputConfiguration.MIRROR_MODE_NONE)
+                    output.setTimestampBase(OutputConfiguration.TIMESTAMP_BASE_MONOTONIC)
+                }
                 camera.createCaptureSession(
                     SessionConfiguration(
                             SessionConfiguration.SESSION_REGULAR,
@@ -181,9 +185,9 @@ class DualCamera(
         }
     }
 
-    fun update(zoom: Float, focusLocked: Boolean, torch: Boolean, primary: Int) {
+    fun update(zoom: Float, focusLocked: Boolean, torch: Boolean, primary: Int,follow: Boolean=false,stabilize: Boolean=true) {
         if (android.os.Looper.myLooper() != handler.looper) {
-            handler.post { update(zoom, focusLocked, torch, primary) }
+            handler.post { update(zoom, focusLocked, torch, primary,follow,stabilize) }
             return
         }
         if (closed) return
@@ -211,6 +215,9 @@ class DualCamera(
                     focusLocks[index] = lock
                 }
                 r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (follow) CameraFaces.mode(chars) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
+                val videoModes=chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: intArrayOf()
+                r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,if (stabilize && CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON in videoModes) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                 if (Build.VERSION.SDK_INT >= 30)
                     chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let {
                         r.set(
@@ -232,7 +239,14 @@ class DualCamera(
                     .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
                     ?.firstOrNull { it == Range(30, 30) }
                     ?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-                sessions[index]!!.setRepeatingRequest(r.build(), null, handler)
+                sessions[index]!!.setRepeatingRequest(r.build(),object: CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(session: CameraCaptureSession,request: CaptureRequest,result: TotalCaptureResult) {
+                        if (!closed && follow) {
+                            val size=inputSizes.getOrNull(index) ?: return
+                            renderer.faces(ids[index],CameraFaces.boxes(chars,result,size.width,size.height),CameraFaces.time(chars,result),CameraFaces.zoom(chars,result))
+                        }
+                    }
+                },handler)
                 r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
         } catch (e: Exception) {
@@ -249,27 +263,21 @@ class DualCamera(
     }
 
     companion object {
+        fun pairs(manager: CameraManager): List<List<String>> {
+            if (Build.VERSION.SDK_INT<30) return emptyList()
+            val result=mutableListOf<List<String>>()
+            for (set in manager.concurrentCameraIds) {
+                val ids=set.sorted()
+                for (i in ids.indices) for (j in i+1 until ids.size) result.add(listOf(ids[i],ids[j]))
+            }
+            return result.distinct().sortedBy { pair ->
+                val facings=pair.map { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) }
+                if (CameraCharacteristics.LENS_FACING_FRONT in facings && CameraCharacteristics.LENS_FACING_BACK in facings) 0 else 1
+            }
+        }
         fun pair(manager: CameraManager): List<String>? {
-            if (Build.VERSION.SDK_INT < 30) return null
-            return manager.concurrentCameraIds
-                .mapNotNull { set ->
-                    val back =
-                        set.firstOrNull {
-                            manager
-                                .getCameraCharacteristics(it)
-                                .get(CameraCharacteristics.LENS_FACING) ==
-                                CameraCharacteristics.LENS_FACING_BACK
-                        }
-                    val front =
-                        set.firstOrNull {
-                            manager
-                                .getCameraCharacteristics(it)
-                                .get(CameraCharacteristics.LENS_FACING) ==
-                                CameraCharacteristics.LENS_FACING_FRONT
-                        }
-                    if (back != null && front != null) listOf(back, front) else null
-                }
-                .firstOrNull()
+            val pair=pairs(manager).firstOrNull() ?: return null
+            return pair.sortedBy { if (manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING)==CameraCharacteristics.LENS_FACING_FRONT) 1 else 0 }
         }
     }
 }

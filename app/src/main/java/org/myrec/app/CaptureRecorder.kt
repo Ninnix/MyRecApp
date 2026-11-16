@@ -19,8 +19,7 @@ class CaptureRecorder(
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
     internal val clock = RecordingClock()
-    private val video = if (hdr) MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC) else null
-    @Suppress("DEPRECATION") private val sdr = if (hdr) null else MediaRecorder()
+    private val video=MediaCodec.createEncoderByType(if (hdr) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC)
     private val videoFile = File(file.path+".video.mp4")
     private val audioFile = File(file.path+".audio.m4a")
     private var audio: CaptureAudio? = null
@@ -33,8 +32,10 @@ class CaptureRecorder(
     private var released = false
     private var completed = false
     @Volatile private var began = false
-    @Volatile private var firstVideo = Long.MIN_VALUE
+    @Volatile private var syncAt=Long.MAX_VALUE
     private var lastVideo = -1L
+    @Volatile var elapsedSeconds=0.0
+        private set
     internal var insertedAudioSilence=0L
         private set
     internal var audioClockCorrections=0L
@@ -43,56 +44,41 @@ class CaptureRecorder(
 
     init {
         try {
-            if (sdr!=null) {
-                sdr.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                sdr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                sdr.setOutputFile(videoFile.path)
-                sdr.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                sdr.setVideoSize(width,height)
-                sdr.setVideoFrameRate(fps)
-                sdr.setVideoEncodingBitRate(width*height*8)
-                sdr.setOnErrorListener { _,_,_ -> failure(IllegalStateException("Camera recording interrupted")) }
-                sdr.prepare()
-                surface=sdr.surface
-            } else {
-                val format=MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC,width,height).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    setInteger(MediaFormat.KEY_PROFILE,MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-                    setInteger(MediaFormat.KEY_COLOR_STANDARD,MediaFormat.COLOR_STANDARD_BT2020)
-                    setInteger(MediaFormat.KEY_COLOR_TRANSFER,MediaFormat.COLOR_TRANSFER_HLG)
-                    setInteger(MediaFormat.KEY_COLOR_RANGE,MediaFormat.COLOR_RANGE_LIMITED)
-                    setInteger(MediaFormat.KEY_BIT_RATE,width*height*8)
-                    setInteger(MediaFormat.KEY_FRAME_RATE,fps)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1)
-                    setInteger(MediaFormat.KEY_MAX_B_FRAMES,0)
-                }
-                video!!.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE)
-                surface=video.createInputSurface()
-                muxer=MediaMuxer(videoFile.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-                video.start()
-                worker=Thread({ drain() },"camera-encoder-output").apply { start() }
+            val format=MediaFormat.createVideoFormat(if (hdr) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC,width,height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                if (hdr) setInteger(MediaFormat.KEY_PROFILE,MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+                setInteger(MediaFormat.KEY_COLOR_STANDARD,if (hdr) MediaFormat.COLOR_STANDARD_BT2020 else MediaFormat.COLOR_STANDARD_BT709)
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER,if (hdr) MediaFormat.COLOR_TRANSFER_HLG else MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+                setInteger(MediaFormat.KEY_COLOR_RANGE,MediaFormat.COLOR_RANGE_LIMITED)
+                setInteger(MediaFormat.KEY_BIT_RATE,width*height*8)
+                setInteger(MediaFormat.KEY_FRAME_RATE,fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1)
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES,0)
             }
+            video.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface=video.createInputSurface()
+            muxer=MediaMuxer(videoFile.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            video.start()
+            worker=Thread({ drain() },"camera-encoder-output").apply { start() }
             audio=CaptureAudio(audioFile,cache,clock,failure)
         } catch (e: Throwable) { close(); throw e }
     }
     fun appendAudio(pcm: FloatArray,timestamp: Long) { audio?.append(pcm,timestamp) }
     fun start() {
-        began=true
-        if (sdr!=null) sdr.start()
-        else { resumeAfter=System.nanoTime(); clock.start(resumeAfter); syncFrame() }
+        began=true; resumeAfter=System.nanoTime(); clock.start(resumeAfter)
+        syncAt=resumeAfter; syncFrame()
     }
     fun videoFrame(timestamp: Long) {
-        if (sdr!=null && began && firstVideo==Long.MIN_VALUE) {
-            firstVideo=timestamp
-            clock.start(timestamp)
-        }
+        if (timestamp>=syncAt) { syncAt=Long.MAX_VALUE; syncFrame() }
+        if (began) clock.time(timestamp)?.let { elapsedSeconds=max(elapsedSeconds,it/1e9+1.0/fps) }
     }
-    fun pause() { clock.pause(System.nanoTime()); sdr?.pause() }
+    val pausedSeconds get()=clock.closedTime()/1e9
+    fun pause() { clock.pause(System.nanoTime()) }
     fun resume() {
         resumeAfter=System.nanoTime(); clock.resume(resumeAfter)
-        if (sdr!=null) sdr.resume() else { waitKey=true; syncFrame() }
+        waitKey=true; syncAt=resumeAfter; syncFrame()
     }
-    private fun syncFrame() { video?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME,0) }) }
+    private fun syncFrame() { video.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME,0) }) }
 
     private fun drain() {
         var track=-1
@@ -101,7 +87,7 @@ class CaptureRecorder(
         try {
             var idle=0
             while (true) {
-                val index=video!!.dequeueOutputBuffer(info,10000)
+                val index=video.dequeueOutputBuffer(info,10000)
                 if (index==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     track=muxer!!.addTrack(video.outputFormat); muxer!!.start(); muxing=true
                 } else if (index>=0) {
@@ -129,22 +115,13 @@ class CaptureRecorder(
     fun stop() {
         clock.stop(System.nanoTime())
         ended=true
-        val duration = if (sdr!=null) {
-            sdr.stop()
-            val ex=MediaExtractor()
-            try {
-                ex.setDataSource(videoFile.path)
-                ex.getTrackFormat(0).getLong(MediaFormat.KEY_DURATION)/1_000_000.0
-            } finally { ex.release() }
-        } else {
-            video!!.signalEndOfInputStream()
-            worker?.join(10000)
-            check(worker?.isAlive!=true) { "Camera encoder timed out" }
-            problem?.let { throw it }
-            check(lastVideo>=0) { "Recording was too short to save" }
-            muxer?.release(); muxer=null
-            (lastVideo+1_000_000L/fps)/1_000_000.0
-        }
+        video.signalEndOfInputStream()
+        worker?.join(10000)
+        check(worker?.isAlive!=true) { "Camera encoder timed out" }
+        problem?.let { throw it }
+        check(lastVideo>=0) { "Recording was too short to save" }
+        muxer?.release(); muxer=null
+        val duration=(lastVideo+1_000_000L/fps)/1_000_000.0
         val priming=audio!!.finish((duration*48000).roundToLong())
         insertedAudioSilence=audio!!.insertedSilence
         audioClockCorrections=audio!!.clockCorrections
@@ -181,9 +158,9 @@ class CaptureRecorder(
     override fun close() {
         if (released) return
         released=true; ended=true
-        runCatching { video?.signalEndOfInputStream() }
+        runCatching { video.signalEndOfInputStream() }
         worker?.join(6000)
-        runCatching { video?.stop() }; video?.release(); sdr?.release()
+        runCatching { video.stop() }; video.release()
         runCatching { surface.release() }
         audio?.close(); audio=null
         muxer?.release(); muxer=null

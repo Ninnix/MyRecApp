@@ -147,6 +147,7 @@ class RecordingClock {
         if (!ended && last.end != Long.MAX_VALUE) spans.add(Span(max(now, last.end), Long.MAX_VALUE, last.offset + last.end - last.start))
     }
     @Synchronized fun stop(now: Long) { pause(now); ended = true }
+    @Synchronized fun closedTime()=spans.lastOrNull()?.takeIf { it.end!=Long.MAX_VALUE }?.let { it.offset+it.end-it.start } ?: 0L
     @Synchronized fun time(now: Long): Long? {
         val index = spans.indexOfLast { it.start <= now }
         val span = spans.getOrNull(index) ?: return null

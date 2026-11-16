@@ -174,7 +174,7 @@ object HdrColorTest {
                     microphoneInput=TestMicrophone(recording,mic,failure)
                 }
                 try {
-                    repeat(3) {
+                    repeat(12) {
                         val image = writer.dequeueInputImage()
                         image.timestamp = System.nanoTime()
                         var offset = 0
@@ -189,7 +189,7 @@ object HdrColorTest {
                             offset += w * h * 2
                         }
                         writer.queueInputImage(image)
-                        Thread.sleep(100)
+                        Thread.sleep(50)
                     }
                     Thread.sleep(300)
                     if (recording != null) {

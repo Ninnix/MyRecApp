@@ -24,6 +24,15 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
             c.drawPath(q, p)
         }
         when (kind) {
+            "Level horizon" -> {
+                c.drawRoundRect(-8f,-4f,8f,4f,2f,2f,p); c.drawCircle(0f,0f,2f,p)
+                path(-5f,-7f,-5f,-5f); path(5f,5f,5f,7f)
+            }
+            "Follow face" -> {
+                p.pathEffect=DashPathEffect(floatArrayOf(2f,2f),0f); c.drawRoundRect(-8f,-8f,8f,8f,3f,3f,p); p.pathEffect=null
+                c.drawOval(-4f,-5f,4f,5f,p); c.drawPoint(-1.5f,-1f,p); c.drawPoint(1.5f,-1f,p)
+                c.drawArc(-2f,0f,2f,3f,0f,180f,false,p)
+            }
             "Looks" -> for (x in listOf(-7f, 1f)) for (y in listOf(-7f, 1f)) c.drawRoundRect(x, y, x + 5f, y + 5f, .7f, .7f, p)
             "Font" -> {
                 p.style = Paint.Style.FILL; p.typeface = Typeface.create("sans-serif", Typeface.NORMAL)

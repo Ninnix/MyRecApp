@@ -43,6 +43,7 @@ object RecordingRotationTest {
                 .single()
         onMain { capture.switchCamera(front) }
         Thread.sleep(1100)
+        onMain { capture.setMirrorRecording(capture.mirrorPreview) }
         val modes = mutableListOf("SDR")
         if (HdrRecorder.supported(manager, front)) modes.add("HDR")
         if (DualCamera.pair(manager) != null) modes.addAll(listOf("Split", "Diagonal"))
@@ -63,7 +64,10 @@ object RecordingRotationTest {
                     onMain { capture.start() }
                     Thread.sleep(300)
                 }
-                check(capture.recording) { "$mode recording did not start" }
+                check(capture.recording) {
+                    val message=MainActivity::class.java.getDeclaredField("lastMessage").apply { isAccessible=true }.get(a)
+                    "$mode recording did not start: ready=${capture.readyToRecord}, inputs=${capture.concurrentInputSizes().size}, message=$message"
+                }
                 check(a.requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) {
                     "Recording replaced the user's orientation policy"
                 }
@@ -90,13 +94,13 @@ object RecordingRotationTest {
                             check((capture.width > capture.height) == landscape) {
                                 "UI did not rotate at $name"
                             }
-                            val before = android.os.SystemClock.elapsedRealtime() / 1000.0
+                            val before = capture.elapsedSeconds()
                             val image =
                                 capture.cameraFrame(
                                     if (landscape) 320 else 180,
                                     if (landscape) 180 else 320,
                                 ) ?: error("Missing $name preview")
-                            val after = android.os.SystemClock.elapsedRealtime() / 1000.0
+                            val after = capture.elapsedSeconds()
                             samples.add(Sample((before + after) / 2, image, name))
                             save(image, "$mode-$name-preview")
                         }
@@ -131,7 +135,7 @@ object RecordingRotationTest {
                         for (sample in samples) {
                             val frame =
                                 decoder.frame(
-                                    (clip.duration - stopAt + sample.time).coerceAtLeast(0.0),
+                                    sample.time.coerceAtLeast(0.0),
                                     360,
                                     640,
                                 ) ?: error("Missing recorded frame")

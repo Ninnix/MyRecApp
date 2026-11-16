@@ -43,6 +43,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 
 | Option | Checks |
 | --- | --- |
+| `--camera-assistance` | Actual face detection and manual-pan cancellation, gravity and Max angle preview, HDR HLG preservation, portrait/landscape dual dividers/diagonal/shapes/reset, starting-picture gesture ownership across the diagonal, paused camera setup changes; controlled GPU fixtures for no-face hold, mirrored panning, leveled edges, matching decoded movie pixels and reference diagonal coverage/opacity |
 | `--microphone` | Encoded AAC gain/stereo/priming, remembered input gain, portrait/landscape volume controls and clipping hold, one input across camera switches, read-failure recovery, SDR/HDR pause/resume, missing-audio pause/restart and one-minute SDR timing |
 | `--responsive-layout` | Actual screen pixels for Projects headings with cards and after scrolling, portrait/landscape/portrait navigation, inset-aware editor controls, five compact/tall screen sizes, unchanged project and recorder visibility |
 | `--hdr-graphics` | Missing HDR graphics requirements despite camera/codec support, exact extension names, actual ten-bit EGL probe, and preservation of an existing context/framebuffer |

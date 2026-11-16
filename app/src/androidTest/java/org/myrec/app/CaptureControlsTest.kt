@@ -187,10 +187,12 @@ object CaptureControlsTest {
                     tap("settings")
                     control("SDR", false); control("HDR", false); control("Use two cameras", false)
                     click("Camera settings done")
-                    val mark = capture.controlBounds("mark") ?: error("No Mark button")
-                    val pause = capture.controlBounds("pause") ?: error("No Pause button")
-                    if (name == "portrait") check(mark.centerX() > pause.centerX())
-                    else check(mark.centerY() < pause.centerY())
+                    onMain {
+                        val mark = capture.controlBounds("mark") ?: error("No Mark button")
+                        val pause = capture.controlBounds("pause") ?: error("No Pause button")
+                        if (name == "portrait") check(mark.centerX() > pause.centerX())
+                        else check(mark.centerY() < pause.centerY())
+                    }
                     tap("mark")
                     tap("pause")
                     val at = capture.elapsedSeconds()
@@ -335,7 +337,10 @@ object CaptureControlsTest {
                     check(prefs.getInt("lightCustom",0)==Color.rgb(32,128,223))
                     click("Close front light controls")
                     onMain { a.editor.load(Project(name = "Front light source check")); capture.start() }
-                    Thread.sleep(1100); check(capture.recording)
+                    Thread.sleep(1100); check(capture.recording) {
+                        val message=MainActivity::class.java.getDeclaredField("lastMessage").apply { isAccessible=true }.get(a)
+                        "Front light take did not start: ready=${capture.readyToRecord}, message=$message"
+                    }
                     val frameWidth = if (name == "portrait") 180 else 320
                     val frameHeight = if (name == "portrait") 320 else 180
                     onMain { capture.stop() }
@@ -379,12 +384,18 @@ object CaptureControlsTest {
                             .map { capture.getChildAt(it) }
                             .filterIsInstance<TextureView>()
                             .single()
+                    // Keep resize handles clear of the layout toolbar in either orientation.
+                    onMain {
+                        val renderer=Capture::class.java.getDeclaredField("composition").apply { isAccessible=true }.get(capture) as CameraComposition
+                        renderer.reset(); renderer.movePip(-.15f,.22f)
+                    }
                     val initial = bounds()
                     tap("record")
                     Thread.sleep(600)
                     check(capture.recording)
                     tap("torch")
                     check(a.window.attributes.screenBrightness == 1f)
+                    tap("dual")
                     drag(
                         initial.left,
                         initial.centerY(),
@@ -418,7 +429,7 @@ object CaptureControlsTest {
                     check(moved.left < larger.left - texture.width * .1f)
                     check(abs(moved.width() - larger.width()) < 2)
                     check(!capture.front)
-                    tap("pipSwap")
+                    tap("flip")
                     check(capture.front)
                     tap("flip")
                     check(!capture.front)
@@ -505,8 +516,8 @@ object CaptureControlsTest {
             composition.resizePip(1 or 8, -.23f, .32f)
             composition.movePip(-.1f, .1f)
             val r = composition.insetBounds()!!
-            check(abs(r.left - .3f) < .001 && abs(r.top - .16f) < .001)
-            check(abs(r.width() - .55f) < .001 && abs(r.height() - .64f) < .001)
+            check(abs(r.left - .35f) < .001 && abs(r.top - .22f) < .001)
+            check(abs(r.width() - .41f) < .001 && abs(r.height() - .64f) < .001)
             composition.record(recorder.surface, 320, 180)
             recorder.start()
             started = true
@@ -529,7 +540,7 @@ object CaptureControlsTest {
                 for ((time, flip) in listOf(.5 to false, 1.6 to true)) {
                     val frame = decoder.frame(time, 320, 180) ?: error("No inset frame")
                     try {
-                        for ((x, y) in listOf(.1f to .5f, .35f to .2f, .8f to .75f, .9f to .85f)) {
+                        for ((x, y) in listOf(.1f to .5f, .55f to .5f, .7f to .8f, .9f to .85f)) {
                             val inset = r.contains(x, y)
                             val red = inset == flip
                             val pixel =
