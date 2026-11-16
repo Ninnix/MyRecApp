@@ -88,10 +88,14 @@ object Native {
     external fun rnnoiseAvailable(): Boolean
 
     external fun studioAvailable(): Boolean
+    external fun inferenceVersion(): String
 
     external fun neuralLoad(path: String, kind: Int, threads: Int): Long
 
     external fun neuralProcess(handle: Long, mono: FloatArray): FloatArray
+    external fun neuralHop(handle: Long,mono: FloatArray): FloatArray
+    external fun neuralState(handle: Long,state: ByteArray?): ByteArray
+    external fun neuralStereo(left: Long,right: Long,input: java.nio.ByteBuffer,drain: Boolean,output: java.nio.ByteBuffer): Int
 
     external fun neuralFree(handle: Long)
 

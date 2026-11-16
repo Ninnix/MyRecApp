@@ -11,13 +11,18 @@ object ProjectAssets {
         transfers.remove(working.absolutePath); transfers.remove(destination.absolutePath)
     }
 
-    fun states(saved: EditSession) = listOf(saved.project) +
-        saved.undo.map { it.project } + saved.redo.map { it.project }
+    fun states(saved: EditSession) = sequence {
+        yield(saved.project)
+        for (item in saved.undo) yield(item.project)
+        for (item in saved.redo) yield(item.project)
+    }
 
-    fun clips(saved: EditSession) = states(saved).flatMap { it.clips } + saved.originals + saved.captures
+    fun clips(saved: EditSession) = states(saved).flatMap { it.clips.asSequence() } + saved.originals.asSequence() + saved.captures.asSequence()
 
-    fun paths(saved: EditSession): List<String> = clips(saved).let { clips ->
-        (clips.map { it.path } + clips.flatMap { c -> c.effects.flatMap { it.assetPaths() } }).distinct()
+    fun paths(saved: EditSession): List<String> {
+        val media=linkedSetOf<String>();val assets=linkedSetOf<String>()
+        for (clip in clips(saved)) { media.add(clip.path);for (effect in clip.effects) assets.addAll(effect.assetPaths()) }
+        media.addAll(assets);return media.toList()
     }
 
     fun remap(saved: EditSession, id: String, name: String, path: (String) -> String): EditSession {
@@ -27,8 +32,8 @@ object ProjectAssets {
         fun state(p: Project) = p.duplicate().copy(id = id, name = name).also {
             for (i in it.clips.indices) it.clips[i] = clip(it.clips[i])
         }
-        return EditSession(state(saved.project), saved.undo.map { EditRevision(state(it.project)) },
-            saved.redo.map { EditRevision(state(it.project)) },
+        return EditSession(state(saved.project), saved.undo.map { EditRevision.deferred(id,it.captureCount) { state(it.project) } },
+            saved.redo.map { EditRevision.deferred(id,it.captureCount) { state(it.project) } },
             saved.captures.map(::clip), saved.originals.map(::clip))
     }
 }

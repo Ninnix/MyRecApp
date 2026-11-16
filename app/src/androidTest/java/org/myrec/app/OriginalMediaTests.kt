@@ -164,6 +164,15 @@ object OriginalMediaTests {
                         check(find(a.root,"Create recovered project") != null)
                         a.store.problems["recovery-check"] = "Expected unreadable project fixture"
                         a.panels.projects()
+                    }
+                    i.waitForIdleSync()
+                    val deadline=android.os.SystemClock.uptimeMillis()+3000;var ready=false
+                    while (!ready && android.os.SystemClock.uptimeMillis()<deadline) {
+                        onMain { ready=find(a.root,"Browse original files")!=null }
+                        if (!ready) Thread.sleep(20)
+                    }
+                    check(ready)
+                    onMain {
                         check(find(a.root,"Browse original files")!!.performClick())
                         check(find(a.root,"original-ui-a.mp4") != null && find(a.root,"Save all originals to Files") != null)
                         check(a.editor.project == before)

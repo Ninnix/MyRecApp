@@ -6,10 +6,10 @@ import android.media.MediaFormat
 import java.io.File
 
 object VideoFrameIndex {
-    private val cache = linkedMapOf<String, FrameIndex>()
+    private val cache = LinkedHashMap<String,FrameIndex>(8,.75f,true)
     fun get(path: String, progress: (Float?) -> Unit): FrameIndex = get(path,null,progress)
     @Synchronized fun get(path: String, identity: String?, progress: (Float?) -> Unit): FrameIndex {
-        val file = File(path); val key = "$path:${identity ?: "${file.length()}:${file.lastModified()}"}:decoded-pts-1"
+        val file = File(path); val key = "$path:${identity ?: SourceAudio.identity(file) { Thread.currentThread().isInterrupted }}:decoded-pts-1"
         cache[key]?.let { return it }
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -22,7 +22,7 @@ object VideoFrameIndex {
             extractor.selectTrack(track)
             codec = VideoCodecs.decoder(format)
             codec.configure(format, null, null, 0); codec.start()
-            val times = mutableListOf<Double>(); val info = MediaCodec.BufferInfo()
+            var times = DoubleArray(4096);var count=0;val info = MediaCodec.BufferInfo()
             var inputDone = false; var done = false; var lastOutput = System.nanoTime()
             while (!done) {
                 check(System.nanoTime() - lastOutput < 30_000_000_000L) { "Source frame indexing timed out" }
@@ -39,15 +39,18 @@ object VideoFrameIndex {
                 if (output >= 0) {
                     lastOutput = System.nanoTime()
                     if (info.size > 0 && info.presentationTimeUs >= 0 && info.flags and MediaCodec.BUFFER_FLAG_DECODE_ONLY == 0) {
-                        check(times.size < 3000000) { "Too many source frames" }
-                        times.add(info.presentationTimeUs / 1_000_000.0)
+                        check(count < 3000000) { "Too many source frames" }
+                        if (count==times.size) times=times.copyOf(minOf(3000000,times.size*2))
+                        times[count++]=info.presentationTimeUs / 1_000_000.0
                     }
                     done = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                     codec.releaseOutputBuffer(output, false)
                     if (duration > 0) progress((info.presentationTimeUs.toFloat() / duration).coerceIn(0f, 1f))
                 }
             }
-            val index = FrameIndex(times.distinct().sorted().toDoubleArray())
+            times.sort(0,count);var unique=0
+            for (i in 0 until count) if (unique==0 || times[i]!=times[unique-1]) times[unique++]=times[i]
+            val index = FrameIndex(times.copyOf(unique))
             while (cache.isNotEmpty() && (cache.size >= 8 || cache.values.sumOf { it.times.size * 8L } + index.times.size * 8L > 32L * 1024 * 1024))
                 cache.remove(cache.keys.first())
             cache[key] = index

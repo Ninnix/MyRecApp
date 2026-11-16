@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object EditorialTimeline {
-    fun encode(project: Project, originals: List<Clip> = emptyList()): JSONObject {
+    fun encode(project: Project, originals: List<Clip> = emptyList(),projectData: JSONObject?=null): JSONObject {
         val rate = project.fps.toDouble()
         fun time(frames: Double) = JSONObject().put("OTIO_SCHEMA", "RationalTime.1").put("rate", rate).put("value", frames)
         fun range(start: Double, duration: Double) = JSONObject().put("OTIO_SCHEMA", "TimeRange.1")
@@ -98,6 +98,7 @@ object EditorialTimeline {
             }, "Audio") + tracks(pictures, "Video")))
         return JSONObject().put("OTIO_SCHEMA", "Timeline.1").put("name", project.name)
             .put("global_start_time", time(0.0)).put("tracks", stack).put("metadata", JSONObject().put("MyRec",
-                "Source conform. MyRec grades, overlays, mixes and custom transitions need recreation in the external editor."))
+                "Source conform. MyRec grades, overlays, mixes and custom transitions need recreation in the external editor.")
+                .apply { projectData?.let { put("org.myrec.project",it) } })
     }
 }

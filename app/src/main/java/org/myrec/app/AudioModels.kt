@@ -18,6 +18,7 @@ object AudioModels {
     private val verified = mutableSetOf<Int>()
 
     fun configure(context: Context, directory: File) {
+        synchronized(this) { verified.clear() }
         root = directory
         manifest =
             JSONObject(
@@ -46,7 +47,7 @@ object AudioModels {
         if (!::manifest.isInitialized) return false
         val dir = directory(name)
         val files = spec(name).getJSONArray("files")
-        return File(dir, "ready").let { it.isFile && it.readText() == version(name) } &&
+        return File(dir, "ready").let { it.isFile && (it.readText() == version(name) || kind(name)==0 && it.readText()=="deepfilter-v3-c-1") } &&
             (0 until files.length()).all {
                 val entry = files.getJSONObject(it)
                 File(dir, entry.getString("name")).length() == entry.getLong("bytes")
@@ -64,6 +65,7 @@ object AudioModels {
                 "$name model did not verify; download it again"
             }
         }
+        if (kind(name)==0) DeepFilterModel.prepare(directory(name))
         verified.add(kind(name))
     }
 

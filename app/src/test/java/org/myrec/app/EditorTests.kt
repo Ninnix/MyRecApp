@@ -15,6 +15,7 @@ fun main() {
         passed++
         println("PASS $name")
     }
+    ArchiveMetadataTests.run(::test)
     TitleModelTests.run(::test)
     HdrColorModelTests.run(::test)
     TextOwnershipTests.run(::test)

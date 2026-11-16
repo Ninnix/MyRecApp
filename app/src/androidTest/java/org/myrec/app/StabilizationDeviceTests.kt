@@ -191,17 +191,17 @@ object StabilizationDeviceTests {
             future.getJSONArray("clips").getJSONObject(0).getJSONArray("effects").getJSONObject(0).put("algorithm",6)
             check(runCatching { a.store.decode(future) }.exceptionOrNull() is NewerProject)
         }
-        test("stabilization cancellation interrupts source analysis without publishing partial cache data") {
+        test("stabilization cancellation preserves checked progress without publishing a partial plan") {
             val c = stabilized.duplicate().apply { sourceIn = .13; sourceOut = 1.87 }
             c.effects.single().values.apply { put("referenceStart",".13"); put("referenceEnd","1.87") }
             val folder = StabilizationRenderer.directory!!
-            val before = folder.listFiles().orEmpty().associate { it.name to SourceAudio.hash(it) }
+            val before = folder.listFiles().orEmpty().filter { it.extension!="checkpoint" }.associate { it.name to SourceAudio.hash(it) }
             var polls = 0
             val error = runCatching {
                 Frames(cancelled = { ++polls > 6 }).use { it.render(project.copy(clips = mutableListOf(c)),0.0,320,180) }
             }.exceptionOrNull()
             check(error is java.io.InterruptedIOException && polls > 6) { "Cancellation did not interrupt analysis: $error" }
-            check(folder.listFiles().orEmpty().associate { it.name to SourceAudio.hash(it) } == before)
+            check(folder.listFiles().orEmpty().filter { it.extension!="checkpoint" }.associate { it.name to SourceAudio.hash(it) } == before)
         }
         test("stabilization comparison holds the same source frame without preparing motion or saving a bypass") {
             val c = stabilized.duplicate().apply { sourceIn = .13; sourceOut = 1.87 }
@@ -218,27 +218,28 @@ object StabilizationDeviceTests {
             check(folder.listFiles().orEmpty().associate { it.name to SourceAudio.hash(it) } == before)
             check(a.store.decode(a.store.encode(scope)) == scope)
         }
-        test("cancelling a stabilization inspector stops pending source work and preserves the edit") {
+        test("Cancel preserves the edit with cached or pending stabilization work") {
             val before = project.duplicate().apply { clips.single().effects.clear() }
             val folder = StabilizationRenderer.directory!!
-            val saved = folder.listFiles().orEmpty().associate { it.name to SourceAudio.hash(it) }
+            val saved = folder.listFiles().orEmpty().filter { it.extension!="checkpoint" }.associate { it.name to SourceAudio.hash(it) }
             onMain {
                 a.editor.load(before.duplicate()); a.editor.range = .13..1.87; a.editor.cursor = .5
                 a.panels.effect("Stabilize")
             }
-            val start = SystemClock.uptimeMillis()+10000
+            val start = SystemClock.uptimeMillis()+500
             var preparing = false
             while (!preparing && SystemClock.uptimeMillis() < start) {
                 onMain { preparing = a.editorView.preparing != null }; if (!preparing) Thread.sleep(20)
             }
-            check(preparing) { "Inspector analysis did not start" }
             click("Cancel")
             val end = SystemClock.uptimeMillis()+3000
             while (preparing && SystemClock.uptimeMillis() < end) {
                 onMain { preparing = a.editorView.preparing != null }; if (preparing) Thread.sleep(20)
             }
             check(!preparing && a.editor.project == before && !a.editor.canUndo)
-            check(folder.listFiles().orEmpty().associate { it.name to SourceAudio.hash(it) } == saved)
+            val after=folder.listFiles().orEmpty().filter { it.extension!="checkpoint" }.associate { it.name to SourceAudio.hash(it) }
+            check(saved.all { (name,hash) -> after[name]==hash })
+            for (name in after.keys-saved.keys) check(StabilizationCache.read(File(folder,name),name.substringBeforeLast('.'))!=null)
         }
         for ((name,orientation) in listOf("portrait" to ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,"landscape" to ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
             test("$name stabilization inspector compares cancels applies and undoes levels") {

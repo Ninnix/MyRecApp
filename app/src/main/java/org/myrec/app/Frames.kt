@@ -638,7 +638,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         val mirror = fx.lastOrNull { it.kind == "Mirror" }
         if (mirror != null)
             canvas.scale(
-                if (mirror.number("vertical") == 1f) 1f else -1f,
+                if (mirror.number("horizontal",if (mirror.number("vertical")==1f) 0f else 1f)==1f) -1f else 1f,
                 if (mirror.number("vertical") == 1f) -1f else 1f,
                 rect.centerX(),
                 rect.centerY(),

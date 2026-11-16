@@ -8,7 +8,7 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ScrollView
+import android.widget.ListView
 import android.widget.TextView
 import java.io.File
 
@@ -86,16 +86,16 @@ object ResponsiveLayoutTests {
             test("$name Projects draws both headings above the project cards") { heading("projects-$name") }
             if (orientation == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) {
                 test("$name Projects headings survive scrolling back from the project list") {
-                    var scroll: ScrollView? = null
+                    var scroll: ListView? = null
                     main {
                         fun visit(v: View) {
-                            if (v is ScrollView) scroll=v
+                            if (v is ListView) scroll=v
                             if (v is ViewGroup) repeat(v.childCount) { visit(v.getChildAt(it)) }
                         }
-                        visit(a.root); scroll!!.scrollTo(0,scroll!!.getChildAt(0).height)
+                        visit(a.root);scroll!!.setSelection(scroll!!.adapter.count-1)
                     }
                     Thread.sleep(200)
-                    main { scroll!!.scrollTo(0,0) }
+                    main { scroll!!.setSelection(0) }
                     Thread.sleep(200)
                     heading("projects-$name-scrolled")
                 }

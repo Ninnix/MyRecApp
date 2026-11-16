@@ -115,5 +115,47 @@ object StabilizationTests {
             var polls = 0
             check(runCatching { StabilizationPath.make(noisy,StabilizationLevel.Strong) { ++polls > 1 } }.exceptionOrNull() is java.io.InterruptedIOException)
         }
+        test("stabilization journals recover complete blocks and reject torn or changed motion") {
+            val folder=kotlin.io.path.createTempDirectory("motion-journal").toFile();val file=File(folder,"motion.checkpoint");val key="a".repeat(64)
+            fun open()=StabilizationJournal(file,key,640,360,20.0,0.0)
+            try {
+                val samples=List(520) { StabilizationSample(it/30.0,StabilizationPose(it*.2),0) }
+                open().use { journal -> samples.forEach(journal::add) }
+                open().use { check(it.samples==samples) }
+                val bytes=file.readBytes()
+                file.writeBytes(bytes.copyOf(bytes.size-10))
+                open().use { check(it.samples==samples.take(512)) }
+                file.writeBytes(bytes.also { it[it.lastIndex-50]=(it[it.lastIndex-50].toInt() xor 1).toByte() })
+                open().use { check(it.samples==samples.take(512)) }
+                StabilizationJournal(file,"b".repeat(64),640,360,20.0,0.0).use { check(it.samples.isEmpty()) }
+            } finally { folder.deleteRecursively() }
+        }
+        test("motion cache retirement stops at its budget and preserves the active range and originals") {
+            val folder=kotlin.io.path.createTempDirectory("motion-retirement").toFile()
+            try {
+                val files=listOf("a".repeat(64)+".path","b".repeat(64)+".checkpoint","c".repeat(64)+".path").mapIndexed { j,name ->
+                    File(folder,name).apply { writeBytes(ByteArray(50));check(setLastModified(1000000L+j*10000)) }
+                }
+                val original=File(folder,"original.mp4").apply { writeBytes(ByteArray(1000)) }
+                StabilizationCache.retire(folder,"c".repeat(64),110)
+                check(!files[0].exists() && files[1].exists() && files[2].exists() && original.length()==1000L)
+            } finally { folder.deleteRecursively() }
+        }
+        test("audio checkpoints verify both recurrent states and the complete wet prefix") {
+            val folder=kotlin.io.path.createTempDirectory("audio-journal").toFile();val file=File(folder,"state");val pcm=File(folder,"audio")
+            try {
+                pcm.writeBytes(ByteArray(4096) { it.toByte() })
+                val hash=AudioCheckpoint.prefix(pcm,4000) { false }.digest()
+                val state=AudioCheckpoint.State(48000,46560,hash,arrayOf(ByteArray(1024) { it.toByte() },ByteArray(1024) { (it/2).toByte() }))
+                AudioCheckpoint.write(file,"source:runtime",state)
+                val saved=AudioCheckpoint.read(file,"source:runtime")!!
+                check(saved.read==48000L && saved.states.indices.all { saved.states[it].contentEquals(state.states[it]) })
+                check(AudioCheckpoint.read(file,"different runtime")==null)
+                val bytes=file.readBytes();bytes[100]=(bytes[100].toInt() xor 1).toByte();file.writeBytes(bytes)
+                check(AudioCheckpoint.read(file,"source:runtime")==null)
+                pcm.appendBytes(byteArrayOf(1,2,3));check(AudioCheckpoint.prefix(pcm,4000) { false }.digest().contentEquals(hash))
+                check(runCatching { AudioCheckpoint.prefix(pcm,5000) { false } }.isFailure)
+            } finally { folder.deleteRecursively() }
+        }
     }
 }

@@ -6,6 +6,7 @@ import android.system.OsConstants
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
@@ -13,6 +14,7 @@ import org.json.JSONObject
 
 data class CaptureReceipt(val id: String, val project: String, val filename: String,
                           val insertion: Double? = null, val layer: Boolean = false)
+data class ProjectCard(val project: Project,val duration: Double,val takes: Int,val preview: Clip?)
 
 class NewerProject : IOException("This project was saved by a newer MyRec. Its files have been kept.")
 
@@ -76,15 +78,45 @@ class ProjectStore(val root: File) {
 
     private fun revisions(project: String) = File(root, "revisions/${id(project)}")
 
+    private fun recovery(project: String,hash: String,data: ByteArray) {
+        val file=File(revisions(project),"$hash.recovery")
+        if (file.isFile) return
+        val bytes=ByteArrayOutputStream().also { out -> java.util.zip.GZIPOutputStream(out).use { it.write(data) } }.toByteArray()
+        write(file,bytes)
+    }
+    private fun recoverRevision(project: String,hash: String): ByteArray? = runCatching {
+        val file=File(revisions(project),"$hash.recovery");require(file.length() in 1..64L*1024*1024)
+        val data=java.util.zip.GZIPInputStream(file.inputStream()).use { input ->
+            val out=ByteArrayOutputStream();val buffer=ByteArray(65536)
+            while (true) { val n=input.read(buffer);if (n<0) break;require(out.size()+n<=64*1024*1024);out.write(buffer,0,n) }
+            out.toByteArray()
+        }
+        require(sha(data)==hash);val header=JSONObject(String(data,Charsets.UTF_8));checkVersion(header);require(header.getString("id")==project)
+        data
+    }.getOrNull()
+
+    private fun checkedRevision(project: String,hash: String): String {
+        require(hash.matches(Regex("[0-9a-f]{64}")))
+        val file=File(revisions(project),"$hash.json");val data=runCatching { bytes(file) }.getOrNull()
+        if (data!=null && sha(data)==hash) recovery(project,hash,data)
+        else {
+            val restored=recoverRevision(project,hash) ?: error("An editing-history file is damaged. Its files have been kept.")
+            preserve(file,project);write(file,restored)
+        }
+        return hash
+    }
+
     private fun revision(p: Project, cached: String? = null): String {
         if (cached != null) {
             val file = File(revisions(p.id), "$cached.json")
             val data = runCatching { bytes(file) }.getOrNull()
-            if (data != null && sha(data) == cached) return cached
+            if (data != null && sha(data) == cached) { recovery(p.id,cached,data);return cached }
         }
         val data = encode(p).toString().toByteArray(Charsets.UTF_8)
+        require(data.size<=64*1024*1024) { "This editing state exceeds the project file limit. The previous save has been kept." }
         val hash = sha(data)
         val file = File(revisions(p.id), "$hash.json")
+        recovery(p.id,hash,data)
         val previous = runCatching { bytes(file) }.getOrNull()
         if (previous == null || !previous.contentEquals(data)) {
             if (file.exists()) preserve(file, p.id)
@@ -114,7 +146,7 @@ class ProjectStore(val root: File) {
         }
     }
 
-    private fun read(file: File): EditSession {
+    private fun read(file: File,withHistory: Boolean=true): EditSession {
         val data = bytes(file)
         val o = JSONObject(String(data, Charsets.UTF_8))
         checkVersion(o)
@@ -129,23 +161,37 @@ class ProjectStore(val root: File) {
             check(it.captureCount in 0..captures.size) { "Invalid recording history" }
         }
         fun history(key: String): List<EditRevision> {
+            if (!withHistory) return emptyList()
             val array = o.optJSONArray(key) ?: return emptyList()
             require(array.length() <= 100000) { "Too many editing states" }
             return (0 until array.length()).map { i ->
                 val hash = array.getString(i)
-                EditRevision(load(hash), hash)
+                require(hash.matches(Regex("[0-9a-f]{64}"))) { "Invalid history reference" }
+                val data=bytes(File(revisions(project),"$hash.json"))
+                check(sha(data)==hash) { "An editing-history file is damaged" }
+                val header=JSONObject(String(data,Charsets.UTF_8));checkVersion(header)
+                check(header.getString("id")==project) { "History belongs to another project" }
+                val count=integer(header,"captureCount",0)
+                check(count in 0..captures.size.toLong()) { "Invalid recording history" }
+                EditRevision.deferred(project,count.toInt(),hash) { load(hash) }
             }
         }
         val p = load(o.getString("state"))
         p.name = o.getString("name")
         val saved = EditSession(p, history("undo"), history("redo"), captures,
             clips(o.optJSONArray("originals")))
-        knownIndexes.add(sha(data))
+        if (withHistory) knownIndexes.add(sha(data))
         return saved
     }
 
     private fun preserve(file: File, project: String) {
-        if (file.exists()) write(File(root, "damaged/${id(project)}/${uid()}-${file.name}"), file.readBytes())
+        if (!file.isFile) return
+        val target=File(root,"damaged/${id(project)}/${uid()}-${file.name}");directory(target.parentFile!!)
+        val temporary=File(target.parentFile,".${uid()}.partial")
+        try {
+            FileOutputStream(temporary).use { out -> file.inputStream().use { it.copyTo(out) };out.fd.sync() }
+            Os.rename(temporary.path,target.path);sync(target.parentFile!!)
+        } finally { temporary.delete() }
     }
 
     private fun backupOrder(file: File) = file.name.substringBefore('-', "").toLongOrNull() ?: file.lastModified()
@@ -154,14 +200,14 @@ class ProjectStore(val root: File) {
         .listFiles()?.filter { it.extension == "json" }?.sortedWith(compareByDescending<File> { backupOrder(it) }.thenByDescending { it.name })
         ?: emptyList()
 
-    private fun recovered(file: File): EditSession {
-        try { return read(file) }
+    private fun recovered(file: File,withHistory: Boolean=true): EditSession {
+        try { return read(file,withHistory) }
         catch (e: NewerProject) { throw e }
         catch (e: Exception) {
             val project = file.nameWithoutExtension
             for (backup in backups(project)) {
                 try {
-                    val saved = read(backup)
+                    val saved = read(backup,withHistory)
                     check(saved.project.id == project)
                     problems[project] = "Recovered ${saved.project.name} from an earlier project index. The damaged files have been kept."
                     return saved
@@ -205,17 +251,18 @@ class ProjectStore(val root: File) {
     @Synchronized
     fun save(session: EditSession, makeCurrent: Boolean = true) {
         val saved = resolvedSources(session)
+        require(saved.undo.size<=100000 && saved.redo.size<=100000) { "This project exceeds the history limit. The previous save has been kept." }
         val p = saved.project
         id(p.id)
         validate(p)
-        require((listOf(p) + saved.undo.map { it.project } + saved.redo.map { it.project })
-            .all { it.captureCount in 0..saved.captures.size }) { "Invalid recording history" }
+        require(p.captureCount in 0..saved.captures.size && (saved.undo+saved.redo)
+            .all { it.projectId==p.id && it.captureCount in 0..saved.captures.size }) { "Invalid recording history" }
         val target = File(root, "${p.id}.json")
         fun history(items: List<EditRevision>) = JSONArray().apply {
             for (item in items) {
-                check(item.project.id == p.id) { "History belongs to another project" }
-                val hash = revision(item.project, item.file)
-                item.file = hash
+                check(item.projectId == p.id) { "History belongs to another project" }
+                val hash=if (item.deferred && item.file!=null) checkedRevision(p.id,item.file!!) else revision(item.project,item.file)
+                item.bind(hash) { state(p.id,hash) }
                 put(hash)
             }
         }
@@ -224,8 +271,10 @@ class ProjectStore(val root: File) {
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
+            put("summary",summary(p))
         }
         val data = o.toString().toByteArray(Charsets.UTF_8)
+        require(data.size<=64*1024*1024) { "This project index exceeds the file limit. The previous save has been kept." }
         if (!target.exists() || !target.readBytes().contentEquals(data)) {
             backup(target)
             write(target, data)
@@ -256,8 +305,9 @@ class ProjectStore(val root: File) {
             }
             catch (e: Exception) { problems["current"] = e.message ?: "Cannot read the current project" }
         }
-        val existing = list()
-        return existing.firstOrNull()?.let { open(it.id) } ?: EditSession(Project())
+        for (card in catalog()) try { return open(card.project.id) }
+        catch (error: Exception) { problems[card.project.id]=error.message ?: "Cannot open project" }
+        return EditSession(Project())
     }
 
     fun current(): Project = currentSession().project
@@ -635,11 +685,45 @@ class ProjectStore(val root: File) {
     fun recentlyDeleted(): List<Project> = list(deleted)
     fun list(): List<Project> = list(root)
 
+    private fun summary(project: Project)=JSONObject().apply {
+        put("duration",project.duration);put("takes",project.clips.map { it.path }.distinct().size)
+        put("width",project.width);put("height",project.height);put("fps",project.fps)
+        project.clips.firstOrNull { it.video }?.let { put("path",it.path);put("time",it.sourceIn) }
+    }
+    fun catalog(recentlyDeleted: Boolean=false): List<ProjectCard> {
+        val directory=if (recentlyDeleted) deleted else root
+        return directory.listFiles()?.filter { it.extension=="json" }?.sortedByDescending { it.lastModified() }?.mapNotNull { file ->
+            try {
+                val data=bytes(file);val index=JSONObject(String(data,Charsets.UTF_8));checkVersion(index)
+                val project=id(index.getString("id"));check(file.name=="$project.json")
+                val cache=File(root,"catalog/$project.json");val hash=sha(data)
+                val prior=runCatching { JSONObject(String(bytes(cache),Charsets.UTF_8)) }.getOrNull()
+                fun card(saved: JSONObject): ProjectCard {
+                    val duration=saved.getDouble("duration");val takes=saved.getInt("takes")
+                    require(duration.isFinite() && duration>=0 && takes in 0..100000)
+                    val p=Project(id=project,name=index.getString("name"),width=saved.getInt("width"),height=saved.getInt("height"),fps=saved.getInt("fps"))
+                    require(p.width in 1..16384 && p.height in 1..16384 && p.fps in 1..240)
+                    val preview=if (saved.has("path")) {
+                        val time=saved.getDouble("time");require(time.isFinite() && time>=0)
+                        Clip(path=saved.getString("path"),sourceIn=time,sourceOut=time+1.0,video=true,audio=false)
+                    } else null
+                    return ProjectCard(p,duration,takes,preview)
+                }
+                val candidates=listOfNotNull(index.optJSONObject("summary"),prior?.takeIf { it.optString("index")==hash }?.optJSONObject("summary"))
+                candidates.firstNotNullOfOrNull { runCatching { card(it) }.getOrNull() } ?: run {
+                    val rebuilt=summary(recovered(file,false).project)
+                    write(cache,JSONObject().put("index",hash).put("summary",rebuilt).toString().toByteArray())
+                    card(rebuilt)
+                }
+            } catch (error: Exception) { problems[file.nameWithoutExtension]=error.message ?: "Cannot open project";null }
+        } ?: emptyList()
+    }
+
     private fun list(directory: File): List<Project> = directory.listFiles()
         ?.filter { it.extension == "json" }
         ?.sortedByDescending { it.lastModified() }
         ?.mapNotNull {
-            try { recovered(it).project }
+            try { recovered(it,false).project }
             catch (e: Exception) { problems[it.nameWithoutExtension] = e.message ?: "Cannot open project"; null }
         } ?: emptyList()
 

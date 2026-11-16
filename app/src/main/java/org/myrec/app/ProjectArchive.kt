@@ -64,75 +64,87 @@ object ProjectArchive {
             progress((i + 1f) / assetPaths.size.coerceAtLeast(1) * .1f)
         }
         val portable = ProjectAssets.remap(saved, saved.project.id, saved.project.name) { paths.getValue(it) }
-        val metadata = linkedMapOf<String, ByteArray>()
-        fun state(p: Project) = store.encode(p).toString().toByteArray(Charsets.UTF_8)
-        fun history(items: List<EditRevision>) = JSONArray().apply {
-            for (item in items) {
-                val data = state(item.project)
-                val name = "History/${hash(data)}.json"
-                metadata[name] = data
-                put(name)
+        ArchiveMetadata(target.parentFile!!,METADATA).use { metadata ->
+            fun state(p: Project) = store.encode(p).toString().toByteArray(Charsets.UTF_8)
+            fun history(items: List<EditRevision>) = JSONArray().apply {
+                for (item in items) {
+                    val data = state(item.project)
+                    val name = "History/${hash(data)}.json"
+                    metadata[name] = data
+                    put(name)
+                }
             }
-        }
-        fun clips(items: List<Clip>) = store.encode(Project(id = "media", clips = items.toMutableList())).getJSONArray("clips")
-        metadata["project.json"] = state(portable.project)
-        metadata["history.json"] = JSONObject().apply {
-            put("format", "MyRec project"); put("version", 1)
-            put("undo", history(portable.undo)); put("redo", history(portable.redo))
-            put("captures", clips(portable.captures)); put("originals", clips(portable.originals))
-        }.toString().toByteArray(Charsets.UTF_8)
-        metadata["Timeline.otio"] = EditorialTimeline.encode(portable.project, portable.originals).toString(2).toByteArray(Charsets.UTF_8)
-        val integrity = JSONObject()
-        val partial = File(target.parentFile, ".archive-${uid()}.partial")
-        val total = files.values.sumOf { it.length() }.coerceAtLeast(1)
-        var written = 0L
-        try {
-            FileOutputStream(partial).use { raw -> ZipOutputStream(raw).use { zip ->
-                fun entry(name: String, size: Long, write: (MessageDigest) -> Unit) {
-                    checkCancelled(cancelled)
-                    zip.putNextEntry(ZipEntry(name))
-                    val digest = MessageDigest.getInstance("SHA-256")
-                    write(digest)
-                    zip.closeEntry()
-                    integrity.put(name, JSONObject().put("bytes", size).put("sha256", hex(digest.digest())))
-                }
-                for ((name, data) in metadata) entry(name, data.size.toLong()) { digest ->
-                    zip.write(data); digest.update(data)
-                }
-                for ((name, file) in files) {
-                    val size = file.length()
-                    entry(name, size) { digest ->
-                        var count = 0L
-                        file.inputStream().use { input ->
-                            val buffer = ByteArray(128 * 1024)
-                            while (true) {
-                                checkCancelled(cancelled)
-                                val n = input.read(buffer)
-                                if (n < 0) break
-                                zip.write(buffer, 0, n); digest.update(buffer, 0, n)
-                                written += n; count += n
-                                progress(.1f + .9f * written / total)
+            fun clips(items: List<Clip>) = store.encode(Project(id = "media", clips = items.toMutableList())).getJSONArray("clips")
+            metadata["project.json"] = state(portable.project)
+            metadata["history.json"] = JSONObject().apply {
+                put("format", "MyRec project"); put("version", 1)
+                put("undo", history(portable.undo)); put("redo", history(portable.redo))
+                put("captures", clips(portable.captures)); put("originals", clips(portable.originals))
+            }.toString().toByteArray(Charsets.UTF_8)
+            metadata["Timeline.otio"] = EditorialTimeline.encode(portable.project,portable.originals,store.encode(portable.project)).toString(2).toByteArray(Charsets.UTF_8)
+            require(metadata.count+files.size+1<=100000) { "Too many archive entries" }
+            val integrity = JSONObject()
+            val partial = File(target.parentFile, ".archive-${uid()}.partial")
+            val total = files.values.sumOf { it.length() }.coerceAtLeast(1)
+            var written = 0L
+            try {
+                FileOutputStream(partial).use { raw -> ZipOutputStream(raw).use { zip ->
+                    fun entry(name: String, size: Long, write: (MessageDigest) -> Unit): String {
+                        checkCancelled(cancelled)
+                        zip.putNextEntry(ZipEntry(name))
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        write(digest)
+                        zip.closeEntry()
+                        val sum=hex(digest.digest())
+                        integrity.put(name,JSONObject().put("bytes",size).put("sha256",sum));return sum
+                    }
+                    for ((name, staged) in metadata) {
+                        val actual=entry(name,staged.file.length()) { digest ->
+                            staged.file.inputStream().use { input ->
+                                val buffer=ByteArray(131072)
+                                while (true) { checkCancelled(cancelled);val n=input.read(buffer);if (n<0) break;zip.write(buffer,0,n);digest.update(buffer,0,n) }
                             }
                         }
-                        check(count == size) { "A source changed during export" }
+                        check(actual==staged.hash) { "Staged archive metadata changed" }
                     }
-                    if (!name.endsWith(".mirror") && !name.endsWith(".primaries"))
-                        check(integrity.getJSONObject(name).getString("sha256") == name.substringAfter("Media/").substringBefore('.').substringBefore('-')) {
-                            "A source changed during export"
+                    for ((name, file) in files) {
+                        val size = file.length()
+                        entry(name, size) { digest ->
+                            var count = 0L
+                            file.inputStream().use { input ->
+                                val buffer = ByteArray(128 * 1024)
+                                while (true) {
+                                    checkCancelled(cancelled)
+                                    val n = input.read(buffer)
+                                    if (n < 0) break
+                                    zip.write(buffer, 0, n); digest.update(buffer, 0, n)
+                                    written += n; count += n
+                                    progress(.1f + .9f * written / total)
+                                }
+                            }
+                            check(count == size) { "A source changed during export" }
                         }
-                }
-                zip.putNextEntry(ZipEntry("integrity.json"))
-                zip.write(JSONObject().put("version", 1).put("files", integrity).toString().toByteArray())
-                zip.closeEntry(); zip.finish(); raw.fd.sync()
-            } }
-            check(partial.renameTo(target)) { "Cannot finish project archive" }
-        } finally { partial.delete() }
+                        if (!name.endsWith(".mirror") && !name.endsWith(".primaries"))
+                            check(integrity.getJSONObject(name).getString("sha256") == name.substringAfter("Media/").substringBefore('.').substringBefore('-')) {
+                                "A source changed during export"
+                            }
+                    }
+                    val receipt=JSONObject().put("version",1).put("files",integrity).toString().toByteArray()
+                    require(metadata.bytes+receipt.size<=METADATA) { "Editing history exceeds the archive metadata limit" }
+                    zip.putNextEntry(ZipEntry("integrity.json"))
+                    zip.write(receipt)
+                    zip.closeEntry(); zip.finish(); raw.fd.sync()
+                } }
+                check(partial.renameTo(target)) { "Cannot finish project archive" }
+            } finally { partial.delete() }
+        }
     }
 
     data class Restored(val project: Project, val missing: List<String>)
 
     fun restore(store: ProjectStore, archive: File, cancelled: () -> Boolean = { false },
         progress: (Float) -> Unit = {}): Restored {
+        if (YouRecArchive.native(archive)) return YouRecArchive.restore(store,archive,cancelled,progress)
         val id = uid()
         val working = File(store.media, ".restore-$id")
         val destination = File(store.media, id)

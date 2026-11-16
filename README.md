@@ -60,7 +60,13 @@ Edits leave the source files alone. Undo and redo survive reopening and project
 switching; ordinary new recordings stay present through earlier editor undo.
 Projects can be duplicated with independent media or transferred as checked ZIP
 archives, including originals, history, overlays, and an OpenTimelineIO source
-conform. Export writes H.264 SDR or, on capable devices, HEVC 10-bit HLG with
+conform. Compatible project ZIPs can exchange supported edits with YouRec;
+processing that cannot be preserved is refused. Standalone `.otio` import keeps
+source timing and can restore the complete MyRec edit embedded in its metadata.
+Noise reduction processes complete stereo sources continuously and can resume
+interrupted preparation. Long undo histories load on demand.
+
+Export writes H.264 SDR or, on capable devices, HEVC 10-bit HLG with
 AAC audio to `Movies/MyRec`. HDR and Log editing use half-float working images;
 HDR export requires a decoder and recording surface that preserve ten bits.
 Color grading includes local Log highlight recovery, temperature/tint white
@@ -85,7 +91,11 @@ reference; see the editing guide for current limits.
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
-Release 0.1.5 reduces the offline caption download to 636 MB, including the
+Release 0.1.6 adds continuous stereo noise reduction with resumable preparation,
+recoverable stabilization analysis, project interchange, and faster loading of
+long histories and project libraries.
+
+The offline caption download is 636 MB, including the
 tokenizer, while retaining Qwen3-ASR-0.6B. Its C11 GGUF backend keeps the decoder
 weights packed and adds parallel float/NEON processing. Small English/Italian
 comparisons showed faster recognition and lower memory use; results depend on
@@ -94,7 +104,7 @@ the phone and audio. Existing projects and subtitles remain usable.
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.5](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.5), install it, and
+[release 0.1.6](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.6), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 

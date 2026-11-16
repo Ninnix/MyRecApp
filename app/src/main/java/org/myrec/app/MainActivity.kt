@@ -124,6 +124,7 @@ class MainActivity : Activity() {
         Studio.directory = File(getExternalFilesDir(null), "models/studio-lava-v1")
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
         AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
+        AudioThermalGate.configure(this)
         Person.configure(this)
         TitleStyle.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))
@@ -252,11 +253,11 @@ class MainActivity : Activity() {
             "export" -> panels.export()
             "undo" -> {
                 playback.pause()
-                editor.undo()
+                try { editor.undo() } catch (error: Exception) { message(error.message ?: "Cannot read this undo state. The edit has been kept.") }
             }
             "redo" -> {
                 playback.pause()
-                editor.redo()
+                try { editor.redo() } catch (error: Exception) { message(error.message ?: "Cannot read this redo state. The edit has been kept.") }
             }
             "snap" -> {
                 editor.snap = !editor.snap
@@ -783,7 +784,7 @@ class MainActivity : Activity() {
     fun importProject() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*", "application/zip", "application/x-zip-compressed"))
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("video/*","application/zip","application/x-zip-compressed","application/json","application/octet-stream"))
             addCategory(Intent.CATEGORY_OPENABLE)
         }, 23)
     }
@@ -860,16 +861,16 @@ class MainActivity : Activity() {
         }
     }
 
-    fun exportProject(project: Project) {
+    fun exportProject(project: Project,yourec: Boolean=false) {
         if (!saveProject()) return
         val cancelled = AtomicBoolean(false)
         panels.progress("Preparing project ZIP…", 0f) { cancelled.set(true) }
         worker.execute {
             val file = File(cacheDir, "MyRec-${uid()}.zip")
             try {
-                ProjectArchive.export(store, project, file, { cancelled.get() }) { value ->
-                    ui.post { panels.updateProgress(value) }
-                }
+                val progress: (Float)->Unit={ value -> ui.post { panels.updateProgress(value) } }
+                if (yourec) YouRecArchive.export(store,project,file,{ cancelled.get() },progress)
+                else ProjectArchive.export(store,project,file,{ cancelled.get() },progress)
                 ui.post {
                     panels.close()
                     saveDocument(file, "application/zip", "${project.name.take(80)}.zip")
@@ -880,7 +881,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun restoreProject(uri: Uri) {
+    private fun restoreProject(uri: Uri,timeline: Boolean=false) {
         if (!saveProject()) return
         val cancelled = AtomicBoolean(false)
         panels.progress("Restoring project…", 0f) { cancelled.set(true) }
@@ -899,9 +900,9 @@ class MainActivity : Activity() {
                         }
                     }
                 }
-                val result = ProjectArchive.restore(store, archive, { cancelled.get() }) { value ->
-                    ui.post { panels.updateProgress(value) }
-                }
+                val progress: (Float)->Unit={ value -> ui.post { panels.updateProgress(value) } }
+                val result=if (timeline) TimelineImport.restore(store,archive,{ cancelled.get() },progress)
+                    else ProjectArchive.restore(store,archive,{ cancelled.get() },progress)
                 ui.post {
                     panels.close()
                     openProject(result.project)
@@ -1157,7 +1158,8 @@ class MainActivity : Activity() {
         }
         if (requestCode == 23) data.data?.let { uri ->
             val type = contentResolver.getType(uri)
-            if (type in listOf("application/zip", "application/x-zip-compressed") ||
+            if (documentName(uri).endsWith(".otio",true)) restoreProject(uri,true)
+            else if (type in listOf("application/zip", "application/x-zip-compressed") ||
                 documentName(uri).endsWith(".zip", true)) restoreProject(uri)
             else {
                 if (!saveProject()) return

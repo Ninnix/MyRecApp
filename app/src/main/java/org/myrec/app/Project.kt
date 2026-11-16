@@ -307,7 +307,20 @@ data class Project(
 
 }
 
-class EditRevision(val project: Project, var file: String? = null)
+class EditRevision private constructor(private var value: Project?,var file: String?,
+    private var read: (() -> Project)?,private var owner: String,private var captures: Int) {
+    constructor(project: Project,file: String?=null):this(project,file,null,project.id,project.captureCount)
+    val project get()=value ?: read!!.invoke()
+    internal val projectId get()=value?.id ?: owner
+    internal val captureCount get()=value?.captureCount ?: captures
+    internal val deferred get()=value==null
+    internal fun bind(hash: String,load: () -> Project) {
+        value?.let { owner=it.id;captures=it.captureCount };file=hash;value=null;read=load
+    }
+    companion object {
+        internal fun deferred(owner: String,captures: Int,file: String?=null,load: () -> Project)=EditRevision(null,file,load,owner,captures)
+    }
+}
 
 data class EditSession(
     val project: Project,

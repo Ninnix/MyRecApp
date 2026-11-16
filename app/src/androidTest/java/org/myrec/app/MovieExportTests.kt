@@ -212,6 +212,22 @@ object MovieExportTests {
                 check(a.editor.project.id == project.id) { "Direct project opening failed" }
                 a.editor.load(project.copy(id = uid(),name = "Another project"))
                 a.panels.projects()
+                fun list(view: android.view.View): android.widget.ListView? {
+                    if (view is android.widget.ListView) return view
+                    if (view is android.view.ViewGroup) for (j in 0 until view.childCount) list(view.getChildAt(j))?.let { return it }
+                    return null
+                }
+                val projects=list(a.root) ?: error("Missing project list")
+                val position=(0 until projects.adapter.count).first { (projects.adapter.getItem(it) as? ProjectCard)?.project?.id==project.id }
+                projects.setSelection(position)
+            }
+            val deadline=android.os.SystemClock.uptimeMillis()+3000;var ready=false
+            while (!ready && android.os.SystemClock.uptimeMillis()<deadline) {
+                onMain { ready=a.root.findViewWithTag<View>("project.options:${project.id}")!=null }
+                if (!ready) Thread.sleep(20)
+            }
+            check(ready)
+            onMain {
                 val options = a.root.findViewWithTag<View>("project.options:${project.id}") ?: error("No options for the saved project")
                 check(options.performClick())
                 check(find(a.choices!!.contentView,"Export video")!!.performClick())

@@ -15,13 +15,14 @@ class AudioCache(internal val root: File) {
     fun get(path: String, cancelled: () -> Boolean = { false }): File {
         if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
         val source = File(path)
-        val hash = SourceAudio.hash(source, cancelled) + "-pcm-v7"
+        val hash = SourceAudio.identity(source, cancelled) + "-pcm-v8"
         val file = File(root, "$hash.f32")
-        if (file.exists()) return file
+        if (PcmCache.valid(file,cancelled)) return file
         val temp = File(root, "$hash.partial")
         try {
             decode(path, temp, cancelled = cancelled)
             check(temp.renameTo(file))
+            PcmCache.seal(file,cancelled)
         } catch (e: Exception) {
             temp.delete()
             throw e
@@ -40,20 +41,11 @@ class AudioCache(internal val root: File) {
         require(speed.isFinite() && speed in .1..128.0)
         if (speed == 1.0 || source.length() == 0L) return source
         val digest = MessageDigest.getInstance("SHA-256")
-        source.inputStream().use { input ->
-            val buffer = ByteArray(128 * 1024)
-            while (true) {
-                if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        digest.update(":wsola-1:${speed.toBits()}".toByteArray())
+        digest.update("wsola-2:${SourceAudio.identity(source,cancelled)}:${speed.toBits()}".toByteArray())
         val key = digest.digest().joinToString("") { "%02x".format(it) }
         val result = File(root, "$key.stretch.f32")
         val frames = (source.length() / 8 / speed).roundToLong()
-        if (result.isFile && result.length() == frames * 8) return result
+        if (result.length() == frames * 8 && PcmCache.valid(result,cancelled)) return result
         val partial = File(root, "$key-${uid()}.partial")
         try {
             val written = Native.audioStretch(source.path, partial.path, speed) { done, total ->
@@ -63,16 +55,17 @@ class AudioCache(internal val root: File) {
             if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
             check(written == frames && partial.length() == frames * 8) { "Cannot prepare pitch-preserved audio" }
             check(partial.renameTo(result)) { "Cannot save prepared audio" }
+            PcmCache.seal(result,cancelled)
             return result
         } finally { partial.delete() }
     }
 
     @Synchronized fun rampPcm(source: File,plan: SpeedRamp,cancelled: ()->Boolean,progress: (Float)->Unit): File {
-        val identity=SourceAudio.hash(source,cancelled)+":wsola-ramp-1:"+plan.native.joinToString(",") { it.toBits().toString() }
+        val identity=SourceAudio.identity(source,cancelled)+":wsola-ramp-1:"+plan.native.joinToString(",") { it.toBits().toString() }
         val key=MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
         val result=File(root,"$key.ramp.f32")
         val frames=(plan.outputTime(source.length()/8/48000.0)*48000).roundToLong()
-        if (result.isFile && result.length()==frames*8) return result
+        if (result.length()==frames*8 && PcmCache.valid(result,cancelled)) return result
         val partial=File(root,"$key-${uid()}.partial")
         try {
             val written=Native.audioRamp(source.path,partial.path,plan.native) { done,total ->
@@ -80,6 +73,7 @@ class AudioCache(internal val root: File) {
             }
             if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
             check(written==frames && partial.length()==frames*8 && partial.renameTo(result)) { "Cannot prepare continuous speed ramp" }
+            PcmCache.seal(result,cancelled)
             return result
         } finally { partial.delete() }
     }
@@ -296,20 +290,19 @@ class AudioMixer(
             .distinct()
             .forEach { files[it] = RandomAccessFile(cache.get(it, cancelled), "r") }
         for (clip in project.clips.filter { it.audio }) {
-            val wet = Studio.prepare(clip, cache, cancelled, progress)
-            val ramp=SpeedRamp.forClip(clip)
-            if (ramp!=null) {
-                ramps[clip.id]=RampAudio(ramp,RandomAccessFile(cache.rampPcm(cache.get(clip.path,cancelled),ramp,cancelled,progress),"r"),
-                    wet?.let { RandomAccessFile(cache.rampPcm(it,ramp,cancelled,progress),"r") })
-                continue
-            }
-            for (speed in clip.playbackPieces().map { it.effectiveRate }.distinct()) {
-                if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
-                if (speed != 1.0 && clip.path to speed !in stretched) {
-                    val dry = cache.stretched(clip.path, speed, cancelled, progress)
-                    stretched[clip.path to speed] = RandomAccessFile(dry, "r")
+            Studio.prepared(clip,cache,cancelled,progress) { wet ->
+                val ramp=SpeedRamp.forClip(clip)
+                if (ramp!=null) {
+                    ramps[clip.id]=RampAudio(ramp,RandomAccessFile(cache.rampPcm(cache.get(clip.path,cancelled),ramp,cancelled,progress),"r"),
+                        wet?.let { RandomAccessFile(cache.rampPcm(it,ramp,cancelled,progress),"r") })
+                } else for (speed in clip.playbackPieces().map { it.effectiveRate }.distinct()) {
+                    if (cancelled()) throw InterruptedIOException("Audio preparation cancelled")
+                    if (speed != 1.0 && clip.path to speed !in stretched) {
+                        val dry = cache.stretched(clip.path, speed, cancelled, progress)
+                        stretched[clip.path to speed] = RandomAccessFile(dry, "r")
+                    }
+                    if (wet != null) studio[clip.id to speed] = RandomAccessFile(cache.stretchPcm(wet, speed, cancelled, progress), "r")
                 }
-                if (wet != null) studio[clip.id to speed] = RandomAccessFile(cache.stretchPcm(wet, speed, cancelled, progress), "r")
             }
         }
     }

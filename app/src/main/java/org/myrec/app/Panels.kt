@@ -1152,7 +1152,7 @@ class Panels(private val a: MainActivity) {
         val body = column()
         root.addView(body, FrameLayout.LayoutParams(-1, -1))
         if (!landscape) space(body, 1f)
-        val scroll = ScrollView(a).apply { isVerticalScrollBarEnabled = false }
+        val scroll = android.widget.ListView(a).apply { isVerticalScrollBarEnabled=false;divider=null;dividerHeight=0 }
         val content = column()
         content.setPadding(
             px(if (landscape) 60f else 16f),
@@ -1160,7 +1160,7 @@ class Panels(private val a: MainActivity) {
             px(if (landscape) 60f else 16f),
             px(18f),
         )
-        scroll.addView(content)
+        scroll.addHeaderView(content,null,false)
         body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         val heading = row()
         val brand =
@@ -1251,14 +1251,17 @@ class Panels(private val a: MainActivity) {
             add(content, pill("‹ Projects", Color.TRANSPARENT, RED) { projects() }, 32f)
             space(content, 10f)
         }
-        val projects = if (deleted) a.store.recentlyDeleted() else a.store.list()
+        val projects = a.store.catalog(deleted)
         if (a.store.problems.isNotEmpty()) {
             hint(content, a.store.problems.values.distinct().joinToString("\n"))
             button(content, "Retry opening project", RED) { a.retryProjects() }
             button(content,"Browse original files",RED) { recoveryOriginals() }
         }
-        val thumbnails = mutableListOf<() -> Unit>()
-        for (project in projects) {
+        val worker=java.util.concurrent.ThreadPoolExecutor(1,1,0L,java.util.concurrent.TimeUnit.MILLISECONDS,
+            java.util.concurrent.ArrayBlockingQueue<Runnable>(16),java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
+        panelClosed={ worker.shutdownNow() }
+        fun card(summary: ProjectCard): View {
+            val project=summary.project
             val card =
                 column().apply {
                     background = shape(Color.rgb(27, 27, 31), 15f)
@@ -1280,7 +1283,7 @@ class Panels(private val a: MainActivity) {
                 }
             val image = FrameLayout(a)
             image.addView(thumbnail, FrameLayout.LayoutParams(-1, -1))
-            if (project.clips.none { it.video })
+            if (summary.preview==null)
                 image.addView(
                     Glyph(a, "Film", MUTED),
                     FrameLayout.LayoutParams(px(20f), px(24f), Gravity.CENTER),
@@ -1361,7 +1364,7 @@ class Panels(private val a: MainActivity) {
                         1 -> a.duplicateProject(project)
                         3 -> originals(project)
                         4 -> { a.openProject(project); if (editor.project.id == project.id) export() }
-                        5 -> a.exportProject(project)
+                        5 -> a.choose("Project format",listOf("MyRec","YouRec")) { a.exportProject(project,it==1) }
                         2 ->
                             a.choose("Delete project?", listOf("Delete project", "Cancel")) {
                                 if (it == 0) {
@@ -1381,7 +1384,7 @@ class Panels(private val a: MainActivity) {
             add(
                 card,
                 text(
-                    "${project.clips.map { it.path }.distinct().size.let { "$it ${if (it == 1) "take" else "takes"}" }} · ${timeLabel(project.duration, false)} edited",
+                    "${summary.takes} ${if (summary.takes==1) "take" else "takes"} · ${timeLabel(summary.duration, false)} edited",
                     8f,
                     MUTED,
                 ),
@@ -1414,14 +1417,13 @@ class Panels(private val a: MainActivity) {
                     38f,
                 )
             } else add(card, buttons, 42f)
-            content.addView(
-                card,
-                LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(12f) },
-            )
-            project.clips
-                .firstOrNull { it.video }
-                ?.let { clip ->
-                    thumbnails.add {
+            val wrapper=FrameLayout(a).apply {
+                setPadding(px(if (landscape) 60f else 16f),0,px(if (landscape) 60f else 16f),px(12f))
+                addView(card,FrameLayout.LayoutParams(-1,-2))
+            }
+            summary.preview?.let { clip ->
+                    wrapper.post { if (!worker.isShutdown) worker.execute {
+                        if (panel!==root || !wrapper.isAttachedToWindow) return@execute
                         val reader = android.media.MediaMetadataRetriever()
                         val bitmap =
                             try {
@@ -1441,18 +1443,20 @@ class Panels(private val a: MainActivity) {
                                 reader.release()
                             }
                         ui.post {
-                            if (panel === root) thumbnail.setImageBitmap(bitmap)
+                            if (panel === root && wrapper.isAttachedToWindow) thumbnail.setImageBitmap(bitmap)
                             else bitmap?.recycle()
                         }
-                    }
+                    } }
                 }
+            return wrapper
         }
+        val footer=column().apply { setPadding(px(16f),0,px(16f),px(18f)) }
         if (!deleted) {
-            space(content, 3f)
+            space(footer, 3f)
             add(
-                content,
+                footer,
                 pill(
-                        "Recently deleted (${a.store.recentlyDeleted().size})",
+                        "Recently deleted (${a.store.catalog(true).size})",
                         Color.TRANSPARENT,
                         RED,
                     ) {
@@ -1462,13 +1466,13 @@ class Panels(private val a: MainActivity) {
                 38f,
             )
         }
-        Thread {
-                for (load in thumbnails) {
-                    if (panel !== root) break
-                    load()
-                }
-            }
-            .start()
+        scroll.addFooterView(footer,null,false)
+        scroll.adapter=object: android.widget.BaseAdapter() {
+            override fun getCount()=projects.size
+            override fun getItem(position: Int)=projects[position]
+            override fun getItemId(position: Int)=position.toLong()
+            override fun getView(position: Int,convertView: View?,parent: android.view.ViewGroup)=card(projects[position])
+        }
         val tabs =
             row().apply {
                 setBackgroundColor(Color.rgb(22, 22, 30))
@@ -2141,6 +2145,7 @@ class Panels(private val a: MainActivity) {
                     if (fx.number("vertical") == 1f) "Vertical" else "Horizontal",
                 ) {
                     fx.values["vertical"] = it.toString()
+                    if (fx.values.containsKey("horizontal")) fx.values["horizontal"]=if (it==0) "1" else "0"
                     renderDraft()
                 }
                 if (existing != null)

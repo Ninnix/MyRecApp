@@ -1,6 +1,6 @@
 {
   "deepfilter": {
-    "version": "deepfilter-v3-c-1",
+    "version": "deepfilter-v3-stream-c-2",
     "directory": "deepfilter-v3",
     "files": [
       {

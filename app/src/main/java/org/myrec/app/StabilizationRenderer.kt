@@ -18,6 +18,14 @@ object StabilizationRenderer {
     private val sources = LinkedHashMap<String,Source>(16,.75f,true)
     private val entries = LinkedHashMap<String,Entry>(8,.75f,true)
     private val analysisLock = Any()
+    private fun weight(entry: Entry)=entry.analysis.samples.size*104L+
+        entry.plans.values.filter { it.samples!==entry.analysis.samples }.sumOf { it.samples.size*104L }
+    private fun trim(keep: Entry) = synchronized(entries) {
+        val budget=min(128L*1024*1024,Runtime.getRuntime().maxMemory()/4)
+        val iterator=entries.entries.iterator()
+        while ((entries.size>8 || entries.values.sumOf(::weight)>budget) && iterator.hasNext())
+            if (iterator.next().value!==keep) iterator.remove()
+    }
     internal fun clear() { synchronized(entries) { entries.clear() }; synchronized(sources) { sources.clear() } }
     private fun digest(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray())
         .joinToString("") { "%02x".format(it) }
@@ -58,22 +66,30 @@ object StabilizationRenderer {
             val analysis = file?.let { StabilizationCache.read(it,key) } ?: try {
                 progress(0f)
                 val stamp = stamp(clip.path)
-                val measured = measure(clip.path,hash,begin,end,requestCancelled,progress)
+                val checkpoint=file?.resolveSibling("$key.checkpoint")
+                val measured = measure(clip.path,hash,begin,end,requestCancelled,progress,checkpoint)
                 check(stamp == stamp(clip.path)) { "Source changed during stabilization analysis" }
                 file?.let { StabilizationCache.write(it,key,measured) }
+                checkpoint?.delete()
+                StabilizationCache.retire(directory,key)
                 measured
             } finally { progress(null) }
             val entry = Entry(analysis,begin)
             synchronized(entries) {
                 entries[key] = entry
-                while (entries.size > 8 || entries.values.sumOf { it.analysis.samples.size*44L } > 32L*1024*1024)
-                    entries.remove(entries.keys.first())
+                trim(entry)
             }
             return entry
         }
     }
-    private fun plan(entry: Entry, effect: Effect, requestCancelled: () -> Boolean) = entry.plans.getOrPut(StabilizationSettings.level(effect)) {
-        StabilizationPath.make(entry.analysis,StabilizationSettings.level(effect)) { requestCancelled() || cancelled() }
+    private fun plan(entry: Entry, effect: Effect, requestCancelled: () -> Boolean): StabilizationPlan {
+        val level=StabilizationSettings.level(effect)
+        val result=synchronized(entry) {
+            entry.plans[level] ?: StabilizationPath.make(entry.analysis,level) { requestCancelled() || cancelled() }.also {
+                entry.plans.clear();entry.plans[level]=it
+            }
+        }
+        trim(entry);return result
     }
     fun status(clip: Clip, effect: Effect): StabilizationPlan? {
         val (begin,end) = StabilizationSettings.range(effect,clip)
@@ -106,24 +122,33 @@ object StabilizationRenderer {
         }
         return index.times[index.last(time)]
     }
-    private fun measure(path: String, hash: String, begin: Double, end: Double, requestCancelled: () -> Boolean, progress: (Float?) -> Unit): StabilizationAnalysis {
+    private fun measure(path: String, hash: String, begin: Double, end: Double, requestCancelled: () -> Boolean, progress: (Float?) -> Unit,checkpoint: File?): StabilizationAnalysis {
         val index = VideoFrameIndex.get(path,hash) { value ->
             if (requestCancelled() || cancelled()) throw InterruptedIOException("Stabilization cancelled")
             progress(value)
         }
         val first = index.last(begin); val last = max(first,index.first(end)-1)
         require(last-first < 600000) { "Too many source frames for stabilization" }
+        require((last-first+1)*320L<Runtime.getRuntime().maxMemory()/2) { "This range exceeds the stabilization memory limit. Choose a shorter range." }
+        val runtime=Runtime.getRuntime();val available=runtime.maxMemory()-(runtime.totalMemory()-runtime.freeMemory())
+        require((last-first+1)*320L+16L*1024*1024<=available) { "Not enough memory to analyze this stabilization range. Choose a shorter range." }
         val (width,height) = ProjectStore.shape(path)
         val ratio = min(1.0,640.0/max(width,height))
         val targetWidth = max(64,(width*ratio).roundToInt()); val targetHeight = max(64,(height*ratio).roundToInt())
-        val samples = ArrayList<StabilizationSample>(last-first+1)
-        var pose = StabilizationPose(); var segment = 0; var tracked = 0
+        val journal=checkpoint?.let { StabilizationJournal(it,key(hash,begin,end),width,height,end-begin,index.times[first]) }
+        val samples = journal?.samples ?: ArrayList<StabilizationSample>(last-first+1)
+        require(samples.size<=last-first+1) { "Invalid stabilization checkpoint" }
+        var pose = samples.lastOrNull()?.pose ?: StabilizationPose(); var segment = samples.lastOrNull()?.segment ?: 0
+        var tracked = max(0,samples.size-1-segment)
+        fun add(sample: StabilizationSample) { if (journal!=null) journal.add(sample) else samples.add(sample) }
+        try {
+        if (samples.isEmpty()) add(StabilizationSample(0.0,pose,segment))
+        progress(samples.size.toFloat()/(last-first+1))
         VideoDecoder(path).use { decoder ->
-            var previous = decoder.frame(index.times[first],targetWidth,targetHeight) ?: error("Cannot analyze source video")
+            var previous = decoder.frame(index.times[first+samples.size-1],targetWidth,targetHeight) ?: error("Cannot analyze source video")
             try {
-                var previousTime = index.times[first]
-                samples.add(StabilizationSample(0.0,pose,segment))
-                for (i in first+1..last) {
+                var previousTime = index.times[first+samples.size-1]
+                for (i in first+samples.size..last) {
                     if (requestCancelled() || cancelled()) throw InterruptedIOException("Stabilization cancelled")
                     val time = index.times[i]
                     val current = decoder.frame(time,targetWidth,targetHeight) ?: error("A stabilization source frame is unreadable")
@@ -136,7 +161,7 @@ object StabilizationRenderer {
                         val next = step.applying(pose)
                         if (motion[4] >= 6 && time-previousTime < .15 && next.valid()) { pose = next; tracked++ }
                         else { segment++; pose = StabilizationPose() }
-                        samples.add(StabilizationSample(max(0.0,time-begin),pose,segment))
+                        add(StabilizationSample(max(0.0,time-begin),pose,segment))
                     } catch (error: Throwable) { current.recycle(); throw error }
                     previous.recycle(); previous = current; previousTime = time
                     if ((i-first)%8 == 0) progress((i-first).toFloat()/(last-first))
@@ -144,5 +169,6 @@ object StabilizationRenderer {
             } finally { previous.recycle() }
         }
         return StabilizationAnalysis(width,height,end-begin,samples,tracked,index.times[first]).also { require(it.valid()) }
+        } finally { journal?.close() }
     }
 }

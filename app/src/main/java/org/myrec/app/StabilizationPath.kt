@@ -12,7 +12,7 @@ enum class StabilizationLevel(val sigma: Double, val maximumZoom: Double, val de
 data class StabilizationPose(val x: Double = 0.0, val y: Double = 0.0,
     val angle: Double = 0.0, val logScale: Double = 0.0) {
     val scale get() = exp(logScale)
-    fun valid() = listOf(x,y,angle,logScale).all { it.isFinite() } && abs(logScale) < 8
+    fun valid() = x.isFinite() && y.isFinite() && angle.isFinite() && logScale.isFinite() && abs(logScale)<8
     fun applying(other: StabilizationPose): StabilizationPose {
         val a = scale*cos(angle); val b = scale*sin(angle)
         return StabilizationPose(a*other.x-b*other.y+x,b*other.x+a*other.y+y,
@@ -44,7 +44,7 @@ data class StabilizationAnalysis(val width: Int, val height: Int, val duration: 
         firstSourceTime.isFinite() && firstSourceTime in 0.0..604800.0 &&
         samples.isNotEmpty() && samples.size <= 600000 && tracked in 0 until samples.size &&
         samples.all { it.time.isFinite() && it.time >= 0 && it.time < duration+.001 && it.pose.valid() && it.segment >= 0 } &&
-        samples.zipWithNext().all { it.first.time < it.second.time && it.first.segment <= it.second.segment }
+        (1 until samples.size).all { samples[it-1].time < samples[it].time && samples[it-1].segment <= samples[it].segment }
 }
 
 data class StabilizationPlan(val width: Int, val height: Int, val samples: List<StabilizationSample>,
@@ -67,6 +67,8 @@ object StabilizationPath {
         require(analysis.valid()) { "Invalid stabilization analysis" }
         fun checkCancelled() { if (cancelled()) throw java.io.InterruptedIOException("Stabilization cancelled") }
         if (level == StabilizationLevel.Off) return StabilizationPlan(analysis.width,analysis.height,emptyList(),1.0,false,analysis.trackingFraction)
+        val runtime=Runtime.getRuntime();val available=runtime.maxMemory()-(runtime.totalMemory()-runtime.freeMemory())
+        require(analysis.samples.size*200L+16L*1024*1024<=available) { "Not enough memory to plan this stabilization range. Choose a shorter range." }
         val source = analysis.samples
         val corrections = ArrayList<StabilizationSample>(source.size)
         val inverses = source.map { it.pose.inverse() }

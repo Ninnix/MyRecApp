@@ -30,6 +30,7 @@ object Studio {
     private var handle = 0L
     private var engine = 2
     private var verified = false
+    private val runtime by lazy { "${Native.inferenceVersion()}:${android.os.Build.FINGERPRINT}" }
     @Volatile var downloadCancelled = false
     val ready
         get() =
@@ -142,6 +143,10 @@ object Studio {
     }
 
     @Synchronized
+    fun <T> prepared(clip: Clip,cache: AudioCache,cancelled: ()->Boolean,progress: (Float)->Unit,use: (File?)->T): T =
+        use(prepare(clip,cache,cancelled,progress))
+
+    @Synchronized
     fun prepare(
         clip: Clip,
         cache: AudioCache,
@@ -166,28 +171,29 @@ object Studio {
             if (effect.number("strength", 1f) <= 0) continue
             val full = effect.from <= 0 && effect.to >= clip.duration && effect.number("animate") == 0f
             val scope = if (full) "source" else "${clip.sourceIn}:${clip.playbackSpans}:${clip.duration}"
-            val model = if (noise) "rnnoise-0.1-stereo-1" else if (neural) AudioModels.version(effect.kind) else if (effect.values["dsp"] == "2") "dsp-2" else "dsp-1"
+            val model = if (noise) "rnnoise-0.1-stereo-1" else if (neural) "${AudioModels.version(effect.kind)}:$runtime" else if (effect.values["dsp"] == "2") "dsp-2" else "dsp-1"
             val recipe = if (full) "${effect.kind}:${effect.values.toSortedMap()}" else parameters(effect)
-            val identity = hash("$VERSION:$model:${SourceAudio.hash(source, cancelled)}:$recipe:$scope")
+            val identity = hash("$VERSION:$model:${SourceAudio.identity(source, cancelled)}:$recipe:$scope")
             val target = File(cacheDirectory, "$identity.f32")
-            if (!target.isFile || target.length() != source.length()) {
+            if (target.length() != source.length() || !PcmCache.valid(target,cancelled)) {
                 var wet: File? = null
                 if (noise) {
                     check(Native.rnnoiseAvailable()) { "Noise reduction is unavailable in this build" }
-                    val key = hash("$VERSION:$model:${SourceAudio.hash(source, cancelled)}")
+                    val key = hash("$VERSION:$model:${SourceAudio.identity(source, cancelled)}")
                     wet = File(cacheDirectory, "$key.wet.f32")
-                    if (wet.length() != source.length()) {
+                    if (wet.length() != source.length() || !PcmCache.valid(wet,cancelled)) {
                         wet.delete()
                         SourceAudio.denoise(source, wet, cancelled) { p -> progress((index + p) / effects.size) }
+                        PcmCache.seal(wet,cancelled)
                     }
                 } else if (neural) {
                     check(AudioModels.ready(effect.kind)) { "Open Enhance audio to download ${effect.kind} first" }
                     check(Native.studioAvailable()) { "Studio audio is unavailable in this build" }
                     val kind = AudioModels.kind(effect.kind)
                     val window = when (kind) { 0 -> SourceAudio.reduction; 1 -> SourceAudio.restoration; else -> SourceAudio.detail }
-                    val wetKey = hash("$VERSION:${AudioModels.version(effect.kind)}:${SourceAudio.hash(source, cancelled)}:$window")
+                    val wetKey = hash("$VERSION:$model:${SourceAudio.identity(source, cancelled)}:$window")
                     wet = File(cacheDirectory, "$wetKey.wet.f32")
-                    if (wet.length() != source.length()) {
+                    if (wet.length() != source.length() || !PcmCache.valid(wet,cancelled)) {
                         wet.delete()
                         if (handle != 0L && engine != kind) {
                             if (engine == 2) Native.studioFree(handle) else Native.neuralFree(handle)
@@ -195,23 +201,28 @@ object Studio {
                         }
                         engine = kind
                         AudioModels.verify(effect.kind, cancelled)
-                        if (handle == 0L) handle = if (kind == 2) Native.studioLoad(directory.absolutePath, 2)
+                        if (kind!=0 && handle == 0L) handle = if (kind == 2) Native.studioLoad(directory.absolutePath, 2)
                             else Native.neuralLoad(AudioModels.directory(effect.kind).absolutePath, kind, 2)
-                        check(handle != 0L) { "Cannot prepare ${effect.kind}" }
+                        check(kind==0 || handle != 0L) { "Cannot prepare ${effect.kind}" }
                         val inferenceInput = if (kind == 1) {
                             val down = File(cacheDirectory, "$wetKey.input441.f32")
+                            if (!PcmCache.valid(down,cancelled)) down.delete()
                             SourceAudio.resample(source, down, 48000, 44100, cancelled = cancelled, progress = {})
+                            PcmCache.seal(down,cancelled)
                             down
                         } else source
                         val rendered = if (kind == 1) File(cacheDirectory, "$wetKey.output441.f32") else wet
-                        if (rendered.length() != inferenceInput.length()) {
+                        if (rendered.length() != inferenceInput.length() || !PcmCache.valid(rendered,cancelled)) {
                             rendered.delete()
-                            SourceAudio.render(inferenceInput, rendered, File(cacheDirectory, "$wetKey.chunks"), window,
+                            if (kind==0) SourceAudio.reduce(inferenceInput,rendered,AudioModels.directory(effect.kind),cancelled) { p -> progress((index+p)/effects.size) }
+                            else SourceAudio.render(inferenceInput, rendered, File(cacheDirectory, "$wetKey.chunks"), window,
                                 cancelled, { p -> progress((index + p) / effects.size) }) {
                                 if (engine == 2) Native.studioProcess(handle, it) else Native.neuralProcess(handle, it)
                             }
+                            PcmCache.seal(rendered,cancelled)
                         }
                         if (kind == 1) SourceAudio.resample(rendered, wet, 44100, 48000, source.length() / 8, cancelled, {})
+                        PcmCache.seal(wet,cancelled)
                     }
                 }
                 val partial = File(cacheDirectory, "$identity-${uid()}.partial")
@@ -256,16 +267,17 @@ object Studio {
                     if (state != 0L) Native.audioDestroy(state)
                     partial.delete()
                 }
+                PcmCache.seal(target,cancelled)
             }
             source = target
             progress((index + 1f) / effects.size)
         }
-        val entries = cacheDirectory.listFiles().orEmpty().filter { it.extension != "partial" }
+        val entries = cacheDirectory.listFiles().orEmpty()
         fun bytes(file: File) = if (file.isDirectory) file.walkTopDown().filter { it.isFile }.sumOf { it.length() } else file.length()
         var total = entries.sumOf(::bytes)
         for (file in entries.sortedBy { it.lastModified() }) {
             if (total <= 384L * 1024 * 1024) break
-            if (file == source) continue
+            if (file == source || file.path==source.path+".sha256") continue
             val size = bytes(file)
             if (file.deleteRecursively()) total -= size
         }
