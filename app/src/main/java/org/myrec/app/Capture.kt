@@ -179,6 +179,9 @@ class Capture(
     private var rendering = false
     private var effectGeneration = 0
     private val imageWorker = Executors.newSingleThreadExecutor()
+    private val backgroundEffects=BackgroundRenderer()
+    private val backgroundPreviewStart=SystemClock.elapsedRealtime()
+    private var failedEffectGeneration=Long.MIN_VALUE
     private var lastZoomTap = 0L
     private var lastZoom = 0f
     private val audioDevices =
@@ -231,7 +234,7 @@ class Capture(
                         activity.message("No microphone audio is arriving. Recording paused; check the microphone before resuming.")
                     }
                 }
-                if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && !rendering)
+                if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && !rendering && failedEffectGeneration!=effectGeneration.toLong())
                     updateLiveFrame()
                 overlay.invalidate()
                 ui.postDelayed(this, 66)
@@ -1196,6 +1199,7 @@ class Capture(
         val file=File(store.media,"recording-${System.currentTimeMillis()}.mp4")
         var next: CaptureRecorder?=null
         try {
+            for (fx in liveEffects.filter { it.kind in BackgroundEffect.kinds }) fx.values["origin"]="0.0"
             receipt=store.beginCapture(activity.editor.project,file,liveEffects,activity.recordingInsertion())
             recordingDisplayRotation=activity.windowManager.defaultDisplay.rotation
             recordingOrientation=cameraOrientation()
@@ -2009,17 +2013,22 @@ class Capture(
     }
 
     private fun updateLiveFrame() {
-        val frame = cameraFrame(640, if (width > height) 360 else 1138) ?: return
+        val backdrop=liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }
+        val frame = cameraFrame(if (backdrop) if (width>height) 512 else 288 else 640,
+            if (backdrop) if (width>height) 288 else 512 else if (width > height) 360 else 1138) ?: return
         val flip = front && dualLayout == 4 && mirrorPreview != mirrorRecording
         var raw = if (flip) SourceMirror.flip(frame) else frame
         rendering = true
         val generation = effectGeneration
         val now = SystemClock.elapsedRealtime()
         val clock = if (recording) elapsedSeconds() else (now - strobePreviewSince) / 1000.0
+        val backgroundClock=if (recording) clock else (now-backgroundPreviewStart)/1000.0
+        val backgroundKey="$cameraId:$dualLayout:$displayRotation:$flip:$generation"
         val effects = EffectOrder.ordered(liveEffects).filter {
             it.enabled && (it.kind != "Negative Strobe" || recording || now < strobePreviewUntil)
         }.map { it.copyEffect() }
         imageWorker.execute {
+            try {
             val person =
                 if (
                     effects.any {
@@ -2034,8 +2043,11 @@ class Capture(
                 val fx = original.sampled(clock)
                 if (fx.kind == "Negative Strobe" && TimeEffects.negative(original.copy(phase = EffectPhase(0.0)), clock, prefs.getInt("fps", 30).toDouble()))
                     Native.workingNegative(raw, fx.strength(0.0, 1.0))
-                Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = clock,
-                    frame = floor(clock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong())
+                if (fx.kind in BackgroundEffect.kinds) backgroundEffects.render(raw,fx,backgroundClock,
+                    fx.values["origin"]?.toDoubleOrNull() ?: 0.0,backgroundKey)
+                else Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = clock,
+                    frame = floor(clock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong(),decorate=false)
+                FrameEffects.liveGeometry(raw,fx,fx.strength(0.0,1.0))
                 var kind = fx.kind
                 val id = Effects.pixelId(fx)
                 if (id > 0)
@@ -2050,6 +2062,10 @@ class Capture(
                         fx.number("bw") == 1f,
                     )
             }
+            for (original in effects.filter { it.kind=="Letterbox" || FrameEffects.modern(it) && it.kind=="Widescreen 1953" }) {
+                val fx=original.sampled(clock)
+                FrameEffects.decorate(raw,fx,fx.strength(0.0,1.0))
+            }
             if (flip) raw = SourceMirror.flip(raw)
             if (focusPeaking && dualLayout == 4) Native.focusPeaking(raw)
             ui.post {
@@ -2059,6 +2075,16 @@ class Capture(
                     liveFrame?.recycle()
                     liveFrame = raw
                     overlay.invalidate()
+                }
+            }
+            } catch (error: Exception) {
+                raw.recycle()
+                ui.post {
+                    rendering=false
+                    if (generation==effectGeneration) {
+                        failedEffectGeneration=generation.toLong(); liveFrame?.recycle(); liveFrame=null
+                        activity.message(error.message ?: "Cannot render background effect")
+                    }
                 }
             }
         }
@@ -2111,6 +2137,8 @@ class Capture(
     fun effects() {
         activity.captureEffects(liveEffects) {
             val next = it.map { fx -> fx.copyEffect() }.toMutableList()
+            for (fx in next.filter { it.kind in BackgroundEffect.kinds && liveEffects.none { old -> old.id==it.id } })
+                fx.values["origin"]=(if (recording) elapsedSeconds() else 0.0).toString()
             if (recording && next != liveEffects) finishEffectRange(elapsedSeconds())
             if (next != liveEffects) effectGeneration++
             liveEffects = next
@@ -2179,6 +2207,7 @@ class Capture(
         handlerThread.quitSafely()
         microphone.close()
         receiptWorker.shutdown()
+        imageWorker.execute { backgroundEffects.close() }
         imageWorker.shutdown()
         liveFrame?.recycle()
     }
@@ -2679,6 +2708,18 @@ class Capture(
         private fun edgeDistance(x: Float, y: Float) = min(min(x, width - x), min(y, height - y))
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (activity.panels.samplingBackground) {
+                if (e.actionMasked==MotionEvent.ACTION_UP && e.x>=texture.left && e.x<texture.right && e.y>=texture.top && e.y<texture.bottom) {
+                    cameraFrame(288,512)?.let { bitmap ->
+                        val x=((e.x-texture.left)/texture.width*bitmap.width).toInt().coerceIn(0,bitmap.width-1)
+                        val y=((e.y-texture.top)/texture.height*bitmap.height).toInt().coerceIn(0,bitmap.height-1)
+                        val pixel=bitmap.getPixel(x,y)
+                        bitmap.recycle()
+                        activity.panels.sampleBackground(EffectValue.Color(Color.red(pixel)/255.0,Color.green(pixel)/255.0,Color.blue(pixel)/255.0))
+                    }
+                }
+                return true
+            }
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 touchX = e.x
                 touchY = e.y

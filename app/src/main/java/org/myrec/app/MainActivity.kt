@@ -68,6 +68,17 @@ class MainActivity : Activity() {
     private data class MediaRepair(val project: Project, val path: String)
     private var pendingRepair: MediaRepair? = null
     private var imageCallback: ((String) -> Unit)? = null
+    private var effectMediaCallback: ((String) -> Unit)? = null
+    private var effectMediaProject: String? = null
+    private var effectImageOnly=false
+    fun importEffectMedia(imageOnly: Boolean,callback: (String)->Unit) {
+        effectMediaCallback=callback; effectMediaProject=editor.project.id;effectImageOnly=imageOnly
+        try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type=if (imageOnly) "image/*" else "*/*"
+            if (!imageOnly) putExtra(Intent.EXTRA_MIME_TYPES,arrayOf("image/*","video/*"))
+            addCategory(Intent.CATEGORY_OPENABLE)
+        },35) } catch (_: android.content.ActivityNotFoundException) { effectMediaCallback=null; message("No media picker is available") }
+    }
     private var importAsProject = false
     private var exporting: Export? = null
     private var moviePermission: Triple<Int, Int, ExportColor>? = null
@@ -1022,6 +1033,23 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode==35) {
+            val callback=effectMediaCallback; val project=effectMediaProject;val imageOnly=effectImageOnly
+            effectMediaCallback=null; effectMediaProject=null
+            val uri=data?.data
+            if (resultCode==RESULT_OK && uri!=null && callback!=null && project!=null) worker.execute {
+                var file: File?=null
+                try {
+                    val ext=android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(contentResolver.getType(uri)) ?: "media"
+                    val imported=File(store.media,"background-${uid()}.$ext"); file=imported
+                    contentResolver.openInputStream(uri)!!.use { input -> imported.outputStream().use { input.copyTo(it) } }
+                    require(PhotoSource.shape(imported.path)!=null || !imageOnly && ProjectStore.inspect(imported).video) { if (imageOnly) "Choose an image" else "Choose an image or video" }
+                    store.registerMedia(project,imported.path)
+                    ui.post { if (editor.project.id==project) callback(imported.path) else message("The project changed while importing") }
+                } catch (error: Exception) { file?.delete(); ui.post { message(error.message ?: "Cannot import background") } }
+            }
+            return
+        }
         if (requestCode == 34) {
             val files = pendingOriginals; pendingOriginals = null
             if (resultCode == RESULT_OK && files != null) data?.data?.let { copyOriginals(files,it) }

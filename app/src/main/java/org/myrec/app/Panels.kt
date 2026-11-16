@@ -62,6 +62,16 @@ class Panels(private val a: MainActivity) {
     private var captureDone: ((List<Effect>) -> Unit)? = null
     private var pendingEffects = mutableListOf<Effect>()
     private var bitmap: Bitmap? = null
+    private var backgroundSample: ((EffectValue.Color)->Unit)?=null
+    internal val samplingBackground get()=backgroundSample!=null
+    internal fun sampleBackground(color: EffectValue.Color) {
+        val sample=backgroundSample ?: return
+        if (!BackgroundEffect.acceptsScreen(color)) { a.message("Choose a green or blue area of the screen");return }
+        backgroundSample=null;previewEffects=sampleEffects;sample(color);renderDraft()
+    }
+    private var sampleEffects=true
+    private var frameRevision=0L
+    private var sampleRevision=0L
     private var title = ""
     private var factor = 1f
     private var landscape = true
@@ -83,6 +93,7 @@ class Panels(private val a: MainActivity) {
         get() = panel != null
 
     fun setFrame(frame: Bitmap) {
+        frameRevision++
         bitmap = frame
         preview?.invalidate()
         previewTick?.invoke()
@@ -494,6 +505,7 @@ class Panels(private val a: MainActivity) {
         draftRate = null
         draftShape = null
         captureDraft = null
+        backgroundSample=null
         captureDone = null
         progressBar = null
         progressText = null
@@ -2411,7 +2423,7 @@ class Panels(private val a: MainActivity) {
                 Effects.categories.entries.firstOrNull { fx.kind in it.value }?.key
                     ?: if (fx.kind == "Undercranking") "Time" else "Color & style"
             r.addView(
-                Glyph(a, category, categoryColor(category)),
+                Glyph(a, if (category=="Extra effects") "Tools" else category, categoryColor(category)),
                 LinearLayout.LayoutParams(px(18f), px(22f)).apply { rightMargin = px(9f) },
             )
             val description = column()
@@ -2468,7 +2480,7 @@ class Panels(private val a: MainActivity) {
                     setPadding(px(10f), 0, px(8f), 0)
                 }
             card.addView(
-                Glyph(a, category, categoryColor(category)),
+                Glyph(a, if (category=="Extra effects") "Tools" else category, categoryColor(category)),
                 LinearLayout.LayoutParams(px(20f), px(24f)).apply { rightMargin = px(9f) },
             )
             val description = column()
@@ -2515,6 +2527,7 @@ class Panels(private val a: MainActivity) {
             when (category) {
                 "Color & style" -> "Color, contrast, grain and glow"
                 "Presets" -> "Combined effects"
+                "Extra effects" -> "Additional and compatibility effects"
                 else -> category
             },
         )
@@ -2526,7 +2539,7 @@ class Panels(private val a: MainActivity) {
                     setPadding(px(10f), px(9f), px(10f), px(9f))
                 }
             item.addView(
-                Glyph(a, category, categoryColor(category)),
+                Glyph(a, if (category=="Extra effects") "Tools" else category, categoryColor(category)),
                 LinearLayout.LayoutParams(px(18f), px(23f)).apply { rightMargin = px(10f) },
             )
             val description = column()
@@ -2546,6 +2559,9 @@ class Panels(private val a: MainActivity) {
                         "Keep one color or the person in color; make the rest monochrome."
                     "Noir" -> "Black and white with deep shadows and contrast."
                     "Halation" -> "Soften bright lights with a warm glow."
+                    "Blur" -> "Blur the whole picture. To keep people sharp, use Auto Background."
+                    "Auto Background" -> "Keep people sharp and blur or replace the background."
+                    "Letterbox" -> "Add adjustable top and bottom bars."
                     else -> "Tap to add"
                 }
             add(description, text(detail, 7.5f, MUTED).apply { setPadding(0, px(3f), 0, 0) })
@@ -2555,7 +2571,7 @@ class Panels(private val a: MainActivity) {
                 LinearLayout.LayoutParams(px(15f), px(20f)).apply { leftMargin = px(27f) },
             )
             parent.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = px(8f) })
-            if (captureDraft != null && kind in listOf("Night fix", "Dolly Zoom", "Step Printing")) {
+            if (captureDraft != null && kind in FrameEffects.editorOnly) {
                 item.isEnabled = false
                 item.alpha = .45f
             }
@@ -2564,7 +2580,7 @@ class Panels(private val a: MainActivity) {
                     if (kind == "Clean") chain.clear()
                     val kinds =
                         when (kind) {
-                            "Expressionism" ->
+                            "Expressionist film" ->
                                 listOf("Expressionism", "Silent Tint", "16mm", "Undercranking")
                             "Silent cinema" -> listOf("Noir", "Film grain", "Vignette")
                             "Vintage film" -> listOf("Sepia", "Film grain")
@@ -2791,7 +2807,7 @@ class Panels(private val a: MainActivity) {
         add(parent, actions, 41f)
         if (fx.parameters.isNotEmpty() && rgbAnimating)
             hint(parent, "Animating · changes add keyframes at ${timeLabel(editor.cursor)}")
-        if (fx.kind !in setOf("Color Correction", "Step Printing")) {
+        if (fx.kind !in setOf("Color Correction", "Step Printing") && !(fx.kind=="Letterbox" && !FrameEffects.modern(fx))) {
             slider(parent, "Intensity", readNumber(if (fx.parameters.isEmpty()) "strength" else "intensity", 1f), 0f, 1f, color = orange) {
                 if (fx.parameters.isNotEmpty()) editNumber("intensity", it) else fx.setNumber("strength", it)
                 renderDraft()
@@ -2814,7 +2830,78 @@ class Panels(private val a: MainActivity) {
             )
             return line
         }
-        if (fx.kind in TimeEffects.kinds) {
+        if (fx.kind in BackgroundEffect.kinds) {
+            fun value(key: String)=fx.parameter(key)?.at(sourceTime())
+            fun edit(key: String,next: EffectValue) {
+                videoDraft?.editValue(fx,key,next,editor.cursor,rgbAnimating)
+                    ?: fx.parameter(key)?.let { p -> if (rgbAnimating || p.keyframes.isNotEmpty()) p.setKeyframe(sourceTime(),next) else p.value=next }
+                renderDraft()
+            }
+            if (fx.kind=="Chroma Key") hint(parent,"Requires a green or blue screen. For an ordinary room or wall, use Auto Background.")
+            val sampled=fx.sampled(sourceTime())
+            for ((section,controls) in BackgroundEffect.controls(fx.kind).filter { BackgroundEffect.visible(it,sampled) }.groupBy { it.section }) {
+                label(parent,section)
+                for (control in controls) when (val type=control.kind) {
+                    is ParameterKind.Slider -> {
+                        val bar=slider(parent,control.title,readNumber(control.id),type.min.toFloat(),type.max.toFloat(),color=orange) {
+                            editNumber(control.id,((it/type.step).roundToInt()*type.step).toFloat().coerceIn(type.min.toFloat(),type.max.toFloat()))
+                            renderDraft()
+                        }
+                        bind(bar,control.id,type.min.toFloat(),type.max.toFloat())
+                    }
+                    is ParameterKind.Picker -> {
+                        label(parent,control.title)
+                        val selected=(value(control.id) as EffectValue.Choice).value
+                        pick(selected) { a.choose(control.title,type.values,type.values.indexOf(selected)) {
+                            edit(control.id,EffectValue.Choice(type.values[it])); videoParameters(parent,fx,chain)
+                        } }
+                    }
+                    ParameterKind.Toggle -> toggle(parent,control.title,(value(control.id) as EffectValue.Toggle).value) {
+                        edit(control.id,EffectValue.Toggle(it)); videoParameters(parent,fx,chain)
+                    }
+                    ParameterKind.Color -> {
+                        val c=value(control.id) as EffectValue.Color
+                        val hex="#%02X%02X%02X".format((c.red*255).roundToInt(),(c.green*255).roundToInt(),(c.blue*255).roundToInt())
+                        label(parent,control.title)
+                        pick(hex) {
+                            InspectorUi(a,factor).pickColor(control.title,Color.parseColor(hex),false) { parsed ->
+                                val next=EffectValue.Color(Color.red(parsed)/255.0,Color.green(parsed)/255.0,Color.blue(parsed)/255.0)
+                                if (control.id=="screenColor" && !BackgroundEffect.acceptsScreen(next)) a.message("Choose a green or blue area of the screen")
+                                else {
+                                    edit(control.id,next)
+                                    if (control.id=="screenColor") edit("screenType",EffectValue.Choice("Auto"))
+                                    videoParameters(parent,fx,chain)
+                                }
+                            }
+                        }
+                        if (control.id=="screenColor") button(parent,if (backgroundSample==null) "Sample screen from picture" else "Cancel screen sample") {
+                            if (backgroundSample!=null) { backgroundSample=null; previewEffects=sampleEffects; renderDraft() }
+                            else {
+                                sampleEffects=previewEffects; previewEffects=false; sampleRevision=frameRevision
+                                backgroundSample={ next -> edit("screenColor",next); edit("screenType",EffectValue.Choice("Auto")); videoParameters(parent,fx,chain) }
+                                a.message("Tap a green or blue area in the picture"); renderDraft()
+                            }
+                            videoParameters(parent,fx,chain)
+                        }
+                    }
+                    ParameterKind.Media -> {
+                        val path=(value(control.id) as EffectValue.Media).path
+                        button(parent,if (path==null) "Choose ${control.title.lowercase()}" else "Replace ${control.title.lowercase()}") {
+                            a.importEffectMedia(control.id=="cleanPlate" || BackgroundEffect.choice(sampled,"background")=="Image") { selected ->
+                                edit(control.id,EffectValue.Media(selected))
+                                if (control.id=="media" && PhotoSource.shape(selected)!=null) edit("background",EffectValue.Choice("Image"))
+                                videoParameters(parent,fx,chain)
+                            }
+                        }
+                        if (path!=null) {
+                            hint(parent,java.io.File(path).name)
+                            button(parent,"Remove ${control.title.lowercase()}") { edit(control.id,EffectValue.Media(null)); videoParameters(parent,fx,chain) }
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        } else if (fx.kind in TimeEffects.kinds) {
             val titles = mapOf("frequency" to "Cycles per second", "timedBurst" to "Limit duration", "burstLength" to "Burst length (s)",
                 "step" to "Step frames", "smear" to "Smear", "speed" to "Speed")
             for (p in fx.parameters.filter { it.id != "intensity" }) {
@@ -2867,6 +2954,7 @@ class Panels(private val a: MainActivity) {
                         renderDraft()
                     }
                     val bar = slider(parent, control.title, readNumber(control.id), kind.min.toFloat(), kind.max.toFloat(),
+                        format = { if (fx.kind=="Blur" && control.id=="radius") "%.1f px".format(java.util.Locale.US,it) else "%.0f%%".format(it*100) },
                         color = orange, reset = ::reset) {
                         editNumber(control.id, ((it / kind.step).roundToInt() * kind.step).toFloat().coerceIn(kind.min.toFloat(), kind.max.toFloat()))
                         val dependent = when (control.id) { "vignette" -> "iris"; "flash" -> "flashColor"; "grain" -> "grainSize"; else -> null }
@@ -2896,6 +2984,13 @@ class Panels(private val a: MainActivity) {
             }
             hint(parent, definition.help)
         } else when (fx.kind) {
+            "Letterbox" -> slider(parent,"Bar size",fx.number("strength",.12f),0f,.4f,color=orange) {
+                editNumber("strength",it);renderDraft()
+            }
+            "Blur" -> button(parent,"Use resolution-independent blur") {
+                FrameEffects.upgrade(fx)
+                videoParameters(parent,fx,chain);renderDraft()
+            }
             "Dolly Zoom" -> {
                 label(parent, "Direction")
                 choices(parent, listOf("Stretch", "Compress"), fx.values["direction"] ?: "Stretch", orange) {
@@ -2953,6 +3048,9 @@ class Panels(private val a: MainActivity) {
                 }
             }
             "Widescreen 1953" -> {
+                button(parent,"Use reference framing") {
+                    FrameEffects.upgrade(fx);videoParameters(parent,fx,chain);renderDraft()
+                }
                 label(parent, "Ratio")
                 pick("%.2f:1".format(java.util.Locale.US, fx.number("ratio", 2.39f))) {
                     val ratios = listOf(2.39f, 2.35f, 2f, 1.85f)
@@ -3226,6 +3324,9 @@ class Panels(private val a: MainActivity) {
                     fx.values["zoom"] = it.toString()
                     renderDraft()
                 }
+            "Mirror" -> choices(parent,listOf("Horizontal","Vertical"),if (fx.number("vertical")==1f) "Vertical" else "Horizontal",orange) {
+                fx.values["vertical"]=if (it==1) "1" else "0";renderDraft()
+            }
             "Rotation" ->
                 slider(
                     parent,
@@ -4467,6 +4568,16 @@ class Panels(private val a: MainActivity) {
         }
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
+            backgroundSample?.let {
+                if (e.actionMasked==MotionEvent.ACTION_UP && bounds.contains(e.x,e.y) && frameRevision>sampleRevision) bitmap?.let { image ->
+                    val x=((e.x-bounds.left)/bounds.width()*image.width).toInt().coerceIn(0,image.width-1)
+                    val y=((e.y-bounds.top)/bounds.height()*image.height).toInt().coerceIn(0,image.height-1)
+                    val pixel=image.getPixel(x,y)
+                    val color=EffectValue.Color(Color.red(pixel)/255.0,Color.green(pixel)/255.0,Color.blue(pixel)/255.0)
+                    sampleBackground(color)
+                }
+                return true
+            }
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 controlGesture = true
                 if (resetButton.contains(e.x, e.y)) { resetInspection(); return true }

@@ -170,3 +170,9 @@ input before resuming. A physical array may appear as one route, rather than
 separate selectable elements. Accessory routing depends on Android and the
 connected device; Bluetooth and USB disconnect acceptance still needs physical
 accessory testing.
+
+Chroma Key and Auto Background are available in the recording effects menu. The
+camera preview processes each mask with its own picture on the effects worker;
+background media and typed controls are retained in the take's editable recipe.
+The original picture remains available. Background settings use the same inspector
+and renderer as the editor; see [background effects](EDITING.md).

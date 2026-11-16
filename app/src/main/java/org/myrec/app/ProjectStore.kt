@@ -741,6 +741,8 @@ class ProjectStore(val root: File) {
                                                     if (e.kind in AudioFilter.direct && AudioFilter.modern(e)) put("algorithm", 3)
                                                     if (e.kind == "Halation" || Noir.modern(e) || SixteenMm.modern(e)) put("algorithm", 4)
                                                     if (StabilizationSettings.modern(e)) put("algorithm", 5)
+                                                    if (e.kind in BackgroundEffect.kinds) put("algorithm", 6)
+                                                    if (FrameEffects.modern(e)) put("algorithm", 7)
                                                     put("parameters", EffectJson.encode(e))
                                                     e.phase?.let { put("phase", TimeEffectJson.encode(it)) }
                                                     e.subtitle?.let { put("subtitle", SubtitleJson.encode(it)) }
@@ -830,10 +832,12 @@ class ProjectStore(val root: File) {
                 val values = e.getJSONObject("values")
                 val algorithm = integer(e, "algorithm", 0)
                 require(algorithm >= 0) { "Invalid effect algorithm" }
-                if (algorithm > 5 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
+                if (algorithm > 7 || algorithm == 2L && e.getString("kind") !in listOf("Text", "Color LUTs") ||
                     algorithm == 3L && e.getString("kind") !in AudioFilter.direct ||
                     algorithm == 4L && e.getString("kind") !in listOf("Halation","Noir","16mm") ||
-                    algorithm == 5L && e.getString("kind") != "Stabilize") throw NewerProject()
+                    algorithm == 5L && e.getString("kind") != "Stabilize" ||
+                    algorithm == 6L && e.getString("kind") !in BackgroundEffect.kinds ||
+                    algorithm == 7L && e.getString("kind") !in FrameEffects.kinds) throw NewerProject()
                 val fx =
                     Effect(
                         e.getString("id"),
@@ -842,6 +846,7 @@ class ProjectStore(val root: File) {
                         e.getDouble("to"),
                         e.getBoolean("enabled"),
                         parameters = when {
+                            algorithm == 7L -> FrameEffects.parameters(e.getString("kind"))
                             algorithm == 4L && e.getString("kind") == "Noir" -> Noir.parameters()
                             algorithm == 4L && e.getString("kind") == "16mm" -> SixteenMm.parameters()
                             else -> EffectContracts.parameters(e.getString("kind"))
@@ -853,7 +858,12 @@ class ProjectStore(val root: File) {
                 if (algorithm == 0L && integer(o, "version", 1) < 4 && !e.has("parameters")) EffectImport.convert(fx)
                 else EffectJson.decode(fx, if (e.has("parameters")) e.getJSONArray("parameters") else null)
                 EffectJson.decodeMotion(fx, if (e.has("motion") && !e.isNull("motion")) e.getJSONObject("motion") else null)
-                if (fx.parameters.isNotEmpty()) fx.values.clear()
+                if (fx.parameters.isNotEmpty()) {
+                    val origin=if (fx.kind in BackgroundEffect.kinds) fx.values["origin"] else null
+                    if (origin!=null) require(origin.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..604800.0 }==true) { "Invalid background origin" }
+                    fx.values.clear()
+                    if (origin!=null) fx.values["origin"]=origin
+                }
                 if (e.has("phase")) fx.phase = TimeEffectJson.decode(e.getJSONObject("phase"))
                 if (e.has("subtitle")) fx.subtitle = SubtitleJson.decode(e.getJSONObject("subtitle"))
                 clip.effects.add(fx)

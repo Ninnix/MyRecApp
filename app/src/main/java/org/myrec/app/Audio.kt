@@ -261,6 +261,7 @@ class AudioMixer(
     private val stretched = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
     private val studio = mutableMapOf<Pair<String, Double>, RandomAccessFile>()
     private var framePosition = 0L
+    private val backgrounds=BackgroundAudio(cache)
 
     fun seek(time: Double) {
         framePosition = (time * 48000).toLong()
@@ -269,6 +270,7 @@ class AudioMixer(
     }
 
     fun prepare(cancelled: () -> Boolean = { false }, progress: (Float) -> Unit = {}) {
+        backgrounds.prepare(project,cancelled,progress)
         project.clips
             .filter { it.audio }
             .map { it.path }
@@ -322,7 +324,7 @@ class AudioMixer(
         return pcm
     }
 
-    private fun fade(project: Project, clip: Clip, pcm: FloatArray, time: Double, first: Int) {
+    private fun fade(project: Project, clip: Clip, pcm: FloatArray, time: Double, first: Int, linear: Boolean=false) {
         for (transition in project.transitions) {
             val left = project.clips.firstOrNull { it.id == transition.leftId }
             val right = project.clips.firstOrNull { it.id == transition.rightId }
@@ -339,7 +341,8 @@ class AudioMixer(
                 if (at < transition.begin || at > transition.end) continue
                 val position = transition.progress(at).toDouble()
                 val fade =
-                    if (outgoing) cos(position * Math.PI / 2).toFloat()
+                    if (linear) (if (outgoing) 1-position else position).toFloat()
+                    else if (outgoing) cos(position * Math.PI / 2).toFloat()
                     else sin(position * Math.PI / 2).toFloat()
                 pcm[i * 2] *= fade
                 pcm[i * 2 + 1] *= fade
@@ -406,12 +409,18 @@ class AudioMixer(
             for (i in first until last) for (ch in 0..1) mixed[i * 2 + ch] +=
                 pcm[(i - first) * 2 + ch]
         }
+        for (original in project.clips.filter { it.video && it.start<end && it.end>time }) for (clip in original.playbackPieces()) {
+            val pcm=backgrounds.read(clip,time,frames,original)
+            fade(project,clip,pcm,time,0,true)
+            for (i in mixed.indices) mixed[i]+=pcm[i]
+        }
         for (i in mixed.indices) mixed[i] = mixed[i].coerceIn(-1f, 1f)
         framePosition += frames
         return mixed
     }
 
     override fun close() {
+        backgrounds.close()
         studio.values.forEach { it.close() }
         studio.clear()
         states.values.forEach { Native.audioDestroy(it) }

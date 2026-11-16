@@ -43,7 +43,7 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
             val effects = c.effects.filter { it.kind in kinds && it.id !in removed }.map { it.copyEffect() }.toMutableList()
             for (fx in added) effects.add(fx.copyEffect().apply {
                 from = 0.0; to = c.duration
-                if (kind == "Dolly Zoom") values.putIfAbsent("origin", c.sourceIn.toString())
+                if (kind == "Dolly Zoom" || kind in BackgroundEffect.kinds) values.putIfAbsent("origin", c.sourceIn.toString())
             })
             for (next in changed) {
                 val before = previous.getValue(next.id)
@@ -51,6 +51,9 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
                     if (next.enabled != before.enabled) fx.enabled = next.enabled
                     for (key in before.values.keys + next.values.keys) if (before.values[key] != next.values[key]) {
                         next.values[key]?.let { fx.values[key] = it } ?: fx.values.remove(key)
+                    }
+                    if (FrameEffects.modern(next) && before.parameters.isEmpty()) {
+                        fx.parameters.clear();fx.parameters.addAll(next.parameters.map { it.duplicate() })
                     }
                     for (p in next.parameters) if (p != before.parameter(p.id)) {
                         val index = fx.parameters.indexOfFirst { it.id == p.id }
@@ -131,7 +134,9 @@ class VideoEffectsDraft(source: Editor, private val kinds: Set<String>) {
                 fx.motion = if (endpoint ?: lastEndpoint) motion.copy(b = pose) else motion.copy(a = pose)
             }
             else {
+                val origin=if (fx.kind in BackgroundEffect.kinds) fx.values["origin"] else null
                 fx.values.clear(); fx.parameters.clear(); fx.parameters.addAll(neutral)
+                if (origin!=null) fx.values["origin"]=origin
             }
         }
         adopt(display, at)

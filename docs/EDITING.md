@@ -215,6 +215,44 @@ inspector per effect. Color passes use linear light; HDR and explicit Log
 retain half-float intermediates. Actual ten-bit media/export and an iOS GPU
 comparison still need capable-device acceptance.
 
+Tools → Video effects → Background offers Chroma Key and Auto Background.
+Chroma Key supports green/blue border detection, manual color or picture sampling,
+a clean plate, matte/original comparison, black/white clipping, edge softness,
+shrink/grow, despill, optional person hints and light wrap. Auto Background uses
+the bundled person model with guided edge refinement and portrait blur.
+
+Both effects offer Solid, Image, Video, Blur original, Studio and Window backgrounds.
+Image/video assets are copied into the project and travel with its archive. Fill/Fit,
+position, zoom, blur, exposure and color matching share the normal effect inspector
+and source-time animation. Background videos loop with a moving 200 ms overlap;
+optional sound uses the same clock at −18 dB. Background motion continues during a
+foreground hold; held-audio settings control its sound. Cuts, trims and speed changes
+retain the effect's background clock. Source-bound matte windows make repeated and
+backward seeks deterministic and reset on scene cuts.
+
+Auto Background uses PPHumanSeg rather than Apple Vision. Saved footage currently
+recomputes masks from its source; replay of the exact masks accepted by live preview
+is still pending. Broad background blur uses area reduction before Gaussian filtering
+to bound CPU and scratch memory, so it is not a pixel-identical Core Image result.
+
+New Blur effects have a Blur radius control in pixels at 1080p and a separate
+Intensity control. Gaussian filtering and intensity use linear light; the radius
+scales with the picture, keeping preview and export softness consistent. New
+Letterbox effects have separate Bar size and Intensity controls and work in the
+recording preview. Zoom, Mirror and Rotation also work in the recording preview;
+zero intensity restores the original picture in the editor.
+
+New Widescreen 1953 effects use the reference ratios (2.39, 2.20, 1.85 and 1.33),
+Black or Blur fill bars, and Blue, Amber or Neutral flares. Horizontal streaks
+sample individual bright highlights before reduction. Frame decorations follow
+picture geometry and texture; text and image annotations remain above them.
+Existing Blur and Widescreen recipes retain their previous rendering. Their
+inspectors offer an explicit upgrade to the new controls. Blur and Letterbox
+are Android compatibility effects in Extra effects. Background matches YouRec's
+Auto Background/Chroma Key choices; Auto Background starts with a blurred backdrop
+and retains the detected person. Widescreen 1953 is in Camera & frame. Source-only Freeze/Strobe/Echo effects
+remain available in the editor and are disabled in the recording library.
+
 Tools → Select cover samples nine chronological choices from the assembled
 project, selected range or selected clips, including picture underneath selected
 audio. Update refreshes the choices. Opening a choice renders the full project

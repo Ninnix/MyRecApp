@@ -3,6 +3,7 @@ project(myrec C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(myrec SHARED dsp.c stretch.c resample.c working_color.c lut.c dolly.c image.c focus.c asr.c stabilize.c quantize.c color.c cinema.c primary.c film_color.c halation.c noir.c sixteen_mm.c fft.c inference.c neural.c lava.c studio.c person.c)
+target_sources(myrec PRIVATE background.c)
 target_compile_options(myrec PRIVATE -Wall -Wextra -Werror -O3)
 target_link_libraries(myrec android nativewindow jnigraphics log m dl)
 

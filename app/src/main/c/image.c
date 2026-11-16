@@ -11,6 +11,29 @@
 static float clampf(float x, float a, float b) { return fmaxf(a, fminf(b, x)); }
 static unsigned char byte(float x) { return (unsigned char)clampf(x, 0, 255); }
 
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_legacyVisual(JNIEnv *env,jobject self,jobject bitmap,jint kind,jfloat strength,jfloat value) {
+    (void)self;
+    if (strength<=0 || (kind!=0 && value==0)) return;
+    YrPixels image;if (!yr_lock(env,bitmap,&image)) return;
+    int w=image.info.width,h=image.info.height;
+    for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
+        if (kind==0 && y+.5f>=h*value && y+.5f<h*(1-value)) continue;
+        float c[4];yr_read(&image,x,y,c);
+        for (int k=0;k<3;k++) {
+            if (kind==0) c[k]*=1-strength;
+            else {
+                float v=yr_srgb(c[k]);
+                if (kind==1) v+=value*strength*80/255;
+                else if (kind==2) v*=1+(k==0?1:k==2?-1:0)*value*strength*.2f;
+                c[k]=yr_linear(yr_clamp(v,0,1));
+            }
+        }
+        if (kind==0) c[3]+=(1-c[3])*strength;
+        yr_write(&image,x,y,c);
+    }
+    AndroidBitmap_unlockPixels(env,bitmap);
+}
+
 static void blur_image(YrPixels *p, int radius) {
     if (radius < 1) return;
     int w = p->info.width, h = p->info.height;

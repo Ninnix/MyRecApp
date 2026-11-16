@@ -134,12 +134,14 @@ object EffectContracts {
     }
 
     fun parameters(effect: Effect) = when {
+        FrameEffects.modern(effect) -> FrameEffects.parameters(effect.kind)
         Noir.modern(effect) -> Noir.parameters()
         SixteenMm.modern(effect) -> SixteenMm.parameters()
         else -> parameters(effect.kind)
     }
 
     fun parameters(kind: String): MutableList<EffectParameter> {
+        if (kind in BackgroundEffect.kinds) return BackgroundEffect.parameters(kind)
         if (kind !in listOf("RGB Offset", "Color Correction") && kind !in FilmColor.definitions && kind != "Kaleidoscope" && kind !in TimeEffects.kinds) return mutableListOf()
         if (kind == "Step Printing") return TimeEffects.parameters(kind)
         val result = mutableListOf(EffectParameter("intensity", ParameterKind.Slider(0.0, 1.0, .01),

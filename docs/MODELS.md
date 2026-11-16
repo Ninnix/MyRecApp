@@ -10,11 +10,15 @@ on the CPU, with the Qwen C runtime for captions.
 RNNoise is built with its network and needs no download. Existing voice-isolation
 filters use it. PPHumanSeg is a bundled FP32 graph of about 5.9 MB. Color Isolation
 uses its mask to keep people in color; detection reads the source before color
-effects. It can also keep a chosen hue.
+effects. It can also keep a chosen hue. Auto Background and Chroma Key’s optional
+person hint reuse this model, without another download. Their C11 path refines
+edges against the source, then uses finite source-bound matte history, motion
+gating for keying and scene-cut resets.
 
 Hair, occlusion, movement, and multiple people need more testing. The model
 neither identifies people nor sends frames away. It does not reproduce Apple's
-Vision segmentation or the iOS temporal matte processing.
+Vision segmentation. Recorded live matte journals are not yet replayed; saved
+footage is analysed again from its source.
 
 ## Audio downloads
 

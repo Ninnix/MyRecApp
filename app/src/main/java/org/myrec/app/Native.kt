@@ -3,6 +3,9 @@ package org.myrec.app
 import android.graphics.Bitmap
 
 object Native {
+    external fun frameBlur(bitmap: Bitmap,strength: Float,sigma: Float)
+    external fun widescreenFrame(bitmap: Bitmap,strength: Float,ratio: Int,blurFill: Boolean,flares: Float,color: Int)
+    external fun legacyVisual(bitmap: Bitmap,kind: Int,strength: Float,value: Float)
     external fun focusPeaking(bitmap: Bitmap)
     external fun workingAverage(bitmap: Bitmap, other: Bitmap, weight: Float)
     external fun workingNegative(bitmap: Bitmap, strength: Float)
@@ -91,6 +94,9 @@ object Native {
     external fun personLoad(path: String): Long
 
     external fun personMask(handle: Long, bitmap: Bitmap): FloatArray
+    external fun backgroundMatte(bitmap: Bitmap, person: FloatArray?, plate: Bitmap?, settings: FloatArray): FloatArray
+    external fun backgroundComposite(bitmap: Bitmap, background: Bitmap, plate: Bitmap?, matte: FloatArray, width: Int, height: Int, settings: FloatArray)
+    external fun backgroundBlur(bitmap: Bitmap, sigma: Float, exposure: Float)
 
 
     external fun isolate(

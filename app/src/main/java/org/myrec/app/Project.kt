@@ -26,6 +26,7 @@ data class Effect(
 ) {
     companion object {
         fun create(kind: String) = Effect(kind = kind,parameters = when (kind) {
+            in FrameEffects.kinds -> FrameEffects.parameters(kind)
             "Noir" -> Noir.parameters()
             "16mm" -> SixteenMm.parameters()
             else -> EffectContracts.parameters(kind)
@@ -747,7 +748,7 @@ class Editor(var project: Project = Project()) {
                             to += offset
                         }
                         to = min(to, oldDuration)
-                        if (kind == "Dolly Zoom") values.putIfAbsent("origin", c.sourceTime(c.start + from).toString())
+                        if (kind == "Dolly Zoom" || kind in BackgroundEffect.kinds) values.putIfAbsent("origin", c.sourceTime(c.start + from).toString())
                     }
                 )
                 if (abs(c.duration - oldDuration) > .000001)

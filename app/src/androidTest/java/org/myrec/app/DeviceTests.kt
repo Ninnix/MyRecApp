@@ -43,14 +43,16 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
+        if (suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {
                 val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
                     .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
                 activity = a
-                if (suite=="camera-assistance") CameraAssistanceDeviceTests.run(this,a,::onMain,::test)
+                if (suite=="effect-audit") EffectAuditTests.run(this,a,::onMain,::test)
+                else if (suite=="background-effects") BackgroundDeviceTests.run(this,a,::onMain,::test)
+                else if (suite=="camera-assistance") CameraAssistanceDeviceTests.run(this,a,::onMain,::test)
                 else if (suite == "microphone") MicrophoneTests.run(this,a,::onMain,::test)
                 else if (suite == "responsive-layout") ResponsiveLayoutTests.run(this,a,::onMain,::test)
                 else if (suite == "stabilization") StabilizationDeviceTests.run(this,a,::onMain,::test)
