@@ -284,7 +284,11 @@ Start/End trimming keep exact timing. Looks, Font, Fill, Outline, Shadow,
 Background, and Motion use separate tabs. The eight look cards show the entered
 words with their actual fonts. Bundled title families include Atkinson Hyperlegible
 Next, Barlow Condensed, Archivo Black, Source Serif 4, Fraunces, IBM Plex Mono,
-and Caveat. Import TTF/OTF fonts or choose a device font.
+and Caveat. Open **Font library…** to import TTF/OTF files or TTC/OTC collections. Expand a
+collection to choose its actual face; variable fonts expose their supported
+weights. The library is shared by Tools, Text and Subtitles. Removing a library
+font leaves project-owned copies and saved styles intact. Device fonts are also
+available.
 
 Fill supports solid colors and twelve gradient presets with editable colors,
 opacity and angle. Outline, shadow, block/per-line backgrounds, letter/line
@@ -394,3 +398,24 @@ On Android 9, saving to Movies requires the system storage permission.
 
 Export and inference run while the app is open. A background export service and
 resuming unfinished picture sections remain open.
+
+### Subtitle appearance and bookmarks
+
+In subtitle review, **Appearance** opens the same Looks, Font, Fill, Outline,
+Shadow, Background and Motion controls as Text. Changes remain a draft until
+Apply. Search is available for longer transcripts. Captions belong to their audio:
+cutting, copying and unlinking preserve independent words, and moving sound moves
+its captions. Muted audio and held frames do not display captions. Re-transcribing
+a selection retains corrected words outside it and the current appearance.
+
+After a structural edit, captions remain readable, but **Words per caption** is
+disabled until re-transcription. Undoing the structural edit restores regrouping.
+Colour, framing and gain adjustments do not invalidate grouping unless sound is
+muted.
+
+Open **Tools → Bookmarks**, or hold the timeline ruler, to add, rename, delete or
+jump to a mark. The thumbnail comes from the original source frame. Marks follow
+their source through trimming, cuts, speed changes and copies; marks in held
+frames follow local hold time. Marks added in gaps use project time and follow
+time insertion and gap closing. Labels and identities survive undo, duplication
+and project archives.

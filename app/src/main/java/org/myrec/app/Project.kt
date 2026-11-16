@@ -118,6 +118,7 @@ data class Clip(
     var occurrence: String = group,
     var link: String? = null,
     var photo: Boolean = false,
+    val bookmarks: MutableList<SourceBookmark> = mutableListOf(),
 ) {
     private var rateState: RateState? = null
     private var spans = emptyList<PlaybackSpan>()
@@ -154,9 +155,9 @@ data class Clip(
             group = if (newId && !keepGroup) next else group,
             occurrence = if (newId && !keepOccurrence) next else occurrence,
             link = if (newId && !keepOccurrence) null else link,
-            effects = effects.map { it.copyEffect(newId) }.toMutableList(),
+            effects = effects.map { it.copyEffect(newId).also { fx -> if (newId && !keepOccurrence) fx.subtitle=fx.subtitle?.independent() } }.toMutableList(),
             censors = censors.toMutableList(),
-            marks = marks.toMutableList(),
+            marks = marks.toMutableList(),bookmarks=bookmarks.toMutableList(),
         )
     }
 }
@@ -227,7 +228,7 @@ data class Transition(
     }
 }
 
-private fun samePart(a: Clip, b: Clip) =
+internal fun samePart(a: Clip, b: Clip) =
     a.path == b.path &&
         abs(a.start - b.start) < .001 &&
         abs(a.sourceIn - b.sourceIn) < .001 &&
@@ -242,6 +243,7 @@ data class Project(
     var height: Int = 1080,
     var fps: Int = 30,
     var captureCount: Int = 0,
+    val bookmarks: MutableList<SourceBookmark> = mutableListOf(),
 ) {
     val duration
         get() = clips.maxOfOrNull { it.end } ?: 0.0
@@ -250,6 +252,7 @@ data class Project(
         copy(
             clips = clips.map { it.duplicate() }.toMutableList(),
             transitions = transitions.map { it.copy() }.toMutableList(),
+            bookmarks=bookmarks.toMutableList(),
         )
 
     fun active(t: Double) = clips.filter { it.video && it.contains(t) }.sortedBy { it.track }
@@ -300,10 +303,8 @@ data class Project(
             .distinct()
             .sorted()
 
-    fun markers(): List<Double> = clips.flatMap { clip ->
-        clip.marks.filter { source -> clip.frozen == null && clip.keptIntervals().any { source >= it.start && source < it.end } }
-            .map { clip.start + clip.timelineOffset(it) }
-    }.distinct().sorted()
+    fun markers(): List<Double> = resolvedBookmarks().map { it.time }.distinct().sorted()
+
 }
 
 class EditRevision(val project: Project, var file: String? = null)
@@ -674,6 +675,7 @@ class Editor(var project: Project = Project()) {
                         fx.copyEffect().apply {
                             from = max(0.0, from - local)
                             to = end - local
+                            subtitle=subtitle?.independent()
                         }
                     )
             }
@@ -1022,7 +1024,10 @@ class Editor(var project: Project = Project()) {
             .filter { it !== clip && it.start >= from - .001 }
             .forEach { it.start += delta }
         project.transitions.filter { it.at >= from }.forEach { it.at += delta }
+        project.shiftBookmarks(from,delta)
     }
+
+    private var clipboardBookmarks=emptyList<SourceBookmark>()
 
     fun copySelection() {
         val t = targets()
@@ -1103,6 +1108,8 @@ class Editor(var project: Project = Project()) {
             for ((left, right) in islands.zipWithNext()) if (time >= right.start - .000001) amount += right.start - left.end
             return time - amount
         }
+        clipboardBookmarks=project.bookmarks.filter { it.time>=origin && it.time<end && (range!=null || islands.any { span -> span.contains(it.time-origin) }) }
+            .map { it.copy(id=uid(),time=collapsed(it.time-origin)) }
         clipboard.forEach { it.start = collapsed(it.start) }
         clipboardTransitions.forEach { it.at = collapsed(it.at) }
         onChange()
@@ -1145,7 +1152,7 @@ class Editor(var project: Project = Project()) {
             var position = target?.at ?: cursor
             if (target?.gap != null && hasPicture) {
                 val overflow = max(0.0, length - target.gap.duration)
-                if (overflow > 0) shiftParts(project.clips.filter { it.start >= target.gap.end }.map { it.id }.toSet(), overflow)
+                if (overflow > 0) { shiftParts(project.clips.filter { it.start >= target.gap.end }.map { it.id }.toSet(), overflow);project.shiftBookmarks(target.gap.end,overflow) }
             } else if (target?.kind == PasteKind.SOUND && !hasPicture && target.right != null) {
                 val chain = TimelineMove.companions(project, setOf(target.right)).getValue(MoveScope.RIGHT)
                 shiftParts(chain.filter { id -> project.clips.any { it.id == id && it.start >= position } }.toSet(), length)
@@ -1174,6 +1181,7 @@ class Editor(var project: Project = Project()) {
                 project.transitions.add(transition.copy(id = uid(), at = transition.at + position,
                     leftId = ids[transition.leftId], rightId = ids[transition.rightId]))
             }
+            project.bookmarks.addAll(clipboardBookmarks.map { it.copy(id=uid(),time=it.time+position) })
             cursor = position
         }
     }
@@ -1194,6 +1202,7 @@ class Editor(var project: Project = Project()) {
         splitAt(position, production)
         val tail = TimelineMove.linked(project, project.clips.filter { it.video && it.start >= position - .000001 }.map { it.id }.toSet())
         shiftParts(tail, length)
+        project.shiftBookmarks(position,length)
         return position
     }
 
@@ -1216,6 +1225,12 @@ class Editor(var project: Project = Project()) {
                 val left = remaining.filter { it.start < r.start }.maxOfOrNull { it.end } ?: r.start
                 val right = remaining.filter { it.start >= r.start }.minOfOrNull { it.start } ?: r.end
                 TimelineSpan(max(r.start, left), min(r.end, right)).takeIf { it.duration > .000001 }
+            }
+            val selectedRange=range
+            if (selectedRange!=null) project.bookmarks.removeAll { it.time>=selectedRange.start && it.time<selectedRange.endInclusive }
+            for (index in project.bookmarks.indices) {
+                val mark=project.bookmarks[index]
+                project.bookmarks[index]=mark.copy(time=max(0.0,mark.time-gaps.sumOf { min(it.duration,max(0.0,mark.time-it.start)) }))
             }
             project.clips.removeAll { it.id in ids }
             project.transitions.removeAll { it.leftId in ids || it.rightId in ids }
@@ -1334,6 +1349,7 @@ class Editor(var project: Project = Project()) {
                     project.clips.add(clip.duplicate(true, keepGroup = true, keepOccurrence = true).apply {
                         video = false; audio = true; selected.add(id)
                     })
+                    clip.effects.removeAll { it.subtitle!=null && it.values["subtitleOwner"]=="audio" }
                 }
             }
         }
@@ -1352,6 +1368,10 @@ class Editor(var project: Project = Project()) {
         val gap = TimelineRules.gap(project, cursor) ?: return
         change {
             shiftParts(project.clips.filter { it.start >= gap.end }.map { it.id }.toSet(), -gap.duration)
+            for (index in project.bookmarks.indices) {
+                val mark=project.bookmarks[index]
+                if (mark.time>=gap.start) project.bookmarks[index]=mark.copy(time=max(gap.start,mark.time-gap.duration))
+            }
             cursor = gap.start
         }
     }
@@ -1397,7 +1417,7 @@ class Editor(var project: Project = Project()) {
             val at = gap?.start ?: cursor
             if (gap != null) {
                 val overflow = max(0.0, clip.duration - gap.duration)
-                if (overflow > 0) shiftParts(project.clips.filter { it.start >= gap.end }.map { it.id }.toSet(), overflow)
+                if (overflow > 0) { shiftParts(project.clips.filter { it.start >= gap.end }.map { it.id }.toSet(), overflow);project.shiftBookmarks(gap.end,overflow) }
             } else openPictureTime(at, clip.duration)
             clip.start = at
             clip.track = (project.clips.filter { it.video }.maxOfOrNull { it.track } ?: -1) + 1
@@ -1461,5 +1481,6 @@ class Editor(var project: Project = Project()) {
         splitTransitions(at)
         project.clips.filter { it.start >= at - .001 }.forEach { it.start += length }
         project.transitions.filter { it.at >= at }.forEach { it.at += length }
+        project.shiftBookmarks(at,length)
     }
 }

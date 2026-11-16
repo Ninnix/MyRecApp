@@ -12,7 +12,7 @@ object TimelineSnap {
             listOf(clip.start, clip.end) + if (clip.frozen != null) emptyList() else
                 clip.marks.filter { mark -> clip.keptIntervals().any { mark >= it.start && mark < it.end } }
                     .map { clip.start + clip.timelineOffset(it) }
-        } + extra + 0.0).map(TimelineMove::time).distinct().sorted()
+        } + project.resolvedBookmarks().filter { it.clip?.id !in excluding }.map { it.time } + extra + 0.0).map(TimelineMove::time).distinct().sorted()
 
     fun snap(project: Project, time: Double, pointsPerSecond: Double): Double {
         val nearest = targets(project).minByOrNull { abs(it - time) } ?: return time

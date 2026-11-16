@@ -86,7 +86,7 @@ object EditorialTimeline {
             .put("OTIO_SCHEMA", "Marker.2").put("metadata", JSONObject()).put("name", name).put("color", color)
             .put("marked_range", range(start, length)).put("comment", "")
         val markers = JSONArray()
-        for (at in project.markers()) markers.put(marker("Bookmark", edge(at), 0.0, "YELLOW"))
+        for (mark in project.resolvedBookmarks()) markers.put(marker(mark.mark.label.ifEmpty { "Bookmark" }, edge(mark.time), 0.0, "YELLOW"))
         for (join in project.transitions.filter { it.id !in native })
             markers.put(marker(join.kind, edge(max(0.0, join.begin)), edge(join.end - join.begin), "PURPLE"))
         val stack = node("Stack.1", "tracks").put("markers", markers).put("children", JSONArray(

@@ -58,20 +58,34 @@ object TitleStyle {
     }
     fun applyLook(fx: Effect, look: Map<String, String>) {
         val border = listOf("outlined", "border", "borderWidth").associateWith { fx.values[it] ?: defaults.getValue(it) }
-        for (key in defaults.keys + listOf("gradientFirst", "gradientLast", "gradientAngle", "path", "fontName")) fx.values.remove(key)
+        for (key in defaults.keys + listOf("gradientFirst", "gradientLast", "gradientAngle", "path", "fontName", "fontIndex")) fx.values.remove(key)
         fx.values.putAll(defaults); fx.values.putAll(look); fx.values.putAll(border)
     }
     private val fonts = linkedMapOf<String, Typeface>()
-    @Synchronized fun font(context: Context, fx: Effect): Typeface {
+    fun font(context: Context, fx: Effect): Typeface {
         val face = fx.values["face"] ?: "system"
         val weight = fx.number("weight", 700f).toInt().coerceIn(100, 1000)
         val italic = fx.values["italic"] == "true"
         val path = fx.values["path"]
-        if (fonts.size >= 64) fonts.remove(fonts.keys.first())
-        return fonts.getOrPut("$face:$weight:$italic:$path") {
+        val imported=FontLibrary.Reference.parse(face)
+        val index=imported?.index ?: fx.number("fontIndex").toInt()
+        val stamp=path?.let { file -> File(file).let { "${it.length()}:${it.lastModified()}" } }
+        val key="$face:$weight:$italic:$path:$index:$stamp"
+        synchronized(fonts) { fonts[key]?.let { return it } }
+        val result=run load@{
             val family = families.firstOrNull { it.id == face }
+            if (imported!=null) {
+                val file=path?.let(::File) ?: error("The project font is missing")
+                require(file.isFile && SourceAudio.hash(file)==imported.digest) { "The project font is missing or changed" }
+                val info=java.io.RandomAccessFile(file,"r").use { input -> FontFile.faces(input.channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY,0,input.length())).getOrNull(index) }
+                    ?: error("The font face is missing")
+                require(info.postScript==imported.postScript) { "The font face changed" }
+                val builder=Typeface.Builder(file).setTtcIndex(index)
+                if (info.weights.isNotEmpty()) builder.setFontVariationSettings("'wght' ${weight.coerceIn(info.weights.first(),info.weights.last())}")
+                return@load builder.build() ?: error("Cannot load the project font")
+            }
             try {
-                val base = if (path != null && File(path).isFile) Typeface.createFromFile(path)
+                val base = if (path != null && File(path).isFile) Typeface.Builder(File(path)).setTtcIndex(index).build() ?: error("Invalid font")
                 else if (family == null) Typeface.create(face, Typeface.NORMAL)
                 else if (family.id == "system") Typeface.DEFAULT
                 else {
@@ -91,12 +105,18 @@ object TitleStyle {
                 Typeface.create(base, if (family?.id == "archivoblack") 400 else weight, italic)
             } catch (_: Exception) { Typeface.create(Typeface.DEFAULT, weight, italic) }
         }
+        synchronized(fonts) {
+            if (fonts.size>=64) fonts.remove(fonts.keys.first())
+            fonts[key]=result
+        }
+        return result
     }
     fun color(fx: Effect, key: String, fallback: String): Int = runCatching { Color.parseColor(fx.values[key] ?: fallback) }.getOrDefault(Color.WHITE)
 
     fun raster(context: Context, fx: Effect, fontSize: Float, maxWidth: Int): Bitmap {
         val size = fontSize.coerceAtLeast(1f)
-        val text = (fx.values["text"] ?: "").take(500)
+        val value=fx.values["text"] ?: ""
+        val text=value.substring(0,value.offsetByCodePoints(0,min(500,value.codePointCount(0,value.length))))
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
             textSize = size; typeface = font(context, fx); letterSpacing = fx.number("tracking")
             color = Color.WHITE

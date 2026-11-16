@@ -346,6 +346,8 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             if (clip != null) drawClip(canvas, clip, t, width, height)
             else drawTransition(output, layer.transition!!, layer.before, layer.after, t)
         }
+        for (cue in project.subtitleCues(t))
+            TitleStyle.draw(canvas,cue.effect.copyEffect().apply { values["text"]=cue.text },width,height,t-cue.start,cue.end-cue.start)
         return if (extended && !keepLinear) WorkingColor.display(output, toneMap = false).also { output.recycle() } else output
         } catch (error: Throwable) { if (!output.isRecycled) output.recycle();throw error }
     }
@@ -677,6 +679,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
 
     private fun annotations(canvas: Canvas,c: Clip,fx: List<Effect>,local: Double,at: Double,width: Int,height: Int) {
         for (e in fx) {
+            if (e.subtitle!=null && e.values["subtitleOwner"]=="audio") continue
             if (e.kind == "Text" && e.values["design"] == "1") {
                 val phase = e.phase
                 val elapsed = if (phase == null) local - e.from else phase.offset + phase.elapsed(c.sourceTime(at)) - e.number("titleOrigin")

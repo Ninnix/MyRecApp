@@ -109,6 +109,7 @@ class MainActivity : Activity() {
         movieExports = MovieExports(if (testSession) File(cacheDir, "test-exports/$testSessionId") else File(filesDir, "movie-exports"))
         toolLibrary = getSharedPreferences(if (testSession) "editor-library-test-$testSessionId" else "editor-library", MODE_PRIVATE)
         toolLibraryDirectory = if (testSession) File(cacheDir, "test-libraries/$testSessionId") else File(filesDir, "editor-library")
+        fontLibrary=FontLibrary(File(toolLibraryDirectory,"fonts"))
         store =
             ProjectStore(
                 if (testSession) File(cacheDir, "test-projects/$testSessionId")
@@ -197,6 +198,7 @@ class MainActivity : Activity() {
                     }
                 }
             "projects" -> projects()
+            "bookmarks" -> panels.bookmarks()
             "addVideo" -> importVideo()
             "addMedia" -> {
                 playback.pause()
@@ -1004,10 +1006,18 @@ class MainActivity : Activity() {
     } catch (failure: Exception) { message(failure.message ?: "Cannot insert the original range"); false }
 
     private var lutCallback: ((String, String) -> Unit)? = null
+    internal lateinit var fontLibrary: FontLibrary
+    private var fontLibraryDone: (() -> Unit)?=null
     private var fontCallback: ((String, String) -> Unit)? = null
 
+    fun importFonts(done: ()->Unit) {
+        fontCallback=null;fontLibraryDone=done
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type="*/*";addCategory(Intent.CATEGORY_OPENABLE);putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true)
+        },33)
+    }
     fun importFont(callback: (String, String) -> Unit) {
-        fontCallback = callback
+        fontLibraryDone=null;fontCallback = callback
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
         }, 33)
@@ -1057,41 +1067,36 @@ class MainActivity : Activity() {
             return
         }
         if (requestCode == 33) {
-            val callback = fontCallback; fontCallback = null
-            val uri = data?.data
-            if (resultCode == RESULT_OK && callback != null && uri != null) {
-                val project = editor.project.id
+            val callback=fontCallback;val done=fontLibraryDone;fontCallback=null;fontLibraryDone=null
+            val uris=if (data?.clipData!=null) (0 until data.clipData!!.itemCount).map { data.clipData!!.getItemAt(it).uri } else listOfNotNull(data?.data)
+            if (resultCode==RESULT_OK && uris.isNotEmpty()) {
+                val project=editor.project.id
                 worker.execute {
-                    try {
-                        val bytes = contentResolver.openInputStream(uri)!!.use { input ->
-                            val output = java.io.ByteArrayOutputStream()
-                            val buffer = ByteArray(65536)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                require(output.size() + count <= 16 * 1024 * 1024) { "Choose a font smaller than 16 MB" }
-                                output.write(buffer, 0, count)
+                    var added=0;var existing=0;val errors=mutableListOf<String>()
+                    var selected: Pair<String,String>?=null
+                    for (uri in uris.take(256)) {
+                        val temp=File(cacheDir,"font-${uid()}.partial")
+                        try {
+                            contentResolver.openInputStream(uri)!!.use { input -> temp.outputStream().use { output ->
+                                val buffer=ByteArray(65536);var bytes=0L
+                                while (true) { val n=input.read(buffer);if (n<0) break;bytes+=n
+                                    require(bytes<=FontLibrary.maximumBytes) { "Choose a font smaller than 256 MB" };output.write(buffer,0,n)
+                                }
+                            } }
+                            val (entry,fresh)=fontLibrary.add(temp,documentName(uri))
+                            if (fresh) added++ else existing++
+                            if (callback!=null && selected==null) {
+                                val face=entry.faces.first();val owned=fontLibrary.preserve(face,store.media)
+                                store.registerMedia(project,owned.path);selected=owned.path to face.info.name
                             }
-                            output.toByteArray()
-                        }
-                        require(bytes.size in 12..16 * 1024 * 1024) { "Choose a font smaller than 16 MB" }
-                        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-                        val file = File(store.media, "effect-font-$hash.ttf")
-                        if (!file.exists()) {
-                            val partial = File(store.media, "font-${uid()}.partial")
-                            try {
-                                partial.writeBytes(bytes); android.graphics.Typeface.createFromFile(partial)
-                                check(partial.renameTo(file)) { "Cannot save font" }
-                            } finally { partial.delete() }
-                        }
-                        store.registerMedia(project, file.path)
-                        val name = documentName(uri).substringBeforeLast('.').take(120)
-                        val library = File(toolLibraryDirectory, "fonts").apply { mkdirs() }
-                        val saved = File(library, file.name)
-                        if (!saved.exists()) file.copyTo(saved)
-                        toolLibrary.edit().putString("font.${saved.name}", name).apply()
-                        ui.post { if (editor.project.id == project) callback(file.path, name) }
-                    } catch (e: Exception) { message(e.message ?: "Cannot import font") }
+                        } catch (error: Exception) { errors.add(error.message ?: "Cannot import font") }
+                        finally { temp.delete() }
+                    }
+                    ui.post {
+                        done?.invoke()
+                        if (editor.project.id==project) selected?.let { callback?.invoke(it.first,it.second) }
+                        message(if (errors.isEmpty()) "$added font files imported · $existing already in library" else "$added imported · ${errors.size} failed: ${errors.first()}")
+                    }
                 }
             }
             return

@@ -51,7 +51,10 @@ align to its join.
 Audio filters run in order. Clip speed preserves pitch; Volume offers separate
 edge fades, and Censor audio replaces selected sound with a generated tone.
 Captions and neural audio restoration work offline after their models have been
-downloaded.
+downloaded. Titles and captions share a font library with TTF, OTF, TTC and OTC
+support. Projects retain their fonts through duplication and ZIP transfer, even
+when a font is removed from the library. Bookmark labels and source thumbnails
+are available from Tools or by holding the timeline ruler.
 
 Edits leave the source files alone. Undo and redo survive reopening and project
 switching; ordinary new recordings stay present through earlier editor undo.
@@ -62,8 +65,10 @@ AAC audio to `Movies/MyRec`. HDR and Log editing use half-float working images;
 HDR export requires a decoder and recording surface that preserve ten bits.
 
 Color LUTs accepts project-owned 1D/3D CUBE files and explicit Apple Log
-interpretation. Subtitles have transcript review and regrouping; Pauses saves
-reviewable source cuts. Freeze Frame inserts a hold with Clean/Print styling and
+interpretation. Subtitles have searchable transcript review, shared appearance and motion, and
+independent corrections after cuts and copies. They follow their audio when
+picture is unlinked. Structural edits retain captions and require re-transcription
+before regrouping. Pauses saves reviewable source cuts. Freeze Frame inserts a hold with Clean/Print styling and
 Cut, Continue or Fade-out sound.
 Dolly Zoom follows a subject during capture or separates a person from the
 background in the editor. Crash Zoom provides a timed push and return, triggered

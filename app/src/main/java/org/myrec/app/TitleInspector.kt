@@ -12,6 +12,7 @@ import kotlin.math.*
 class TitleInspector(private val ui: InspectorUi, private val fx: Effect, private val base: Double,
                      private val length: Double, private val changed: () -> Unit,
                      private val replay: (Boolean) -> Unit) {
+    var subtitle=false
     private val a = ui.a
     private val prefs = a.toolLibrary
     private var tab = "Looks"
@@ -34,7 +35,7 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
         val target = File(a.store.media, file.name)
         if (file.canonicalFile != target.canonicalFile && !target.exists()) file.copyTo(target)
         a.store.registerMedia(a.editor.project.id, target.path)
-        fx.values["path"] = target.path; fx.values["fontName"] = name; fx.values["face"] = "imported"
+        fx.values["path"] = target.path; fx.values["fontName"] = name; if (FontLibrary.Reference.parse(fx.values["face"] ?: "")==null) fx.values["face"]="imported"
     }
     private fun color(parent: LinearLayout, label: String, key: String, initial: String) {
         ui.color(parent, label, TitleStyle.color(fx, key, initial)) { set(key, "#%08x".format(it)) }
@@ -57,13 +58,14 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
             setPadding(ui.px(5f), ui.px(3f), ui.px(5f), ui.px(3f))
             minLines = 1; maxLines = 4; filters = arrayOf(InputFilter.LengthFilter(500)); contentDescription = "Title text"
         }
+        input.isEnabled=!subtitle
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { fx.values["text"] = s.toString(); change() }
             override fun afterTextChanged(s: Editable?) {}
         })
         ui.add(parent, input); ui.gap(parent, 8f)
-        timing(parent)
+        if (!subtitle) timing(parent)
         ui.gap(parent, 8f)
         val names = listOf("Looks", "Font", "Fill", "Outline", "Shadow", "Background", "Motion")
         ui.grid(parent, names.size, 4, 32f) { index ->
@@ -207,7 +209,7 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
                 val name = input.text.toString().trim()
                 if (name.isEmpty() || (0 until saved.length()).any { saved.getJSONObject(it).getString("name").equals(name, true) }) input.error = "Choose a unique style name"
                 else {
-                    val keys = TitleStyle.defaults.keys + listOf("gradientFirst", "gradientLast", "gradientAngle", "path", "fontName")
+                    val keys = TitleStyle.defaults.keys + listOf("gradientFirst", "gradientLast", "gradientAngle", "path", "fontName", "fontIndex")
                     val values = fx.values.filterKeys { it in keys }.toMutableMap()
                     values["path"]?.let { path ->
                         val file = File(path); val folder = File(a.toolLibraryDirectory, "fonts").apply { mkdirs() }
@@ -221,18 +223,17 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
         })
     }
     private fun fonts(parent: LinearLayout) {
-        ui.add(parent, ui.action("Import", "Import", background = Color.TRANSPARENT) {
-            hideKeyboard(); a.playback.pause()
-            a.importFont { path, name -> useFont(path, name); rebuild() }
+        ui.add(parent,ui.action("Font library…","Font",background=Color.TRANSPARENT) {
+            hideKeyboard();a.playback.pause()
+            FontLibraryDialog(a,ui) { face ->
+                fx.values["face"]=face.id;fx.values["path"]=face.file.path;fx.values["fontName"]=face.info.name
+                fx.values["fontIndex"]=face.info.index.toString();fx.values["weight"]=face.info.weight.toString();fx.values["italic"]=face.info.italic.toString()
+                rebuild()
+            }.show()
         })
         val favorites = prefs.getStringSet("title.favoriteFonts", emptySet())!!.toMutableSet()
         val families = TitleStyle.families.sortedByDescending { it.id in favorites }
-        val fontPath = fx.values["path"]
-        if (fontPath != null) ui.add(parent, ui.text(fx.values["fontName"] ?: File(fontPath).name, 11f, Panels.RED), 30f)
-        for ((key, value) in prefs.all.toSortedMap()) if (key.startsWith("font.")) {
-            val file = File(a.toolLibraryDirectory, "fonts/${key.removePrefix("font.")}")
-            if (file.isFile) ui.add(parent, ui.action(value.toString(), color = Color.WHITE) { useFont(file.path, value.toString()); rebuild() })
-        }
+        fx.values["path"]?.let { ui.add(parent,ui.text(fx.values["fontName"] ?: File(it).name,11f,Panels.RED),30f) }
         for (family in families) {
             val line = ui.row()
             val caption = ui.text(family.name, 11f).apply {
@@ -260,11 +261,12 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
             }
         })
         val family = TitleStyle.families.firstOrNull { it.id == fx.values["face"] }
-        val weights = family?.weights ?: listOf(400, 500, 600, 700, 800)
+        val imported=FontLibrary.Reference.parse(fx.values["face"] ?: "")?.let { ref -> fx.values["path"]?.let { a.fontLibrary.describe(File(it),ref.index) } }
+        val weights = imported?.weights ?: family?.weights ?: listOf(400, 500, 600, 700, 800)
         if (weights.size > 1) ui.add(parent, ui.action("Weight · ${fx.number("weight", 700f).toInt()}", color = Color.WHITE) {
-            a.choose("Weight", weights.map { when(it) { 400 -> "Regular"; 500 -> "Medium"; 600 -> "Semibold"; 700 -> "Bold"; else -> "Extra bold" } }) { set("weight", weights[it]); rebuild() }
+            a.choose("Weight", weights.map { when(it) { 400 -> "Regular"; 500 -> "Medium"; 600 -> "Semibold"; 700 -> "Bold"; 800 -> "Extra bold"; else -> it.toString() } }) { set("weight", weights[it]); rebuild() }
         })
-        if (family?.italic != false) ui.toggle(parent, "Italic", fx.values["italic"] == "true") { set("italic", it) }
+        if (imported==null && family?.italic != false) ui.toggle(parent, "Italic", fx.values["italic"] == "true") { set("italic", it) }
         ui.segments(parent, listOf("Left", "Center", "Right"), fx.values["align"] ?: "Center") { set("align", it); rebuild() }
         slider(parent, "Letter spacing", "tracking", 0f, -.05f, .25f)
         slider(parent, "Line spacing", "lineSpacing", 0f, 0f, .8f)

@@ -1610,6 +1610,8 @@ class Panels(private val a: MainActivity) {
             LinearLayout.LayoutParams(0, px(72f), 1f),
         )
         add(content, settings)
+        button(content,"Fonts") { FontLibraryDialog(a,InspectorUi(a,factor)).show() }
+        button(content,"Bookmarks") { bookmarks() }
     }
 
     fun voiceover(work: VoiceDraft) {
@@ -1806,7 +1808,7 @@ class Panels(private val a: MainActivity) {
                     }
                     "Volume" -> temporary.project = checkNotNull(audioDraft).snapshot()
                     "Censor audio" -> temporary.project = checkNotNull(censorDraft).duplicate()
-                    "Subtitles" -> temporary.project = checkNotNull(subtitlesDraft).project.duplicate()
+                    "Subtitles", "Subtitle appearance" -> temporary.project = checkNotNull(subtitlesDraft).project.duplicate()
                     "Pauses" -> temporary.project = checkNotNull(pausesDraft).snapshot()
                     "Freeze Frame" -> temporary.project = checkNotNull(freezeDraft).duplicate()
                     "Enhance audio" -> temporary.replaceChain(effects, Effects.audio)
@@ -4143,27 +4145,82 @@ class Panels(private val a: MainActivity) {
             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Transcript", work.transcript()))
             a.message("Transcript copied")
         }
+        button(controls,"Appearance") { subtitleAppearance(work) }
+        button(controls,"Fonts") { FontLibraryDialog(a,InspectorUi(a,factor)).show() }
         button(controls, "Words per caption") {
-            a.choose("Words per caption", listOf("1", "3", "6", "10")) { i ->
-                work.regroup(listOf(1, 3, 6, 10)[i]); reviewSubtitles(work)
+            a.choose("Words per caption", (1..16).map { it.toString() }) { i ->
+                work.regroup(i+1); reviewSubtitles(work)
             }
-        }
+        }.isEnabled=work.groupingAvailable
+        if (!work.groupingAvailable) hint(controls,"Footage changed. Re-transcribe to change subtitle grouping.")
+        button(controls,"Remove all subtitles") { work.removeAll();reviewSubtitles(work) }
         slider(controls, "Vertical position", work.project.clips.flatMap { it.effects }
             .firstOrNull { it.subtitle != null }?.number("y", .9f) ?: .9f, .05f, .95f) {
             work.placement("y", it.toString()); renderDraft()
         }
-        for (phrase in work.rows()) {
-            button(controls, "${timeLabel(phrase.time)} · ${phrase.text}") {
-                editor.cursor = phrase.time; renderDraft()
-                val input = EditText(a).apply { setText(phrase.text); setTextColor(Color.WHITE) }
-                android.app.AlertDialog.Builder(a).setTitle("Correct subtitle").setView(input)
-                    .setNegativeButton("Cancel", null)
-                    .setNeutralButton("Remove") { _, _ -> work.remove(phrase.id); reviewSubtitles(work) }
-                    .setPositiveButton("Save") { _, _ -> work.correct(phrase.id, input.text.toString()); reviewSubtitles(work) }
-                    .show()
+        val rows=work.rows()
+        var visible=rows
+        val list=object: ListView(a) {
+            override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+                parent.requestDisallowInterceptTouchEvent(true)
+                return super.onInterceptTouchEvent(event)
+            }
+        }.apply { setBackgroundColor(BG);dividerHeight=px(.5f) }
+        val adapter=object: BaseAdapter() {
+            override fun getCount()=visible.size
+            override fun getItem(position: Int)=visible[position]
+            override fun getItemId(position: Int)=position.toLong()
+            override fun getView(position: Int,convert: View?,parent: ViewGroup): View {
+                val phrase=visible[position]
+                return (convert as? TextView ?: text("",10f).apply { minHeight=px(44f);maxLines=2;ellipsize=android.text.TextUtils.TruncateAt.END }).apply {
+                    text="${timeLabel(phrase.time)} · ${phrase.text}"
+                    setOnClickListener {
+                        editor.cursor=phrase.time;renderDraft()
+                        val input=EditText(a).apply { setText(phrase.text);setTextColor(Color.WHITE) }
+                        android.app.AlertDialog.Builder(a).setTitle("Correct subtitle").setView(input)
+                            .setNegativeButton("Cancel",null)
+                            .setNeutralButton("Remove") { _,_ -> work.remove(phrase.id);reviewSubtitles(work) }
+                            .setPositiveButton("Save") { _,_ -> work.correct(phrase.id,input.text.toString());reviewSubtitles(work) }.show()
+                    }
+                }
             }
         }
+        list.adapter=adapter
+        if (rows.size>12) {
+            val search=EditText(a).apply { hint="Search subtitles";setTextColor(Color.WHITE);setHintTextColor(MUTED);isSingleLine=true }
+            search.addTextChangedListener(object: TextWatcher {
+                override fun beforeTextChanged(value: CharSequence?,start: Int,count: Int,after: Int) {}
+                override fun onTextChanged(value: CharSequence?,start: Int,before: Int,count: Int) {
+                    visible=rows.filter { it.text.contains(value ?: "",ignoreCase=true) };adapter.notifyDataSetChanged()
+                }
+                override fun afterTextChanged(value: Editable?) {}
+            })
+            add(controls,search,44f)
+        }
+        add(controls,list,min(220f,max(44f,rows.size*44f)))
         renderDraft()
+    }
+
+    private fun subtitleAppearance(work: SubtitlesDraft) {
+        val style=work.appearance() ?: return
+        val original=work.project.duplicate()
+        val body=setup("Subtitle appearance",{ work.applyAppearance(style);reviewSubtitles(work) })
+        subtitlesDraft=work
+        cancelPanel={ work.project.clips.clear();work.project.clips.addAll(original.clips.map { it.duplicate() });reviewSubtitles(work) }
+        val controls=contentWithPreview(body)
+        val inspector=TitleInspector(InspectorUi(a,factor),style,0.0,max(1.0,work.project.duration),{
+            work.applyAppearance(style);renderDraft()
+        }) { exit ->
+            a.playback.pause()
+            val cue=work.project.subtitleCues().firstOrNull { it.end>editor.cursor } ?: work.project.subtitleCues().firstOrNull()
+            if (cue!=null) {
+                val (entrance,release)=TitleMotion.ends(style,cue.end-cue.start)
+                editor.cursor=if (exit) max(cue.start,cue.end-release-.35) else cue.start
+                renderDraft()
+                ui.postDelayed({ if (subtitlesDraft===work && title=="Subtitle appearance") a.playback.play(min(cue.end,editor.cursor+(if (exit) release else entrance)+.7)) },80)
+            }
+        }.apply { subtitle=true }
+        inspector.build(controls);renderDraft()
     }
 
     fun captions() {
@@ -4178,7 +4235,7 @@ class Panels(private val a: MainActivity) {
                 "Auto captions",
                 {
                     val snapshot = editor.project.duplicate()
-                    val targets = editor.targets().filter { it.video }.map { it.id }.toSet()
+                    val targets = editor.targets().filter { it.audio }.map { it.id }.toSet()
                     val scope = editor.range ?: (editor.targets().minOfOrNull { it.start } ?: 0.0)..
                         (editor.targets().maxOfOrNull { it.end } ?: snapshot.duration)
                     progress("Generating captions", 0f) { job.cancelled = true }
@@ -4188,18 +4245,12 @@ class Panels(private val a: MainActivity) {
                                     job.generate(snapshot, language, scope) { p ->
                                         ui.post { updateProgress(p) }
                                     }
+                                val result=snapshot.duplicate()
+                                SubtitlesDraft.install(result,captions.map { it.words },scope,targets)
                                 ui.post {
                                     if (editor.project != snapshot) {
                                         close(); a.message("The project changed. Generate subtitles again.")
-                                    } else {
-                                        val result = snapshot.duplicate()
-                                        result.clips.filter { it.id in targets }.forEach { clip ->
-                                            clip.effects.removeAll { it.subtitle != null && clip.start + it.from < scope.endInclusive && clip.start + it.to > scope.start }
-                                        }
-                                        val series = uid()
-                                        for (caption in captions) SubtitlesDraft.attach(result, series, caption.words, targets)
-                                        reviewSubtitles(SubtitlesDraft(editor, result))
-                                    }
+                                    } else reviewSubtitles(SubtitlesDraft(editor,result))
                                 }
                             } catch (e: Exception) {
                                 ui.post {
@@ -4258,6 +4309,43 @@ class Panels(private val a: MainActivity) {
                     .start()
             }
         }
+    }
+
+    fun bookmarks() {
+        a.playback.pause()
+        val body=setup("Bookmarks")
+        val scroll=ScrollView(a);val content=column().apply { pad(this,12f) };scroll.addView(content);add(body,scroll)
+        button(content,"Add at ${timeLabel(editor.cursor)}") {
+            if (editor.addBookmark()==null) a.message("Choose a frame in a clip")
+            bookmarks()
+        }
+        val marks=editor.project.resolvedBookmarks()
+        if (marks.isEmpty()) hint(content,"No marks yet. Add one at a frame, or use Bookmark while recording.")
+        val generation=panel
+        val thumbnails=mutableListOf<Pair<ResolvedBookmark,ImageView>>()
+        for (mark in marks) {
+            val row=row();val thumbnail=ImageView(a).apply { scaleType=ImageView.ScaleType.CENTER_CROP;contentDescription="Bookmark source frame" }
+            row.addView(thumbnail,LinearLayout.LayoutParams(px(56f),px(40f)))
+            val label=text("${mark.mark.label.ifEmpty { "Bookmark" }} · ${timeLabel(mark.time)}",10f)
+            label.setOnClickListener { close();a.playback.seek(mark.time) }
+            row.addView(label,LinearLayout.LayoutParams(0,px(48f),1f))
+            val rename=text("Rename",9f,RED).apply { setOnClickListener {
+                val input=EditText(a).apply { setText(mark.mark.label);setTextColor(Color.WHITE) }
+                android.app.AlertDialog.Builder(a).setTitle("Bookmark label").setView(input).setNegativeButton("Cancel",null)
+                    .setPositiveButton("Save") { _,_ -> editor.renameBookmark(mark.id,input.text.toString());bookmarks() }.show()
+            } }
+            row.addView(rename,LinearLayout.LayoutParams(px(45f),px(44f)))
+            row.addView(text("Delete",9f,RED).apply { setOnClickListener { editor.removeBookmark(mark.id);bookmarks() } },LinearLayout.LayoutParams(px(40f),px(44f)))
+            add(content,row)
+            thumbnails.add(mark to thumbnail)
+        }
+        Thread {
+            Frames().use { frames -> for ((mark,thumbnail) in thumbnails) {
+                if (panel!==generation) break
+                val bitmap=runCatching { mark.clip?.let { frames.frame(it.path,mark.sourceTime,144,96) } }.getOrNull()
+                ui.post { if (panel===generation) thumbnail.setImageBitmap(bitmap) else bitmap?.recycle() }
+            } }
+        }.start()
     }
 
     fun cover() {

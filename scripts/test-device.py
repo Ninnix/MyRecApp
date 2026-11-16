@@ -3,6 +3,7 @@ import argparse, hashlib, os, pathlib, shlex, subprocess, sys, uuid
 root=pathlib.Path(__file__).resolve().parent.parent
 parser=argparse.ArgumentParser()
 suite=parser.add_mutually_exclusive_group()
+suite.add_argument('--text',action='store_true')
 suite.add_argument('--existing-effects',action='store_true')
 suite.add_argument('--effect-audit',action='store_true')
 suite.add_argument('--background-effects',action='store_true')
@@ -79,6 +80,7 @@ def capture_settings():
 original_capture_settings=capture_settings()
 subprocess.run([adb,'shell','cmd','statusbar','collapse'],check=True)
 command=[adb,'shell','am','instrument','-w']
+if args.text:command+=['-e','suite','text']
 if args.existing_effects:command+=['-e','suite','existing-effects']
 if args.effect_audit:command+=['-e','suite','effect-audit']
 if args.background_effects:command+=['-e','suite','background-effects']
@@ -127,13 +129,13 @@ if args.orientation:command+=['-e','suite','orientation']
 if args.timeline:command+=['-e','suite','timeline']
 session=str(uuid.uuid4())
 command+=['-e','testSessionId',session,'org.myrec.app.test/org.myrec.app.DeviceTests']
-if args.existing_effects or args.effect_audit or args.background_effects or args.responsive_layout or args.camera_assistance:
+if args.text or args.existing_effects or args.effect_audit or args.background_effects or args.responsive_layout or args.camera_assistance:
  subprocess.run([adb,'shell','am','start','-W','-f','0x10008000','-n','org.myrec.app/.MainActivity','--ez','testSession','true','--es','testSessionId',session],check=True,stdout=subprocess.DEVNULL)
 process=subprocess.Popen(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
 try:
  output,_=process.communicate(timeout=6)
 except subprocess.TimeoutExpired:
- if args.existing_effects or args.effect_audit or args.background_effects or args.camera_assistance or args.microphone or args.responsive_layout or args.stabilization or args.media_editing or args.tool_workspaces or args.live_rotation or args.capture_endurance or args.originals or args.covers or args.movie_exports or args.capture_focus or args.capture_compatibility or args.showcase or args.camera_preview or args.capture_controls or args.hdr_full or args.scene or args.restoration or args.time_effects or args.hdr_pipeline or args.audio_editing or args.preview or args.effect_contracts or args.storage_ui or args.references or args.exports or args.studio:
+ if args.text or args.existing_effects or args.effect_audit or args.background_effects or args.camera_assistance or args.microphone or args.responsive_layout or args.stabilization or args.media_editing or args.tool_workspaces or args.live_rotation or args.capture_endurance or args.originals or args.covers or args.movie_exports or args.capture_focus or args.capture_compatibility or args.showcase or args.camera_preview or args.capture_controls or args.hdr_full or args.scene or args.restoration or args.time_effects or args.hdr_pipeline or args.audio_editing or args.preview or args.effect_contracts or args.storage_ui or args.references or args.exports or args.studio:
   def shell(*words):return subprocess.run([adb,'shell',*words],text=True,stdout=subprocess.PIPE,check=True).stdout
   awake='mWakefulness=Awake' in shell('dumpsys','power')
   unlocked='showing=false' in shell('dumpsys','window','policy')
@@ -151,7 +153,8 @@ settings_unchanged=capture_settings()==original_capture_settings
 if settings_unchanged:print('Normal recording preferences unchanged',flush=True)
 else:print('FAIL Normal recording preferences changed during the isolated test',flush=True)
 name='capture-endurance-test.txt' if args.capture_endurance else 'originals-test.txt' if args.originals else 'covers-test.txt' if args.covers else 'movie-exports-test.txt' if args.movie_exports else 'capture-focus-test.txt' if args.capture_focus else 'showcase-test.txt' if args.showcase else 'capture-compatibility-test.txt' if args.capture_compatibility else 'hdr-full-test.txt' if args.hdr_full else 'scene-test.txt' if args.scene else 'restoration-test.txt' if args.restoration else 'time-effects-test.txt' if args.time_effects else 'hdr-pipeline-test.txt' if args.hdr_pipeline else 'audio-editing-test.txt' if args.audio_editing else 'preview-test.txt' if args.preview else 'effect-contracts-test.txt' if args.effect_contracts else 'storage-ui-test.txt' if args.storage_ui else 'archives-test.txt' if args.archives else 'storage-test.txt' if args.storage else 'tool-workspaces-test.txt' if args.tool_workspaces else 'media-editing-test.txt' if args.media_editing else 'capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
-if args.existing_effects:name='existing-effects-test.txt'
+if args.text:name='text-test.txt'
+elif args.existing_effects:name='existing-effects-test.txt'
 elif args.effect_audit:name='effect-audit-test.txt'
 if args.background_effects:name='background-effects-test.txt'
 if args.camera_assistance:name='camera-assistance-test.txt'
@@ -163,6 +166,6 @@ if args.stabilization:name='stabilization-test.txt'
 if not settings_unchanged or result.returncode or any(text in result.stdout for text in ['FAIL ', 'Process crashed', 'INSTRUMENTATION_FAILED']) or 'PASS ' not in result.stdout:sys.exit(1)
 if args.parity:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/parity-screens/.',str(root/'artifacts/parity/android')],check=True)
-elif not args.existing_effects and not args.effect_audit and not args.background_effects and not args.camera_assistance and not args.microphone and not args.hdr_graphics and not args.responsive_layout and not args.stabilization and not args.capture_endurance and not args.originals and not args.covers and not args.movie_exports and not args.capture_focus and not args.showcase and not args.capture_compatibility and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
+elif not args.text and not args.existing_effects and not args.effect_audit and not args.background_effects and not args.camera_assistance and not args.microphone and not args.hdr_graphics and not args.responsive_layout and not args.stabilization and not args.capture_endurance and not args.originals and not args.covers and not args.movie_exports and not args.capture_focus and not args.showcase and not args.capture_compatibility and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-screens/.',str(root/'artifacts/screens')],check=True)
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-export.mp4',str(root/'artifacts/test-export.mp4')],check=True)

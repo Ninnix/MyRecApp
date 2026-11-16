@@ -39,8 +39,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 10) throw NewerProject()
-        require(version in 1L..10L) { "Invalid project version" }
+        if (version > 11) throw NewerProject()
+        require(version in 1L..11L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -220,7 +220,7 @@ class ProjectStore(val root: File) {
             }
         }
         val o = JSONObject().apply {
-            put("version", 10); put("id", p.id); put("name", p.name)
+            put("version", 11); put("id", p.id); put("name", p.name)
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
@@ -651,6 +651,7 @@ class ProjectStore(val root: File) {
         require(p.clips.size <= 100000 && p.clips.map { it.id }.distinct().size == p.clips.size) {
             "Invalid clip identities"
         }
+        require(p.bookmarks.size<=100000 && p.bookmarks.all { it.valid() && !it.local } && p.bookmarks.map { it.id }.distinct().size==p.bookmarks.size) { "Invalid project bookmarks" }
         for (c in p.clips) {
             id(c.occurrence)
             c.link?.let(::id)
@@ -659,7 +660,7 @@ class ProjectStore(val root: File) {
                 c.start.isFinite() && c.rate.isFinite() && c.gainDb.isFinite() &&
                 c.sourceIn >= 0 && c.sourceOut > c.sourceIn && c.start >= 0 &&
                 c.rate > 0 && c.rate <= 16 && c.track >= 0 &&
-                c.marks.all { it.isFinite() && it >= 0 }) { "Invalid clip timing or format" }
+                c.marks.all { it.isFinite() && it >= 0 } && c.bookmarks.size<=100000 && c.bookmarks.all { it.valid() } && c.bookmarks.map { it.id }.distinct().size==c.bookmarks.size) { "Invalid clip timing or format" }
             require(c.pauses?.valid() != false && c.frozen?.let { it.valid() && it.sourceTime >= c.sourceIn && it.sourceTime < c.sourceOut } != false) { "Invalid source timing edits" }
             require(c.fadeIn?.valid() != false && c.fadeOut?.valid() != false && c.censors.size <= 10000 &&
                 c.censors.all { it.valid(c.duration) }) { "Invalid audio edits" }
@@ -691,8 +692,9 @@ class ProjectStore(val root: File) {
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 10)
+            put("version", 11)
             put("captureCount", p.captureCount)
+            put("bookmarks",JSONArray().apply { p.bookmarks.forEach { put(JSONObject().put("id",it.id).put("time",it.time).put("label",it.label)) } })
             put("id", p.id)
             put("name", p.name)
             put("width", p.width)
@@ -720,6 +722,7 @@ class ProjectStore(val root: File) {
                                 put("linked", c.linked)
                                 put("gain", c.gainDb)
                                 put("marks", JSONArray(c.marks))
+                                put("bookmarks",JSONArray().apply { c.bookmarks.forEach { mark -> put(JSONObject().put("id",mark.id).put("time",mark.time).put("label",mark.label).put("local",mark.local)) } })
                                 AudioEditsJson.encode(c, this)
                                 c.pauses?.let { put("pauses", PauseJson.encode(it)) }
                                 c.frozen?.let { put("frozen", JSONObject().apply {
@@ -802,6 +805,10 @@ class ProjectStore(val root: File) {
                 fps = o.optInt("fps", 30),
                 captureCount = o.optInt("captureCount", 0),
             )
+        o.optJSONArray("bookmarks")?.let { marks ->
+            require(marks.length()<=100000)
+            for (j in 0 until marks.length()) marks.getJSONObject(j).let { mark -> p.bookmarks.add(SourceBookmark(mark.getString("id"),mark.getDouble("time"),mark.getString("label"))) }
+        }
         val clips = o.getJSONArray("clips")
         for (i in 0 until clips.length()) {
             val c = clips.getJSONObject(i)
@@ -834,6 +841,10 @@ class ProjectStore(val root: File) {
             clip.photo = c.optBoolean("photo", false)
             c.optJSONArray("marks")?.let { marks ->
                 for (j in 0 until marks.length()) clip.marks.add(marks.getDouble(j))
+            }
+            c.optJSONArray("bookmarks")?.let { marks ->
+                require(marks.length()<=100000)
+                for (j in 0 until marks.length()) marks.getJSONObject(j).let { mark -> clip.bookmarks.add(SourceBookmark(mark.getString("id"),mark.getDouble("time"),mark.getString("label"),mark.getBoolean("local"))) }
             }
             for (j in 0 until effects.length()) {
                 val e = effects.getJSONObject(j)
@@ -912,6 +923,7 @@ class ProjectStore(val root: File) {
                 )
             )
         }
+        if (o.optInt("version",1)<11) p.upgradeSubtitles()
         validate(p)
         return p
     }

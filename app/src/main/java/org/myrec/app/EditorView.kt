@@ -52,7 +52,9 @@ class EditorView(
     private var longPressed = false
     private val longPress = Runnable {
         val clip = gestureClip
-        if (!moved && !moving && clip != null && editor.range == null && editor.mark == null) {
+        if (!moved && !moving && timeline.contains(downX,downY) && downY<timeline.top+16) {
+            longPressed=true;performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);action("bookmarks")
+        } else if (!moved && !moving && clip != null && editor.range == null && editor.mark == null) {
             longPressed = true
             editor.toggleSelection(clip)
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)

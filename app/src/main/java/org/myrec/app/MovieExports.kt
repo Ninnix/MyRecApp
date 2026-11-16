@@ -65,7 +65,7 @@ class MovieExports(private val root: File) {
             models.put(kind, AudioModels.version(kind))
         val inputs = JSONObject().put("version", 1)
             // Bump this when changing render math, bundled fonts or processing runtimes.
-            .put("renderer", "myrec-movie-4").put("platform", Build.FINGERPRINT)
+            .put("renderer", "myrec-movie-5").put("platform", Build.FINGERPRINT)
             .put("width", width).put("height", height).put("color", color.name)
             .put("edit", hash(canonical(edit))).put("sources", files).put("models", models)
         return Ticket(project.id, hash(canonical(inputs)), inputs)

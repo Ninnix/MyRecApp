@@ -56,6 +56,7 @@ fun Editor.setPauseReviews(reviews: Map<String, PauseReview?>) {
                 val delta = clip.duration - old.duration
                 project.clips.filter { it !== clip && it.start >= oldEnd - .000001 }.forEach { it.start += delta }
                 project.transitions.filter { it.at >= oldEnd - .000001 }.forEach { it.at += delta }
+                project.shiftBookmarks(oldEnd,delta)
             }
         }
     }
@@ -82,5 +83,6 @@ fun Editor.resizeFreeze(id: String, seconds: Double, pushIn: Float, continueAudi
         val delta = seconds - old
         project.clips.filter { it !== clip && it.start >= end - .000001 }.forEach { it.start += delta }
         project.transitions.filter { it.at >= end - .000001 }.forEach { it.at += delta }
+        project.shiftBookmarks(end,delta)
     }
 }
