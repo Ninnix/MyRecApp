@@ -54,6 +54,18 @@ object YouRecDocument {
             .put("keyframes",JSONArray(p.keyframes.map { JSONObject().put("id",uuid(it.id)).put("time",it.time).put("value",nativeValue(it.value)) }))
     }
     private fun nativeEffect(fx: Effect,clip: Clip): JSONObject {
+        if (fx.kind=="Freeze Frame") {
+            require(clip.frozen!=null && fx.enabled && fx.from==0.0 && fx.to>=clip.duration && fx.number("pushIn") in 0f.. .15f) { "This held-frame style needs a MyRec ZIP" }
+            val hold=fx.number("hold",(clip.frozen!!.offset+clip.duration).toFloat()).toDouble()
+            val params=listOf(
+                EffectParameter("hold",ParameterKind.Slider(.5,10.0,.1),EffectValue.Number(hold)),
+                EffectParameter("push",ParameterKind.Slider(0.0,.15,.01),EffectValue.Number(fx.number("pushIn").toDouble())),
+                EffectParameter("style",ParameterKind.Picker(listOf("Clean","Print")),EffectValue.Choice(fx.values["style"] ?: "Clean")),
+                EffectParameter("audio",ParameterKind.Picker(listOf("Cut","Continue","Fade out over hold")),EffectValue.Choice(when (fx.values["audio"]) { "Fade out" -> "Fade out over hold";null -> "Cut";else -> fx.values.getValue("audio") })))
+            require(params.all { it.valid() })
+            return JSONObject().put("id",uuid(fx.id)).put("kind","freezeFrame").put("enabled",true).put("version",1).put("algorithm",1)
+                .put("start",clip.sourceIn).put("end",clip.sourceOut).put("parameters",JSONArray(params.map { parameter(it,it.value,it.id!="hold") }))
+        }
         val kind=names[fx.kind] ?: unsupported(fx.kind)
         if (fx.parameters.isEmpty()) unsupported("legacy ${fx.kind} processing")
         if (fx.motion!=null && fx.kind!="Color Correction") unsupported("${fx.kind} pose animation")
@@ -62,7 +74,7 @@ object YouRecDocument {
         if (origin<start && fx.from>0) unsupported("scoped ${fx.kind} phase")
         val defaults=Effect.create(fx.kind).parameters.associateBy { it.id }
         val out=JSONObject().put("id",uuid(fx.id)).put("kind",kind).put("enabled",fx.enabled).put("version",1)
-            .put("start",min(origin,start)).put("end",clip.sourceTime(clip.start+min(fx.to,clip.duration)))
+            .put("start",min(origin,start)).put("end",if (clip.frozen!=null) clip.sourceOut else clip.sourceTime(clip.start+min(fx.to,clip.duration)))
             .put("parameters",JSONArray(fx.parameters.map { p -> parameter(p,defaults.getValue(p.id).value,
                 ExistingEffects.animatable(fx.kind,p.id) && !(fx.kind=="Negative Strobe" && p.id in listOf("timedBurst","burstLength"))) }))
         if (fx.to>=clip.duration) fx.values["clockEnd"]?.toDoubleOrNull()?.let { out.put("end",max(it,out.getDouble("end"))) }
@@ -84,6 +96,16 @@ object YouRecDocument {
     private fun effect(o: JSONObject,clip: Clip): Effect {
         val kind=names.entries.firstOrNull { it.value==o.getString("kind") }?.key ?: unsupported(o.getString("kind"))
         if (o.getInt("version")!=1 || o.optInt("algorithm",0)!=(if (kind in listOf("Color Isolation","Chroma Key")) 2 else 1)) unsupported("$kind algorithm version")
+        if (kind=="Freeze Frame") {
+            require(clip.frozen!=null && o.getBoolean("enabled"))
+            val p=objects(o.getJSONArray("parameters")).associateBy { it.getString("id") }
+            require(p.keys==setOf("hold","push","style","audio") && p.values.all { array(it,"keyframes").length()==0 }) { "Animated held-frame styling needs a newer reader" }
+            fun number(key: String)=(value(p.getValue(key).getJSONObject("value")) as EffectValue.Number).value
+            fun choice(key: String)=(value(p.getValue(key).getJSONObject("value")) as EffectValue.Choice).value
+            require(number("hold") in .5..10.0 && number("push") in 0.0.. .15 && choice("style") in listOf("Clean","Print") && choice("audio") in listOf("Cut","Continue","Fade out over hold"))
+            return Effect(id=o.getString("id"),kind=kind,to=clip.duration,values=mutableMapOf("hold" to number("hold").toString(),"pushIn" to number("push").toString(),
+                "style" to choice("style"),"audio" to if (choice("audio")=="Fade out over hold") "Fade out" else choice("audio")))
+        }
         if (o.has("analysisFile") || o.has("analysisDataFile") || o.has("palette") || o.has("lockedPalette")) unsupported("$kind saved analysis")
         val result=Effect.create(kind).copy(id=o.getString("id"),enabled=o.getBoolean("enabled"))
         val parameters=objects(o.getJSONArray("parameters"))
@@ -97,8 +119,8 @@ object YouRecDocument {
             p.keyframes.addAll(objects(array(stored,"keyframes")).map { EffectKeyframe(it.getDouble("time"),value(it.getJSONObject("value")),it.getString("id")) })
             require(p.valid()) { "Invalid $kind parameter" }
         }
-        result.from=clip.timelineOffset(max(clip.sourceIn,o.getDouble("start"))).coerceAtLeast(0.0)
-        result.to=clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))).coerceAtMost(clip.duration)
+        result.from=if (clip.frozen!=null) 0.0 else clip.timelineOffset(max(clip.sourceIn,o.getDouble("start"))).coerceAtLeast(0.0)
+        result.to=if (clip.frozen!=null) clip.duration else clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))).coerceAtMost(clip.duration)
         val origin=o.getDouble("start")-if (kind=="Crash Zoom") o.optDouble("phaseOffset",0.0) else 0.0
         result.values["origin"]=origin.toString()
         result.phase=EffectPhase(o.getDouble("start"),o.optDouble("phaseOffset",0.0),objects(array(o,"strobeTimeMap")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
@@ -106,14 +128,14 @@ object YouRecDocument {
         result.motion=o.optJSONObject("motion")?.let(::motion)
         return result
     }
-    private fun motion(m: EffectMotion): JSONObject {
+    internal fun motion(m: EffectMotion): JSONObject {
         fun pose(p: Map<String,Double>)=JSONObject().put("values",JSONObject(p))
         return JSONObject().put("a",pose(m.a)).put("b",pose(m.b)).put("duration",m.duration).put("frame",m.frame)
             .put("timing",JSONObject().put("curve",m.timing.curve.name.replaceFirstChar { it.lowercase() }).put("rise",m.timing.rise)
                 .put("release",m.timing.release).put("ramp",m.timing.ramp.name.replaceFirstChar { it.lowercase() }))
             .put("clock",JSONArray(m.clock.map { JSONObject().put("source",it.source).put("elapsed",it.elapsed) }))
     }
-    private fun motion(o: JSONObject): EffectMotion {
+    internal fun motion(o: JSONObject): EffectMotion {
         fun pose(key: String): Map<String,Double> {
             val p=o.getJSONObject(key);if (!p.isNull("lut") || !p.isNull("look")) unsupported("animated LUT selection")
             val v=p.getJSONObject("values");return v.keys().asSequence().associateWith { v.getDouble(it) }
@@ -123,13 +145,23 @@ object YouRecDocument {
         return EffectMotion(pose("a"),pose("b"),EffectTiming(curve("curve"),t.getDouble("rise"),t.getDouble("release"),curve("ramp")),o.getDouble("duration"),o.getDouble("frame"),
             objects(array(o,"clock")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
     }
-    private fun content(clip: Clip,source: String): JSONObject {
-        if (clip.frozen!=null) unsupported("held-frame audio and styling")
+    private fun content(clip: Clip,source: String,canvas: Pair<Int,Int>,shape: (String)->Pair<Int,Int>): JSONObject {
+        if (clip.frozen!=null && clip.effects.any { it.kind !in Effects.audio && (it.from>0 || it.to<clip.duration) }) unsupported("locally scoped held-frame layers")
         val out=JSONObject().put("id",uuid(clip.id)).put("sourceID",source).put("start",clip.sourceIn).put("end",clip.sourceOut)
         val effects=JSONArray()
         for (fx in clip.effects) when (fx.kind) {
             in Effects.audio -> Unit
             in names -> effects.put(nativeEffect(fx,clip))
+            "Crop", "Zoom" -> {
+                if (!fx.enabled || fx.from>0 || fx.to<clip.duration || out.has("crop") || fx.number("strength",1f)!=1f || fx.number("animate")!=0f) unsupported("scoped, blended or stacked crops")
+                out.put("crop",YouRecGeometry.crop(fx,clip,canvas,shape))
+            }
+            "Image" -> {
+                if (!fx.enabled) unsupported("disabled image overlays")
+                val images=out.optJSONArray("images") ?: JSONArray().also { out.put("images",it) }
+                images.put(YouRecGeometry.image(fx,clip,canvas,shape))
+            }
+            "Placement" -> Unit
             "Text" -> {
                 if (fx.subtitle!=null) continue
                 if (!fx.enabled) unsupported("disabled text layers")
@@ -149,7 +181,7 @@ object YouRecDocument {
                 out.put("color",color)
             }
             "Mirror" -> {
-                if (!fx.enabled || fx.from>0 || fx.to<clip.duration) unsupported("scoped mirror transforms")
+                if (!fx.enabled || fx.from>0 || fx.to<clip.duration || fx.number("strength",1f)!=1f || fx.number("animate")!=0f) unsupported("scoped or blended mirror transforms")
                 out.put("mirror",JSONObject().put("id",uuid(fx.id)).put("horizontal",fx.number("horizontal",if (fx.number("vertical")==0f) 1f else 0f)>0).put("vertical",fx.number("vertical")>0))
             }
             "Stabilize" -> {
@@ -163,7 +195,7 @@ object YouRecDocument {
         if (effects.length()>0) out.put("videoEffects",effects)
         require(clip.rate in .25..4.0) { "YouRec cannot preserve this speed setting" }
         if (abs(clip.rate-1)>.000001) out.put("speed",JSONObject().put("id",uuid(clip.id+":speed")).put("rate",clip.rate))
-        clip.frozen?.let { out.put("frozenFrame",JSONObject().put("sourceTime",it.sourceTime).put("duration",it.duration).put("offset",0)) }
+        clip.frozen?.let { out.put("frozenFrame",JSONObject().put("sourceTime",it.sourceTime).put("duration",it.duration).put("offset",it.offset)) }
         return out
     }
     private fun ink(value: String): JSONObject {
@@ -185,7 +217,7 @@ object YouRecDocument {
         for (key in listOf("tracking","lineSpacing","borderWidth","shadowBlur","shadowOffset","padding","radius")) design.put(key,d.getValue(key).toDouble())
         d["gradientFirst"]?.let { design.put("gradient",JSONObject().put("first",ink(it)).put("last",ink(d.getValue("gradientLast"))).put("angle",fx.number("gradientAngle"))) }
         val out=JSONObject().put("id",uuid(fx.id)).put("text",d["text"] ?: "Your text").put("start",clip.sourceTime(clip.start+fx.from))
-            .put("end",clip.sourceTime(clip.start+min(fx.to,clip.duration))).put("x",fx.number("x",.5f)).put("y",fx.number("y",.5f)).put("size",fx.number("size",.065f))
+            .put("end",if (clip.frozen!=null) clip.sourceOut else clip.sourceTime(clip.start+min(fx.to,clip.duration))).put("x",fx.number("x",.5f)).put("y",fx.number("y",.5f)).put("size",fx.number("size",.065f))
             .put("style","bold").put("color","white").put("appearance",design)
         if (FontLibrary.Reference.parse(d.getValue("face"))!=null && d["path"]!=null)
             require(java.io.File(d.getValue("path")).name=="font-${FontLibrary.Reference.parse(d.getValue("face"))!!.digest}.sfnt") { "Invalid imported font asset" }
@@ -196,7 +228,7 @@ object YouRecDocument {
         return out
     }
     private fun text(o: JSONObject,clip: Clip,paths: Map<String,String>): Effect {
-        val fx=Effect(kind="Text",id=o.getString("id"),from=clip.timelineOffset(max(clip.sourceIn,o.getDouble("start"))),to=clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))))
+        val fx=Effect(kind="Text",id=o.getString("id"),from=if (clip.frozen!=null) 0.0 else clip.timelineOffset(max(clip.sourceIn,o.getDouble("start"))),to=if (clip.frozen!=null) clip.duration else clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))))
         fx.values.putAll(TitleStyle.defaults);fx.values["text"]=o.getString("text");fx.values["x"]=o.getDouble("x").toString();fx.values["y"]=o.getDouble("y").toString();fx.values["size"]=o.getDouble("size").toString()
         val d=o.optJSONObject("appearance") ?: unsupported("legacy title design")
         fx.values["face"]=d.getString("face");fx.values["weight"]=d.getInt("weight").toString();fx.values["italic"]=d.getBoolean("italic").toString()
@@ -234,21 +266,26 @@ object YouRecDocument {
             }
         }
     })
-    fun snapshot(project: Project,sources: Map<String,String>,captureCount: Int): JSONObject {
+    fun snapshot(project: Project,sources: Map<String,String>,captureCount: Int,shape: (String)->Pair<Int,Int> = ProjectStore::shape): JSONObject {
         require(project.duration<=604800 && project.width%2==0 && project.height%2==0 && project.fps in listOf(24,25,30,50,60)) { "YouRec requires an even canvas, a supported frame rate and a timeline under seven days" }
         val picture=JSONArray();val sound=JSONArray();val links=linkedMapOf<String,MutableList<String>>()
         var subtitles: JSONObject?=null
         for (clip in project.clips) {
             if (clip.effects.any { it.subtitle!=null } && !clip.audio) unsupported("video-owned legacy captions")
-            if (!clip.video && clip.effects.any { it.kind !in Effects.audio && it.subtitle==null }) unsupported("audio-owned video processing")
+            if (!clip.video && clip.effects.any { it.kind !in Effects.audio && it.subtitle==null && !(clip.frozen!=null && it.kind=="Freeze Frame") }) unsupported("audio-owned video processing")
             val map=mapping(clip)
-            if (clip.video) picture.put(JSONObject().put("occurrenceID",uuid(clip.occurrence)).put("start",time(clip.start)).put("content",content(clip,sources.getValue(clip.path)))
+            if (clip.video) picture.put(JSONObject().put("occurrenceID",uuid(clip.occurrence)).put("start",time(clip.start)).put("content",content(clip,sources.getValue(clip.path),project.width to project.height,shape))
                 .put("layer",clip.track).put("localOrigin",time(0.0)).put("mapping",map))
             if (clip.audio) {
                 val audioId=if (clip.video) uuid(clip.id+":audio") else uuid(clip.id)
                 val item=JSONObject().put("id",audioId).put("occurrenceID",uuid(clip.occurrence)).put("sourceID",sources.getValue(clip.path))
                     .put("start",time(clip.start)).put("mapping",map).put("localOrigin",time(0.0)).put("volumeDB",max(-60f,clip.gainDb)).put("muted",clip.gainDb<=-60).put("enhancements",JSONArray())
                 if (clip.video) { item.put("followsVideo",uuid(clip.id));links.getOrPut(clip.link ?: clip.group) { mutableListOf() }.addAll(listOf(uuid(clip.id),audioId)) }
+                else if (clip.frozen!=null) {
+                    val owner=project.clips.singleOrNull { it.video && it.occurrence==clip.occurrence && clip.link!=null && it.link==clip.link && abs(it.start-clip.start)<.00001 && abs(it.duration-clip.duration)<.00001 }
+                        ?: unsupported("unlinked held-frame audio")
+                    item.put("followsVideo",uuid(owner.id))
+                }
                 clip.fadeIn?.let { item.put("fadeIn",JSONObject().put("seconds",it.seconds).put("elapsed",it.elapsed)) }
                 clip.fadeOut?.let { item.put("fadeOut",JSONObject().put("seconds",it.seconds).put("elapsed",it.elapsed)) }
                 item.put("enhancements",JSONArray(clip.effects.filter { it.kind in Effects.audio }.map { fx ->
@@ -287,13 +324,97 @@ object YouRecDocument {
             bookmarks.put(JSONObject().put("id",id).put("label",mark.label).put("anchor",anchor))
         }
         timeline.put("bookmarks",bookmarks)
+        timeline.put("placements",placements(project,shape))
         subtitles?.let { timeline.put("subtitles",it) }
         timeline.put("transitions",JSONArray(project.transitions.map(::transition)))
+        timeline.put("generated",JSONArray(project.transitions.map { t ->
+            if (t.end>project.duration+.00001) unsupported("transition tails beyond the source timeline")
+            JSONObject().put("id",uuid(t.id+":generated")).put("owner",uuid(t.id)).put("interval",interval(max(0.0,t.begin),max(0.0,t.end)))
+                .apply { if (t.kind=="Still") t.leftId?.let { put("freezeVideo",uuid(it)) } }
+        }))
         return JSONObject().put("captureCursor",captureCount).put("state",JSONObject().put("timeline",timeline).put("outputSize",JSONArray(listOf(project.width,project.height))))
     }
+    private fun placements(project: Project,shape: (String)->Pair<Int,Int>): JSONArray {
+        val videos=project.clips.filter { it.video };val result=linkedMapOf<Set<String>,JSONObject>()
+        if (videos.none { c -> c.effects.any { it.kind=="Placement" } }) return JSONArray()
+        val events=java.util.TreeMap<Double,MutableList<Pair<Clip,Boolean>>>()
+        for (c in videos) {
+            events.getOrPut(c.start) { mutableListOf() }.add(c to true);events.getOrPut(c.end) { mutableListOf() }.add(c to false)
+            for (fx in c.effects.filter { it.kind=="Placement" }) for (at in listOf(c.start+fx.from,c.start+min(c.duration,fx.to))) if (at>c.start && at<c.end) events.getOrPut(at) { mutableListOf() }
+        }
+        require(events.size<=200000)
+        val used=mutableSetOf<String>();val activeById=linkedMapOf<String,Clip>();val order=videos.withIndex().associate { it.value.id to it.index }
+        var work=0L
+        for ((entry,next) in events.entries.toList().zipWithNext()) {
+            for ((clip,present) in entry.value) if (present) activeById[clip.id]=clip else activeById.remove(clip.id)
+            val a=entry.key;val b=next.key
+            if (b<=a) continue
+            work+=activeById.size;require(work<=2000000) { "This placement layout exceeds the compatible archive limit" }
+            val members=activeById.values.map(ArchiveGeometry::owner).toSet()
+            val selected=activeById.values.associateWith { c -> c.effects.lastOrNull { it.kind=="Placement" && it.active((a+b)/2-c.start) && ArchiveGeometry.matches(it,members) } }
+            if (selected.values.none { it!=null }) continue
+            val active=activeById.values.sortedWith(compareBy<Clip> { selected[it]?.number("order",it.track.toFloat()) ?: it.track.toFloat() }.thenBy { order.getValue(it.id) })
+            require(active.size>1) { "A single-picture placement needs a MyRec ZIP" }
+            val settings=JSONArray()
+            for ((rank,c) in active.withIndex()) {
+                val fx=selected[c]
+                if (fx!=null) {
+                    used.add(fx.id)
+                    if (fx.values["geometry"]!="canvas") {
+                        val size=shape(c.path)
+                        require(abs(size.first.toDouble()/size.second-project.width.toDouble()/project.height)<.00001 &&
+                            c.effects.none { it.enabled && it.kind in listOf("Crop","Zoom","Image","Text","Rotation","Mirror") }) {
+                            "This legacy placement combines source framing or overlays. Use a MyRec ZIP to preserve it."
+                        }
+                    }
+                }
+                settings.put(uuid(c.id));settings.put(YouRecGeometry.placement(fx ?: Effect(kind="Placement",values=mutableMapOf("geometry" to "canvas","reframe" to "1")),
+                    project.width to project.height,rank))
+            }
+            val ids=active.map { uuid(it.id) }.toSet()
+            val region=JSONObject().put("id",uuid("placement:"+ids.sorted().joinToString())).put("participants",JSONArray(ids.toList())).put("videos",settings)
+            val prior=result[ids]
+            require(prior==null || prior.toString()==region.toString()) { "Changing placement for the same pictures needs a MyRec ZIP" }
+            result[ids]=region
+        }
+        val stored=videos.flatMap { c -> c.effects.filter { it.kind=="Placement" && it.values["members"]!=null }.map { c to it } }
+        for ((members,saved) in stored.filter { it.second.id !in used }.groupBy { it.second.values.getValue("members") }) {
+            val owners=members.split(',').toSet();val participants=owners.map { owner ->
+                val candidates=videos.filter { ArchiveGeometry.owner(it)==owner }
+                require(candidates.size==1) { "An inactive layout with split source maps needs a MyRec ZIP" }
+                val clip=candidates.single();clip to (saved.firstOrNull { it.first.id==clip.id }?.second ?: clip.effects.first { it.values["members"]==members })
+            }.sortedBy { it.second.number("order",it.first.track.toFloat()) }
+            val ids=participants.map { uuid(it.first.id) }.toSet();val settings=JSONArray()
+            for ((rank,pair) in participants.withIndex()) { settings.put(uuid(pair.first.id));settings.put(YouRecGeometry.placement(pair.second,project.width to project.height,rank)) }
+            val region=JSONObject().put("id",uuid("placement:"+ids.sorted().joinToString())).put("participants",JSONArray(ids.toList())).put("videos",settings)
+            require(result[ids]==null || result[ids].toString()==region.toString()) { "Conflicting saved placement layouts need a MyRec ZIP" }
+            result[ids]=region;saved.forEach { used.add(it.second.id) }
+        }
+        require(videos.flatMap { it.effects }.none { it.kind=="Placement" && (!it.enabled || it.id !in used) }) { "An isolated placement needs a MyRec ZIP" }
+        return JSONArray(result.values.toList())
+    }
+    private fun placements(timeline: JSONObject,project: Project) {
+        val regions=objects(array(timeline,"placements"))
+        if (regions.isEmpty()) return
+        require(regions.size<=100000)
+        val owners=objects(array(timeline,"video")).map { it.getJSONObject("content").getString("id") }.toSet()
+        val clips=project.clips.filter { it.video }.groupBy { it.group };var work=0
+        for (region in regions) {
+            val ids=array(region,"participants").let { (0 until it.length()).map(it::getString).toSet() }
+            require(ids.size>1 && owners.containsAll(ids)) { "Invalid native placement owners" }
+            val settings=region.getJSONArray("videos");require(settings.length()==ids.size*2)
+            val data=(0 until settings.length() step 2).associate { settings.getString(it) to settings.getJSONObject(it+1) };require(data.keys==ids)
+            for (owner in ids) for (c in clips.getValue(owner)) {
+                require(++work<=2000000) { "This native layout exceeds the import limit" }
+                c.effects.add(YouRecGeometry.placement(data.getValue(owner),uuid("${region.getString("id")}:${c.id}"),0.0,c.duration).apply {
+                    values["region"]=region.getString("id");values["members"]=ids.sorted().joinToString(",");values["owner"]=owner
+                })
+            }
+        }
+    }
+
     fun project(snapshot: JSONObject,header: JSONObject,paths: Map<String,String>): Project {
         val state=snapshot.getJSONObject("state");val timeline=state.getJSONObject("timeline")
-        for (key in listOf("placements","generated")) if (array(timeline,key).length()>0) unsupported(key)
         val subtitles=timeline.optJSONObject("subtitles")
         val sources=objects(header.getJSONArray("sources")).associateBy { it.getString("id") }
         val size=state.optJSONArray("outputSize")
@@ -304,27 +425,37 @@ object YouRecDocument {
             val body=if (video) item.getJSONObject("content") else item
             val source=sources.getValue(body.getString("sourceID"));val filename=source.getString("filename")
             var cursor=seconds(item.getJSONObject("start"));val owner=body.getString("id")
+            val picture=if (video) body else objects(array(timeline,"video")).firstOrNull { it.getJSONObject("content").getString("id")==item.optString("followsVideo") }?.getJSONObject("content")
             if (source.optJSONArray("videoEffects")?.length()?.let { it>0 }==true) unsupported("captured source processing")
             for ((index,run) in objects(item.getJSONObject("mapping").getJSONArray("runs")).withIndex()) {
                 val from=run.getDouble("sourceStart");val to=run.getDouble("sourceEnd");val duration=seconds(run.getJSONObject("duration"))
                 require(duration>0 && from>=0 && to>=from && to<=source.getDouble("duration")+.001)
                 val hold=from==to
-                if (hold) unsupported("held-frame source processing")
-                val c=Clip(id=if (index==0) owner else uuid("$owner:$index"),path=paths.getValue(filename),sourceIn=from,sourceOut=if (hold) min(source.getDouble("duration"),from+.000001) else to,
+                val frozen=picture?.optJSONObject("frozenFrame")
+                if (hold && video && frozen==null) unsupported("held source maps without a frozen-frame recipe")
+                if (hold && frozen!=null) require(abs(frozen.getDouble("sourceTime")-from)<.000001 && abs(frozen.getDouble("duration")-duration)<.00001) { "A frozen-frame recipe has a different source clock" }
+                val freeze=picture?.let { objects(array(it,"videoEffects")).firstOrNull { fx -> fx.getString("kind")=="freezeFrame" } }
+                val offset=frozen?.optDouble("offset",0.0) ?: 0.0
+                val continueAudio=hold && freeze?.let { fx -> objects(array(fx,"parameters")).firstOrNull { it.getString("id")=="audio" }?.let { value(it.getJSONObject("value"))!=EffectValue.Choice("Cut") } }==true
+                val c=Clip(id=if (index==0) owner else uuid("$owner:$index"),path=paths.getValue(filename),sourceIn=from,sourceOut=if (hold) max(from+.000001,min(source.getDouble("duration"),picture?.optDouble("end",from+1.0/result.fps) ?: from+1.0/result.fps)) else to,
                     start=cursor,track=if (video) item.optInt("layer",0) else 0,rate=if (hold) 1.0 else (to-from)/duration,
                     video=video,audio=!video,linked=membership.containsKey(owner),group=owner,
                     occurrence=item.getString("occurrenceID"),link=membership[owner],photo=source.optBoolean("isStillPhoto",false),
-                    gainDb=if (item.optBoolean("muted",false) || !video && run.optBoolean("silent",false)) -60f else item.optDouble("volumeDB",0.0).toFloat(),frozen=if (hold) FrozenFrame(from,duration) else null)
+                    gainDb=if (item.optBoolean("muted",false) || !video && run.optBoolean("silent",false) && !continueAudio) -60f else item.optDouble("volumeDB",0.0).toFloat(),frozen=if (hold) FrozenFrame(from,duration,offset) else null)
+                require(c.frozen?.valid()!=false && (!hold || from<source.getDouble("duration"))) { "Invalid held-frame clock" }
+                fun active(o: JSONObject)=o.getDouble("start")<(if (hold) from+.0000001 else to) && o.getDouble("end")>from
                 if (video) {
-                    val allowed=setOf("id","sourceID","start","end","speed","frozenFrame","videoEffects","texts","color","mirror","stabilization")
+                    val allowed=setOf("id","sourceID","start","end","speed","frozenFrame","videoEffects","texts","color","mirror","stabilization","crop","images")
                     for (key in body.keys()) if (key !in allowed && body.opt(key)!=JSONObject.NULL) unsupported(key)
-                    c.effects.addAll(objects(array(body,"videoEffects")).filter { it.getDouble("start")<to && it.getDouble("end")>from }.map { effect(it,c).apply {
+                    c.effects.addAll(objects(array(body,"videoEffects")).filter(::active).map { effect(it,c).apply {
                         if (kind in listOf("Undercranking","Step Printing")) {
                             parameter("speed")?.let { p -> p.value=EffectValue.Number(1.0);p.keyframes.clear() }
                             motion=motion?.let { m -> m.copy(a=m.a-"speed",b=m.b-"speed").takeIf { it.a.isNotEmpty() } }
                         }
                     } })
-                    c.effects.addAll(objects(array(body,"texts")).filter { it.getDouble("start")<to && it.getDouble("end")>from }.map { text(it,c,paths) })
+                    c.effects.addAll(objects(array(body,"texts")).filter(::active).map { text(it,c,paths) })
+                    body.optJSONObject("crop")?.let { c.effects.add(YouRecGeometry.crop(it,c.duration)) }
+                    c.effects.addAll(objects(array(body,"images")).filter(::active).map { YouRecGeometry.image(it,c,result.width to result.height,paths) })
                     body.optJSONObject("stabilization")?.let {
                         require(it.optInt("version",1)==1)
                         val fx=Effect.create("Stabilize").copy(id=it.optString("id",uuid(owner+":stabilization")),to=c.duration)
@@ -343,6 +474,7 @@ object YouRecDocument {
                         c.effects.add(fx)
                     }
                 } else {
+                    if (hold && freeze!=null) c.effects.add(effect(freeze,c))
                     for ((phrase,words) in objects(array(item,"subtitleWords")).groupBy { it.getString("phraseID") }) {
                         val settings=subtitles ?: unsupported("caption words without a design")
                         val kept=words.filter { it.getDouble("start")<to && it.getDouble("end")>from }.map { SubtitleWord(it.getString("id"),it.getString("text"),it.getDouble("start"),it.getDouble("end")) }
@@ -380,6 +512,7 @@ object YouRecDocument {
             }
         }
         objects(array(timeline,"video")).forEach { add(it,true) };objects(array(timeline,"audio")).forEach { add(it,false) }
+        placements(timeline,result)
         for (o in objects(array(timeline,"bookmarks"))) {
             val anchor=o.getJSONObject("anchor");val id=o.getString("id");val label=o.getString("label")
             anchor.optJSONObject("project")?.let { result.bookmarks.add(SourceBookmark(id,seconds(it.getJSONObject("_0")),label)) }
@@ -397,6 +530,15 @@ object YouRecDocument {
             }
         }
         for (o in objects(array(timeline,"transitions"))) result.transitions.add(transition(o,result))
+        for (o in objects(array(timeline,"generated"))) {
+            val owner=result.transitions.singleOrNull { it.id==o.getString("owner") } ?: unsupported("unowned generated frames")
+            val interval=o.getJSONObject("interval");val lo=seconds(interval.getJSONObject("start"));val hi=seconds(interval.getJSONObject("end"))
+            if (hi>result.duration+.00001) unsupported("generated tail frames beyond the source timeline")
+            require(abs(lo-max(0.0,owner.begin))<.00001 && abs(hi-max(0.0,owner.end))<.00001) { "A generated transition has a different clock" }
+            val freeze=o.optString("freezeVideo").takeIf { it.isNotEmpty() && it!="null" }
+            val expected=if (owner.kind=="Still") result.clips.firstOrNull { it.id==owner.leftId }?.group else null
+            require(freeze==expected) { "Invalid generated still owner" }
+        }
         val timing=result.subtitleTimingFingerprint()
         for (fx in result.clips.flatMap { it.effects }.filter { it.subtitle!=null }) fx.values["subtitleTiming"]=timing
         return result
@@ -404,7 +546,6 @@ object YouRecDocument {
     private fun interval(start: Double,end: Double)=JSONObject().put("start",time(start)).put("end",time(end))
     private val joins=mapOf("Dissolve" to "dissolve","Fade through color" to "fadeBlack","Wipe" to "wipe","Split screen" to "split","Hitchcock" to "hitchcock","Whip pan" to "whip","Flash Cut" to "flashCut","Still" to "still","Defocus" to "defocus")
     private fun transition(t: Transition): JSONObject {
-        if (t.kind=="Still") unsupported("generated still transitions")
         val c=t.controls ?: unsupported("legacy transition sound curves")
         if (t.windowFrom!=null || t.windowTo!=null || t.phaseFrom!=0f || t.phaseTo!=1f) unsupported("sliced transitions")
         fun framing(f: TransitionFraming)=JSONObject().put("x",f.x).put("y",f.y).put("zoom",f.zoom)
@@ -434,7 +575,7 @@ object YouRecDocument {
         val clock=TransitionClock(t);t.at=seconds(o.getJSONObject("origin"))+(clock.lower+clock.upper)/2
         t.overlap=clock.overlap;return t
     }
-    fun capture(clip: Clip,source: String)=content(clip,source)
+    fun capture(clip: Clip,source: String,canvas: Pair<Int,Int> = 1920 to 1080,shape: (String)->Pair<Int,Int> = ProjectStore::shape)=content(clip,source,canvas,shape)
     fun originals(header: JSONObject,paths: Map<String,String>): List<Clip> = objects(header.getJSONArray("sources")).map {
         if (array(it,"videoEffects").length()>0) unsupported("captured source processing")
         val duration=it.getDouble("duration");require(duration.isFinite() && duration in .000001..604800.0)

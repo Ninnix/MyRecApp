@@ -41,8 +41,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 12) throw NewerProject()
-        require(version in 1L..12L) { "Invalid project version" }
+        if (version > 13) throw NewerProject()
+        require(version in 1L..13L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -267,7 +267,7 @@ class ProjectStore(val root: File) {
             }
         }
         val o = JSONObject().apply {
-            put("version", 12); put("id", p.id); put("name", p.name)
+            put("version", 13); put("id", p.id); put("name", p.name)
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
@@ -753,6 +753,7 @@ class ProjectStore(val root: File) {
             require(c.effects.size <= 10000 && c.effects.map { it.id }.distinct().size == c.effects.size &&
                 c.effects.all { it.id.isNotBlank() && it.id.length <= 100 }) { "Invalid effect identities" }
             for (effect in c.effects) {
+                if (effect.values.containsKey("geometry")) require(ArchiveGeometry.valid(effect)) { "Invalid source geometry" }
                 if (effect.kind=="Color LUTs") {
                     val recovery=effect.values["localRecovery"]
                     require(recovery==null || recovery.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..1.0 }==true) { "Invalid local highlight recovery" }
@@ -785,7 +786,7 @@ class ProjectStore(val root: File) {
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 12)
+            put("version", 13)
             put("captureCount", p.captureCount)
             put("bookmarks",JSONArray().apply { p.bookmarks.forEach { put(JSONObject().put("id",it.id).put("time",it.time).put("label",it.label)) } })
             put("id", p.id)

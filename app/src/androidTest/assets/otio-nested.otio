@@ -1,0 +1,134 @@
+{
+    "OTIO_SCHEMA": "Timeline.1",
+    "metadata": {},
+    "name": "Nested Rome",
+    "global_start_time": null,
+    "tracks": {
+        "OTIO_SCHEMA": "Stack.1",
+        "metadata": {},
+        "name": "tracks",
+        "source_range": null,
+        "effects": [],
+        "markers": [],
+        "enabled": true,
+        "color": null,
+        "children": [
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {},
+                "name": "",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "color": null,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Stack.1",
+                        "metadata": {},
+                        "name": "",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30.0,
+                                "value": 30.0
+                            },
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30.0,
+                                "value": 15.0
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "color": null,
+                        "children": [
+                            {
+                                "OTIO_SCHEMA": "Track.1",
+                                "metadata": {},
+                                "name": "",
+                                "source_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30.0,
+                                        "value": 60.0
+                                    },
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30.0,
+                                        "value": 30.0
+                                    }
+                                },
+                                "effects": [],
+                                "markers": [],
+                                "enabled": true,
+                                "color": null,
+                                "children": [
+                                    {
+                                        "OTIO_SCHEMA": "Clip.2",
+                                        "metadata": {},
+                                        "name": "Rome source",
+                                        "source_range": {
+                                            "OTIO_SCHEMA": "TimeRange.1",
+                                            "duration": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30.0,
+                                                "value": 120.0
+                                            },
+                                            "start_time": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30.0,
+                                                "value": 30.0
+                                            }
+                                        },
+                                        "effects": [
+                                            {
+                                                "OTIO_SCHEMA": "LinearTimeWarp.1",
+                                                "metadata": {},
+                                                "name": "",
+                                                "effect_name": "LinearTimeWarp",
+                                                "enabled": true,
+                                                "time_scalar": 2.0
+                                            }
+                                        ],
+                                        "markers": [],
+                                        "enabled": true,
+                                        "color": null,
+                                        "media_references": {
+                                            "DEFAULT_MEDIA": {
+                                                "OTIO_SCHEMA": "ExternalReference.1",
+                                                "metadata": {},
+                                                "name": "",
+                                                "available_range": {
+                                                    "OTIO_SCHEMA": "TimeRange.1",
+                                                    "duration": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30.0,
+                                                        "value": 600.0
+                                                    },
+                                                    "start_time": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30.0,
+                                                        "value": 0.0
+                                                    }
+                                                },
+                                                "available_image_bounds": null,
+                                                "target_url": "nested-source.mp4"
+                                            }
+                                        },
+                                        "active_media_reference_key": "DEFAULT_MEDIA"
+                                    }
+                                ],
+                                "kind": "Video"
+                            }
+                        ]
+                    }
+                ],
+                "kind": "Video"
+            }
+        ]
+    }
+}

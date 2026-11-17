@@ -78,19 +78,30 @@ data class EffectMotion(
             val end = b.getValue(key)
             when (key) {
                 "hue", "rotation" -> wrap(start + f * wrap(end - start))
-                "zoom" -> if (start > 0 && end > 0) start * (end / start).pow(f) else start + (end - start) * f
+                "zoom", "contentZoom" -> if (start > 0 && end > 0) start * (end / start).pow(f) else start + (end - start) * f
                 else -> start + (end - start) * f
             }
         }
     }
 
     fun valid(effect: Effect): Boolean {
-        if (effect.kind !in listOf("Color Correction", "Color LUTs") || !duration.isFinite() || duration <= 0 ||
+        if (effect.kind !in listOf("Color Correction", "Color LUTs", "Crop", "Image", "Placement") || !duration.isFinite() || duration <= 0 ||
             !frame.isFinite() || frame <= 0 || !timing.rise.isFinite() || timing.rise < 0 ||
             !timing.release.isFinite() || timing.release < 0 || timing.ramp.hasRise || clock.size > 100000) return false
         if (clock.any { !it.source.isFinite() || !it.elapsed.isFinite() } ||
             clock.zipWithNext().any { (l, r) -> l.source >= r.source || l.elapsed > r.elapsed }) return false
         if (effect.kind == "Color LUTs") return a.keys==b.keys && GradeModel.valid(a) && GradeModel.valid(b)
+        if (effect.kind in listOf("Crop", "Image", "Placement")) {
+            val keys=when (effect.kind) {
+                "Crop" -> setOf("x","y","zoom","rotation")
+                "Image" -> setOf("x","y","size","opacity")
+                else -> setOf("x","y","w","h","frameX","frameY","contentZoom","left","right","top","bottom")
+            }
+            return a.keys==keys && b.keys==keys && listOf(a,b).all { pose ->
+                pose.values.all { it.isFinite() } && ArchiveGeometry.valid(effect.copy(motion=null,
+                    values=effect.values.toMutableMap().apply { for ((key,value) in pose) put(key,value.toString()) }))
+            }
+        }
         val expected = effect.parameters.associateBy { it.id }
         return listOf(a, b).all { pose -> pose.keys == expected.keys && pose.all { (id, value) ->
             expected.getValue(id).kind.accepts(EffectValue.Number(value))

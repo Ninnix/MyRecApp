@@ -35,9 +35,13 @@ decoder. The C11 frontend has a 960-point Vorbis STFT, 32 ERB bands, normalized
 complex features, the reference's 0.99 normalization coefficient, and two-frame
 lookahead. Its graphs total 8,587,242 bytes and
 match those in the [author's ONNX archive](https://github.com/Rikorose/DeepFilterNet/tree/978576aa8400552a4ce9730838c635aa30db5e61/models).
-On a 96,000-sample fixture, the C path and an independent libdf/ONNX calculation
-measured 1.11e-7 maximum sample error and 1.59e-8 RMS error. This checks the
-bounded-window implementation; it does not establish streaming or Core ML parity.
+The runtime adapter exposes recurrent state in derived graphs without changing
+the pinned learned tensor payloads. The frontend, convolution history, GRU
+states, complex filtering and overlap-add run continuously per channel.
+An independent libdf/ONNX comparison measured maximum sample error below 1.2e-7
+and correlation above 0.99999999999. Exact-output recovery after process
+termination was checked on a three-minute stereo source. These checks do not
+establish Core ML numerical or listening parity.
 
 Studio restoration uses VoiceFixer's analysis network and vocoder at 44.1 kHz.
 C11 handles band-limited rate conversion, STFT/mel analysis, log inversion, and
@@ -55,9 +59,10 @@ Each neural stage processes an original source before trims, timeline speed,
 gain, fades and censoring. Distinct stereo channels use independent predictions;
 exact dual mono can reuse a prediction. Reflected windows, atomic output and
 SHA-checked checkpoints allow completed work to be reused. RNNoise compensates
-initial latency and flushes partial final hops. DeepFilter currently uses
-independent bounded windows; it still needs the reference's continuous per-hop
-recurrent state. Core ML and ONNX conversion/precision differences also remain.
+initial latency and flushes partial final hops. DeepFilter preserves per-channel
+continuous state and drains the final partial hop and lookahead. Checked DSP/RNN
+snapshots and a verified output prefix let interrupted preparation resume.
+Core ML and ONNX conversion/precision differences remain.
 
 The app offers missing models when you add a filter. Downloads can be cancelled
 and resumed and are verified before first use. VoiceFixer's original and adapted

@@ -97,8 +97,9 @@ adds a separate project card. Unreadable files stay with the original collection
 they can still be saved. A file with no readable picture is not made into a
 synthetic black take.
 
-Zip project includes the originals, every editing state, and Timeline.otio.
-Use Projects → Import to restore a ZIP or import a video. Restore checks entry
+Zip project offers MyRec and compatible YouRec archives. MyRec ZIP includes the
+originals, every editing state, and Timeline.otio. Use Projects → Import to
+restore a ZIP, import an OTIO timeline, or import a video. Restore checks entry
 paths and checksums. Missing or damaged media keeps its editing history; damaged
 payloads are retained separately. In Original recordings, Relink original lets
 you select the unchanged source. Missing overlay images have a relink action too.
@@ -111,10 +112,34 @@ Cancellation removes only that operation's unpublished files. Startup cleans
 marked interrupted copies, restores and repairs; referenced history assets and
 files whose project indexes cannot be checked are kept.
 
+Compatible YouRec ZIP uses native schema 12 for supported edits, with an
+additional MyRec payload for the complete Android state. Source-centered crops,
+rotations and mirrors, image opacity and motion, overlapping placement layouts,
+held-frame offsets, supported hold styling/audio, and generated Still transitions
+have native converters. Placement moves the completed picture, including its
+overlays; edge cropping only clips it. Imported layouts retain their owners
+through cuts, moves and copies. Unsupported combinations are refused before
+publishing an archive. These include framing outside the source, some legacy
+placement combinations, independently styled caption series, saved platform
+analysis, sliced native transitions and incompatible inference/color recipes.
+Actual iOS import/export acceptance remains open.
+
+This development build saves MyRec project format 13. Older builds refuse the
+new format rather than interpreting native geometry as legacy screen offsets.
+
 Unzip an archive and open Timeline.otio in an external editor for a source
 conform with tracks, gaps, trims, speed, bookmarks, and simple dissolves.
 MyRec grades, overlays, processing and custom transitions need recreation there.
-The conform's JSON timing is tested; external-editor import still needs checks.
+OTIO import also reads nested and trimmed stacks/tracks and retains a dissolve's
+phase when a composition trim cuts through it. Choose the folder containing the
+referenced media, or use originals already owned by MyRec. Folder imports copy
+and verify readable media into the new project. Relative parent components are
+normalized as lookup keys; references cannot open files outside the selected
+tree or app-owned originals. Ambiguous filenames, network URLs, unsupported processing and unrepresented
+trailing empty time are refused. Missing sources remain identifiable, and the
+original OTIO document is kept privately. Timelines exported by MyRec embed the
+complete current edit for exact MyRec re-import; generic editors use the source
+conform. External-editor and actual iOS acceptance still need checks.
 Audio fades and generated censoring remain in the MyRec project payload.
 Archives currently limit metadata to 64 MB and keep 64 MB of free-space reserve.
 
@@ -382,8 +407,9 @@ are shared by cuts. Speech detail uses reflected 192,000-sample windows with
 flushes the final partial frame. VoiceFixer uses a 44.1 kHz, 112,455-sample
 context with reflected edges, centered vocoder output and 3,087-sample overlap.
 Rate conversion is band limited. The ONNX networks use FP32 rather than the
-reference's Core ML precision; DeepFilter still needs its continuous recurrent
-state contract. Speed changes preserve pitch.
+reference's Core ML precision. DeepFilter now processes the complete stereo
+source with continuous recurrent state and checked resumable progress. Speed
+changes preserve pitch.
 
 ## Export
 

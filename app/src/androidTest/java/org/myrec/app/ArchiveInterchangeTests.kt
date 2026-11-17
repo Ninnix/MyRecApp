@@ -8,6 +8,8 @@ import org.json.*
 
 object ArchiveInterchangeTests {
     fun run(i: Instrumentation,test: (String,()->Unit)->Unit) {
+        InterchangeGeometryTests.run(i,test)
+        TimelineImportTests.run(i,test)
         val root=File(i.targetContext.cacheDir,"native-archive-${uid()}");val store=ProjectStore(root)
         fun fixture(name: String): Clip {
             val file=File(store.media,name)

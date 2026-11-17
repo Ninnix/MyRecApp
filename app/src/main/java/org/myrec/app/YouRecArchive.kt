@@ -42,8 +42,7 @@ object YouRecArchive {
             it.bookmarks.addAll(clip.bookmarks.filter { mark -> it.bookmarks.none { old -> old.id==mark.id } })
         }
             ?: run { sourceClips[clip.path]=clip.duplicate() }
-        val effectPaths=ProjectAssets.clips(saved).flatMap { it.effects.asSequence() }.flatMap { it.assetPaths().asSequence() }.toSet()
-        require(sourceClips.keys.none { it in effectPaths }) { "This project uses the same file as a take and an effect asset. Use a MyRec ZIP to preserve both roles." }
+        require(sourceClips.values.all { it.sourceOut.isFinite() && it.sourceOut in .000001..604800.0 }) { "A source exceeds the compatible archive duration limit" }
         val files=linkedMapOf<String,File>();val names=linkedMapOf<String,String>();val hashes=JSONObject()
         for ((index,path) in paths.withIndex()) {
             stop(cancelled);val file=File(path);check(file.isFile) { "An archived original or asset is missing" }
@@ -61,6 +60,8 @@ object YouRecArchive {
             stop(cancelled);files[name]=file;hashes.put(name,SourceAudio.hash(file,cancelled))
         }
         val portable=ProjectAssets.remap(saved,saved.project.id,saved.project.name) { names.getValue(it) }
+        val shapes=mutableMapOf<String,Pair<Int,Int>>()
+        fun shape(name: String)=shapes.getOrPut(name) { ProjectStore.shape(files.getValue(name).path) }
         val sourceIds=sourceClips.keys.associate { names.getValue(it) to YouRecDocument.uuid("source:${names.getValue(it)}") }
         val sources=JSONArray(sourceClips.map { (path,clip) -> JSONObject().put("id",sourceIds.getValue(names.getValue(path))).put("filename",names.getValue(path))
             .put("duration",clip.sourceOut).put("recordedAt",0).put("sha256",hashes.getString(names.getValue(path))).put("audioOnly",!clip.video).put("isStillPhoto",clip.photo).put("originalName",File(path).name.take(255))
@@ -70,7 +71,7 @@ object YouRecArchive {
             fun snapshot(p: Project) {
                 stop(cancelled)
                 val materialized=Editor(p).apply { load(p,portable.copy(project=p)) }.project
-                val data=YouRecDocument.snapshot(materialized,sourceIds,portable.captures.size).put("myrec",store.encode(p)).toString().toByteArray()
+                val data=YouRecDocument.snapshot(materialized,sourceIds,portable.captures.size,::shape).put("myrec",store.encode(p)).toString().toByteArray()
                 require(data.size<=32000000) { "An editing state exceeds the YouRec archive limit" }
                 metadataBytes+=data.size;require(metadataBytes<=LIMIT) { "Editing history exceeds the archive limit" }
                 val name=digest(data)+".json";metadata["History/$name"]=data;snapshots.put(name)
@@ -79,7 +80,7 @@ object YouRecArchive {
             fun clips(items: List<Clip>)=store.encode(Project(clips=items.toMutableList())).getJSONArray("clips")
             val header=JSONObject().put("schemaVersion",12).put("id",YouRecDocument.uuid(project.id)).put("title",project.name).put("createdAt",0).put("updatedAt",0)
                 .put("sources",sources).put("historyCursor",portable.undo.size).put("snapshotFiles",snapshots)
-                .put("captureLedger",JSONArray(portable.captures.map { JSONObject().put("clip",YouRecDocument.capture(it,sourceIds.getValue(it.path))).put("insertion",false) }))
+                .put("captureLedger",JSONArray(portable.captures.map { JSONObject().put("clip",YouRecDocument.capture(it,sourceIds.getValue(it.path),project.width to project.height,::shape)).put("insertion",false) }))
                 .put("recordingHistoryVersion",1).put("automaticCanvasVersion",1)
                 .put("exportSettings",JSONObject().put("codec","H.264").put("resolution","Project size").put("frameRate",project.fps))
                 .put("myrecSession",JSONObject().put("version",1).put("captures",clips(portable.captures)).put("originals",clips(portable.originals)))

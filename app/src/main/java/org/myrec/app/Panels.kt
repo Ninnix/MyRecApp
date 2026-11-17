@@ -40,6 +40,7 @@ class Panels(private val a: MainActivity) {
     private var progressBar: ProgressBar? = null
     private var progressText: TextView? = null
     private var draft: Effect? = null
+    private val geometryValues=java.util.IdentityHashMap<Effect,Map<String,String>>()
     private var draftReplace: String? = null
     private var draftOrigin = 0.0
     private var cropFrame = true
@@ -1779,6 +1780,11 @@ class Panels(private val a: MainActivity) {
     }
 
     private fun renderDraft() {
+        for (fx in listOfNotNull(draft)+placements.values) if (fx.values["geometry"]!=null) {
+            geometryValues[fx]?.let { ArchiveGeometry.editMotion(fx,it) }
+            if (geometryValues.size>32) geometryValues.clear()
+            geometryValues[fx]=fx.values.toMap()
+        }
         if (renderPending) return
         renderPending = true
         ui.postDelayed(
@@ -1826,7 +1832,7 @@ class Panels(private val a: MainActivity) {
                     }
                     else ->
                         effects.forEach {
-                            if (title == "Crop" && cropFrame)
+                            if (title == "Crop" && cropFrame && it.values["geometry"]!="source")
                                 temporary.targets().forEach { clip ->
                                     clip.effects.removeAll { it.kind == "Crop" }
                                 }
@@ -2044,6 +2050,7 @@ class Panels(private val a: MainActivity) {
                     text("Reset framing", 10f, RED).apply {
                         setOnClickListener {
                             fx.values.clear()
+                            fx.motion=null
                             rotation.progress = 500
                             zoom.progress = 0
                             angle.text = "0°"
@@ -2060,8 +2067,9 @@ class Panels(private val a: MainActivity) {
                 val position = text("Position                                      ›", 10f, RED)
                 position.setOnClickListener {
                     a.choose("Position", listOf("Center", "Top", "Bottom", "Left", "Right")) { i ->
-                        fx.values["x"] = listOf("0", "0", "0", "-0.25", "0.25")[i]
-                        fx.values["y"] = listOf("0", "-0.25", "0.25", "0", "0")[i]
+                        val source=fx.values["geometry"]=="source"
+                        fx.values["x"] = (if (source) listOf(".5",".5",".5","0","1") else listOf("0", "0", "0", "-0.25", "0.25"))[i]
+                        fx.values["y"] = (if (source) listOf(".5","0","1",".5",".5") else listOf("0", "-0.25", "0.25", "0", "0"))[i]
                         renderDraft()
                     }
                 }
@@ -4478,6 +4486,7 @@ class Panels(private val a: MainActivity) {
         private var controlGesture = false
         private val inspectButton = RectF()
         private val resetButton = RectF()
+        private var cropSource: Pair<String,Pair<Int,Int>>?=null
         private val inspectionPinch = InspectionGesture { factor, x, y, oldX, oldY ->
             inspection.scale(factor, x - inset, y, oldX - inset, oldY)
             panAnchored = false
@@ -4510,7 +4519,7 @@ class Panels(private val a: MainActivity) {
                             if (fx.number("reframe") == 1f)
                                 fx.values["contentZoom"] =
                                     (fx.number("contentZoom", 1f) * d.scaleFactor)
-                                        .coerceIn(.2f, 8f)
+                                        .coerceIn(if (fx.values["geometry"]=="canvas") 1f else .2f, 8f)
                                         .toString()
                             else {
                                 val width = fx.number("w", 1f)
@@ -4567,6 +4576,7 @@ class Panels(private val a: MainActivity) {
             c.scale(inspection.zoom, inspection.zoom, width / 2f, height / 2f)
             if (fx?.kind == "Crop" && cropFrame) {
                 c.save()
+                if (fx.values["geometry"]!="source") {
                 c.translate(fx.number("x") * bounds.width(), fx.number("y") * bounds.height())
                 val radians =
                     Math.toRadians((fx.number("rotation") + fx.number("quarter") * 90).toDouble())
@@ -4584,6 +4594,7 @@ class Panels(private val a: MainActivity) {
                     bounds.centerX(),
                     bounds.centerY(),
                 )
+                }
                 c.drawBitmap(b, null, bounds, paint)
                 c.restore()
                 paint.color = Color.argb(110, 0, 0, 0)
@@ -4865,6 +4876,16 @@ class Panels(private val a: MainActivity) {
                                 (fx.number("panY") + dy / fx.number("h", 1f))
                                     .coerceIn(-2f, 2f)
                                     .toString()
+                        } else if (fx.kind=="Crop" && fx.values["geometry"]=="source") {
+                            val clip=editor.project.clips.firstOrNull { c -> c.effects.any { it.id==draftReplace } }
+                                ?: editor.project.active(editor.cursor).lastOrNull()
+                            if (clip!=null) {
+                                val shape=cropSource?.takeIf { it.first==clip.path }?.second ?: ProjectStore.shape(clip.path).also { cropSource=clip.path to it }
+                                val canvas=draftShape ?: (editor.project.width to editor.project.height)
+                                val mirror=clip.effects.lastOrNull { it.kind=="Mirror" && it.enabled }
+                                ArchiveGeometry.panCrop(fx,shape.first.toDouble(),shape.second.toDouble(),canvas.first.toDouble(),canvas.second.toDouble(),dx.toDouble(),dy.toDouble(),
+                                    mirror?.number("horizontal",if (mirror.number("vertical")==1f) 0f else 1f)==1f,mirror?.number("vertical")==1f)
+                            }
                         } else {
                             fx.values["x"] =
                                 (fx.number("x", if (fx.kind == "Text") 0.05f else 0f) + dx)

@@ -67,6 +67,7 @@ class MainActivity : Activity() {
         private set
     private data class MediaRepair(val project: Project, val path: String)
     private var pendingRepair: MediaRepair? = null
+    private var pendingTimeline: Uri? = null
     private var imageCallback: ((String) -> Unit)? = null
     private var effectMediaCallback: ((String) -> Unit)? = null
     private var effectMediaProject: String? = null
@@ -94,6 +95,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        pendingTimeline=state?.getString("timelineMediaDocument")?.let(Uri::parse)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.BLACK
@@ -881,7 +883,12 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun restoreProject(uri: Uri,timeline: Boolean=false) {
+    override fun onSaveInstanceState(state: Bundle) {
+        pendingTimeline?.let { state.putString("timelineMediaDocument",it.toString()) }
+        super.onSaveInstanceState(state)
+    }
+
+    private fun restoreProject(uri: Uri,timeline: Boolean=false,mediaTree: Uri?=null) {
         if (!saveProject()) return
         val cancelled = AtomicBoolean(false)
         panels.progress("Restoring project…", 0f) { cancelled.set(true) }
@@ -901,12 +908,14 @@ class MainActivity : Activity() {
                     }
                 }
                 val progress: (Float)->Unit={ value -> ui.post { panels.updateProgress(value) } }
-                val result=if (timeline) TimelineImport.restore(store,archive,{ cancelled.get() },progress)
+                val media=mediaTree?.let { TimelineMedia(contentResolver,it) { cancelled.get() } }
+                val result=if (timeline) TimelineImport.restore(store,archive,{ cancelled.get() },progress) { media?.resolve(it) }
                     else ProjectArchive.restore(store,archive,{ cancelled.get() },progress)
                 ui.post {
                     panels.close()
                     openProject(result.project)
-                    if (result.missing.isNotEmpty()) message("Project restored with missing media. All editing history was kept.")
+                    if (result.missing.isNotEmpty()) message(if (timeline) "Timeline imported with missing media. Import again with its media folder."
+                        else "Project restored with missing media. All editing history was kept.")
                 }
             } catch (e: Exception) {
                 ui.post { panels.close(); message(e.message ?: "Cannot restore project") }
@@ -1045,6 +1054,13 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode==48) {
+            val document=pendingTimeline;pendingTimeline=null
+            if (resultCode==RESULT_OK && document!=null) data?.data?.let { tree ->
+                restoreProject(document,true,tree)
+            }
+            return
+        }
         if (requestCode==35) {
             val callback=effectMediaCallback; val project=effectMediaProject;val imageOnly=effectImageOnly
             effectMediaCallback=null; effectMediaProject=null
@@ -1158,7 +1174,14 @@ class MainActivity : Activity() {
         }
         if (requestCode == 23) data.data?.let { uri ->
             val type = contentResolver.getType(uri)
-            if (documentName(uri).endsWith(".otio",true)) restoreProject(uri,true)
+            if (documentName(uri).endsWith(".otio",true)) choose("Timeline media",listOf("Choose media folder","Use app originals")) { option ->
+                if (option==1) restoreProject(uri,true) else {
+                    pendingTimeline=uri
+                    try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    },48) } catch (_: android.content.ActivityNotFoundException) { pendingTimeline=null;message("No folder picker is available") }
+                }
+            }
             else if (type in listOf("application/zip", "application/x-zip-compressed") ||
                 documentName(uri).endsWith(".zip", true)) restoreProject(uri)
             else {

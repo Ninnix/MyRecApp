@@ -60,9 +60,11 @@ Edits leave the source files alone. Undo and redo survive reopening and project
 switching; ordinary new recordings stay present through earlier editor undo.
 Projects can be duplicated with independent media or transferred as checked ZIP
 archives, including originals, history, overlays, and an OpenTimelineIO source
-conform. Compatible project ZIPs can exchange supported edits with YouRec;
-processing that cannot be preserved is refused. Standalone `.otio` import keeps
-source timing and can restore the complete MyRec edit embedded in its metadata.
+conform. Compatible project ZIPs can exchange supported edits with YouRec,
+including source crops, images, placement layouts and held frames; processing
+that cannot be preserved is refused. Standalone `.otio` import reads nested and
+trimmed tracks, can copy media from a selected folder, and can restore the
+complete MyRec edit embedded in its metadata.
 Noise reduction processes complete stereo sources continuously and can resume
 interrupted preparation. Long undo histories load on demand.
 

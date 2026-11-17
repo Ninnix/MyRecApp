@@ -64,7 +64,7 @@ data class Effect(
     fun sampled(source: Double): Effect {
         if (motion == null && parameters.none { it.keyframes.isNotEmpty() }) return this
         val pose = motion?.pose(source)
-        if (kind == "Color LUTs" && pose != null) return copy(motion = null,
+        if (kind in listOf("Color LUTs", "Crop", "Image", "Placement") && pose != null) return copy(motion = null,
             values = values.toMutableMap().apply { for ((key, value) in pose) put(key, value.toString()) })
         return copy(motion = null, parameters = parameters.map {
             it.copy(value = pose?.get(it.id)?.let { n -> EffectValue.Number(n) } ?: it.at(source), keyframes = mutableListOf())
@@ -476,6 +476,7 @@ class Editor(var project: Project = Project()) {
             effect.phase = EffectPhase.anchor(clip, max(0.0, clip.start + effect.from - origins.getValue(effect.id)))
 
         project.clips.removeAll { it.duration < 0.001 }
+        ArchiveGeometry.clean(project)
         val links = project.clips.mapNotNull { it.link }.groupingBy { it }.eachCount()
         project.clips.filter { it.link != null && links.getValue(it.link!!) < 2 }.forEach { it.link = null }
         for (transition in project.transitions.toList()) {
@@ -1073,6 +1074,7 @@ class Editor(var project: Project = Project()) {
                 c.start -= origin
                 c
             }
+        ArchiveGeometry.remap(clipboard,ArchiveGeometry.owners(t).associateWith { uid() })
         val end = range?.endInclusive ?: t.maxOfOrNull { it.end } ?: origin
         clipboardTransitions =
             project.transitions.mapNotNull { tr ->
@@ -1190,6 +1192,7 @@ class Editor(var project: Project = Project()) {
                     selected.add(id)
                 })
             }
+            ArchiveGeometry.remap(project.clips.filter { it.id in selected },ArchiveGeometry.owners(clipboard).associateWith { uid() })
             clipboardTransitions.forEach { transition ->
                 project.transitions.add(transition.copy(id = uid(), at = transition.at + position,
                     leftId = ids[transition.leftId], rightId = ids[transition.rightId]))

@@ -23,6 +23,13 @@ object ToolWorkspaceTests {
             return null
         }
         fun click(label: String) = onMain { val control = find(a.root, label) ?: error("Missing $label"); check(control.isEnabled) { "Disabled $label" }; control.performClick() }
+        fun preview(ready: (Project)->Boolean): Project {
+            repeat(100) {
+                a.playback.previewProject?.let { if (ready(it)) return it }
+                Thread.sleep(50)
+            }
+            error("The tool preview did not finish updating")
+        }
         fun title() = a.editor.project.clips.first { it.video }.effects.single { it.kind == "Text" }
         fun snapshot(name: String) {
             instrumentation.waitForIdleSync()
@@ -107,9 +114,8 @@ object ToolWorkspaceTests {
                 snapshot("$name-luts")
                 click("Warm"); click("Exposure & white balance")
                 onMain { check(slider("Strength").isEnabled); drag(slider("Warmth"), .8f) }
-                Thread.sleep(200)
-                val preview = a.playback.previewProject ?: error("No LUT preview")
-                val grade = preview.clips.first { it.video }.effects.single { it.kind == "Color LUTs" }
+                val updated=preview { p -> p.clips.any { c -> c.effects.any { it.kind=="Color LUTs" && it.values["lut"]=="Warm" && it.number("warmth")>0 } } }
+                val grade = updated.clips.first { it.video }.effects.single { it.kind == "Color LUTs" }
                 check(grade.values["lut"] == "Warm" && grade.number("warmth") > 0)
                 click("Before"); Thread.sleep(180)
                 check(a.playback.previewProject!!.clips.none { clip -> clip.effects.any { it.kind == "Color LUTs" } })
@@ -123,6 +129,29 @@ object ToolWorkspaceTests {
                     val favorites = prefs.getStringSet("color.favorites", emptySet())!!.toMutableSet()
                     favorites.remove("Warm"); prefs.edit().putStringSet("color.favorites", favorites).apply()
                 }
+            }
+        }
+        for ((name,orientation) in listOf("portrait" to ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,"landscape" to ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)) {
+            test("$name imported crop preview edits both animation endpoints and keeps Cancel Apply and Undo") {
+                val pose=mapOf("x" to .4,"y" to .5,"zoom" to 2.0,"rotation" to 10.0)
+                val crop=Effect(kind="Crop",values=pose.mapValues { it.value.toString() }.toMutableMap().apply { put("geometry","source") },
+                    motion=EffectMotion(pose,pose+("zoom" to 3.0),duration=3.5))
+                val seed=before.duplicate().apply { clips.single().effects.add(crop) }
+                onMain { a.panels.close();a.requestedOrientation=orientation;a.editor.load(seed.duplicate());a.editor.cursor=1.0 }
+                Thread.sleep(650)
+                fun open() {
+                    onMain { a.panels.effect("Crop",a.editor.project.clips.single().effects.single()) }
+                    Thread.sleep(200)
+                    onMain { drag(slider("Zoom"),.6f) }
+                    val fx=preview { p -> p.clips.any { c -> c.effects.any { it.kind=="Crop" && it.number("zoom")>3f } } }.clips.single().effects.single { it.kind=="Crop" }
+                    check(fx.values["geometry"]=="source" && fx.motion!!.valid(fx) && fx.number("zoom")>3f)
+                    check(abs(fx.motion!!.b.getValue("zoom")/fx.motion!!.a.getValue("zoom")-1.5)<.00001)
+                    snapshot("$name-native-crop")
+                }
+                open();click("Cancel");check(a.editor.project==seed && !a.editor.canUndo)
+                open();click("Apply");check(a.editor.canUndo && a.editor.project.clips.single().effects.single().motion!!.a.getValue("zoom")>3)
+                onMain { a.editor.undo() };check(a.editor.project==seed)
+                onMain { a.editor.load(before.duplicate()) }
             }
         }
         test("title shaping uses bundled fonts and renders gradient outline background and motion in export") {

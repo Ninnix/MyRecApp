@@ -200,6 +200,7 @@ object Effects {
 }
 
 class Frames(private val cancelled: () -> Boolean = { false }, private val onAnalysis: (Float?) -> Unit = {}) : Closeable {
+    private var placementMembers=emptySet<String>()
     private val backgroundDelegate=lazy { BackgroundRenderer() }
     private val backgrounds by backgroundDelegate
     private data class CadenceEntry(val sourceIn: Double,val sourceOut: Double,val rate: Double,val effects: List<Effect>,val clock: EffectCadence)
@@ -302,6 +303,8 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
         val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
+        val active=project.active(t)
+        placementMembers=active.map(ArchiveGeometry::owner).toSet()
         presentationFrame = floor(t * fps + .000001).toLong()
         data class Layer(
             val track: Int,
@@ -339,11 +342,12 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 )
             )
         }
-        project
-            .active(t)
+        active
             .filter { it.id !in connected }
             .forEach { layers.add(Layer(it.track, clip = it)) }
-        for (layer in layers.sortedBy { it.track }) {
+        for (layer in layers.sortedBy { layer -> layer.clip?.let { c ->
+            c.effects.lastOrNull { it.kind=="Placement" && it.values["geometry"]=="canvas" && it.active(t-c.start) && ArchiveGeometry.matches(it,placementMembers) }?.number("order",layer.track.toFloat())?.toInt()
+        } ?: layer.track }) {
             val clip = layer.clip
             if (clip != null) drawClip(canvas, clip, t, width, height)
             else drawTransition(output, layer.transition!!, layer.before, layer.after, t)
@@ -435,8 +439,21 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         val heldTime=cadence?.boundary ?: c.sourceTime(at)
         val effectFrame=if (cadence!=null) floor(heldTime*fps+.000001).toLong() else presentationFrame
         val fx = EffectOrder.ordered(c.effects)
-            .filter { it.active(local) }.map { it.sampled(heldTime) }
+            .filter { it.active(local) && (it.kind!="Placement" || ArchiveGeometry.matches(it,placementMembers)) }.map { it.sampled(c.frozen?.let { hold -> hold.sourceTime+hold.offset+local } ?: heldTime) }
             .filter { it.kind !in setOf("Freeze","Strobe","Echo","Zoom","Mirror","Rotation","Crop","Letterbox","Blur","Widescreen 1953") || it.strength(local,c.duration)>0 }
+        fx.lastOrNull { it.kind=="Placement" && it.values["geometry"]=="canvas" }?.let { placement ->
+            val layer=WorkingColor.bitmap(width,height)
+            try {
+                drawClip(Canvas(layer),c.copy(effects=c.effects.filter { it.id!=placement.id }.toMutableList()),at,width,height,decorate)
+                val (transform,clip)=ArchiveGeometry.placement(placement,width.toDouble(),height.toDouble())
+                val saved=canvas.save()
+                try {
+                    canvas.clipRect(clip.x.toFloat(),clip.y.toFloat(),(clip.x+clip.width).toFloat(),(clip.y+clip.height).toFloat())
+                    canvas.drawBitmap(layer,Matrix().apply { setValues(transform.values()) },paint.apply { alpha=255;colorFilter=null })
+                } finally { canvas.restoreToCount(saved) }
+            } finally { layer.recycle() }
+            return
+        }
         val frames=fx.filter { FrameEffects.modern(it) && it.kind!="Blur" }
         val print=fx.firstOrNull { c.frozen!=null && it.kind=="Freeze Frame" && it.values["style"]=="Print" }
         if (decorate && (frames.isNotEmpty() || print!=null)) {
@@ -570,6 +587,28 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             }
         }
         canvas.save()
+        val nativeCrop=fx.lastOrNull { it.kind=="Crop" && it.values["geometry"]=="source" }
+        if (nativeCrop!=null) {
+            val mirror=fx.lastOrNull { it.kind=="Mirror" }
+            val transform=ArchiveGeometry.crop(nativeCrop,bitmap.width.toDouble(),bitmap.height.toDouble(),width.toDouble(),height.toDouble(),
+                mirror?.number("horizontal",if (mirror.number("vertical")==1f) 0f else 1f)==1f,mirror?.number("vertical")==1f)
+            val matrix=Matrix().apply { setValues(transform.values()) }
+            c.frozen?.let { hold ->
+                fx.firstOrNull { it.kind=="Freeze Frame" }?.let { settings ->
+                    val scale=1+settings.number("pushIn")*((hold.offset+local)/settings.number("hold",(hold.offset+hold.duration).toFloat())).toFloat().coerceIn(0f,1f)
+                    matrix.postScale(scale,scale,width/2f,height/2f)
+                }
+            }
+            if (sourceStabilization!=null && !originalStabilization) {
+                val fit=min(width.toFloat()/bitmap.width,height.toFloat()/bitmap.height)
+                val dest=RectF((width-bitmap.width*fit)/2,(height-bitmap.height*fit)/2,(width+bitmap.width*fit)/2,(height+bitmap.height*fit)/2)
+                val correction=StabilizationRenderer.matrix(c,sourceStabilization,sourceTime,dest,cancelled,onAnalysis)
+                val normal=Matrix().apply { setScale(fit,fit);postTranslate(dest.left,dest.top) };val inverse=Matrix()
+                check(normal.invert(inverse));correction.postConcat(inverse);correction.preConcat(normal)
+                matrix.preConcat(correction)
+            }
+            canvas.drawBitmap(bitmap,matrix,paint.apply { alpha=255;colorFilter=null })
+        } else {
         val placement = fx.lastOrNull { it.kind == "Placement" }
         val rect =
             if (placement != null)
@@ -668,6 +707,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 previous.recycle()
             }
         }
+        }
         canvas.restore()
         } finally { bitmap.recycle() }
         for (e in fx.filter { it.kind=="Letterbox" && !FrameEffects.modern(it) }) {
@@ -738,17 +778,13 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 paint.textAlign = Paint.Align.LEFT
             }
             if (e.kind == "Image") {
-                val overlay = BitmapFactory.decodeFile(e.values["path"] ?: "") ?: continue
-                val x = width * e.number("x", 0.1f)
-                val y = height * e.number("y", 0.1f)
-                val w = width * e.number("size", 0.3f)
-                canvas.drawBitmap(
-                    overlay,
-                    null,
-                    RectF(x, y, x + w, y + w * overlay.height / overlay.width),
-                    paint,
-                )
-                overlay.recycle()
+                val path=e.values["path"] ?: continue
+                val overlay=if (e.values["geometry"]=="center") PhotoSource.frame(path,width,height) else BitmapFactory.decodeFile(path) ?: continue
+                try {
+                    val r=ArchiveGeometry.image(e,overlay.width.toDouble(),overlay.height.toDouble(),width.toDouble(),height.toDouble())
+                    paint.alpha=(255*e.number("opacity",1f).coerceIn(0f,1f)).roundToInt()
+                    canvas.drawBitmap(overlay,null,RectF(r.x.toFloat(),r.y.toFloat(),(r.x+r.width).toFloat(),(r.y+r.height).toFloat()),paint)
+                } finally { overlay.recycle();paint.alpha=255 }
             }
         }
     }
