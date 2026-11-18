@@ -165,6 +165,7 @@ object EffectContracts {
 fun Effect.assetPaths(): List<String> {
     val result = mutableListOf<String>()
     values["path"]?.let { result.add(it) }
+    values["matteJournal"]?.let { result.add(it) }
     for (p in parameters) for (value in listOf(p.value) + p.keyframes.map { it.value })
         if (value is EffectValue.Media) value.path?.let { result.add(it) }
     return result.distinct()
@@ -172,6 +173,7 @@ fun Effect.assetPaths(): List<String> {
 
 fun Effect.remapAssets(path: (String) -> String) {
     values["path"]?.let { values["path"] = path(it) }
+    values["matteJournal"]?.let { values["matteJournal"] = path(it) }
     fun value(v: EffectValue) = if (v is EffectValue.Media) EffectValue.Media(v.path?.let(path)) else v
     for (p in parameters) {
         p.value = value(p.value)

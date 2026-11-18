@@ -57,6 +57,22 @@ object BackgroundEffect {
     fun choice(effect: Effect,id: String)= (effect.parameter(id)?.value as? EffectValue.Choice)?.value ?: ""
     fun toggle(effect: Effect,id: String)= (effect.parameter(id)?.value as? EffectValue.Toggle)?.value==true
     fun media(effect: Effect,id: String)= (effect.parameter(id)?.value as? EffectValue.Media)?.path
+    fun prefix(effects: List<Effect>,effect: Effect)=effects.filter { it.enabled && it.kind=="Color LUTs" }+
+        EffectOrder.ordered(effects).takeWhile { it.id!=effect.id }.filter { it.enabled && it.kind!="Color LUTs" }
+    fun signature(effect: Effect,prefix: List<Effect>,asset: (String)->String = { it }): String {
+        fun value(v: EffectValue)=if (v is EffectValue.Media) v.path?.let(asset) else v.toString()
+        val text=buildString {
+            append(options(effect).take(13));append(':');append(effect.values["matteVersion"])
+            append(':');append(media(effect,"cleanPlate")?.let(asset))
+            for (fx in prefix.filter { it.enabled }) {
+                append('|');append(fx.kind)
+                append(fx.values.filterKeys { it !in setOf("origin","clockEnd","rangeStart","rangeEnd","matteJournal","matteTrack","phaseOffset","backgroundStart","backgroundEnd") }
+                    .toSortedMap().mapValues { (k,v) -> if (k=="path") asset(v) else v })
+                for (p in fx.parameters.sortedBy { it.id }) { append(p.id);append('=');append(value(p.value));append(';') }
+            }
+        }
+        return java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
     fun visible(control: Control,effect: Effect): Boolean {
         val mode=choice(effect,"background")
         return when (control.id) {
@@ -101,9 +117,18 @@ object BackgroundEffect {
 
 /** Raw source observations, never a matte recursively smoothed by a previous seek. */
 data class BackgroundMatte(val width: Int,val height: Int,val alpha: FloatArray,val guide: FloatArray,val time: Double,
-    val guideWidth: Int=width,val guideHeight: Int=height)
+    val guideWidth: Int=width,val guideHeight: Int=height,val person: FloatArray?=null)
 
 object BackgroundTemporal {
+    fun fast(frames: List<BackgroundMatte>,key: Boolean,motionAware: Boolean=false): FloatArray {
+        require(frames.isNotEmpty())
+        if (frames.size==1) return frames[0].alpha.copyOf()
+        val history=frames.take(if (key) 6 else 8)
+        val probes=history.map(::probe)
+        return Native.backgroundTemporal(history.map { it.alpha }.toTypedArray(),history.map { it.guide }.toTypedArray(),
+            history.flatMap { listOf(it.width,it.height,it.guideWidth,it.guideHeight) }.toIntArray(),
+            BooleanArray(history.size-1) { cut(probes[it],probes[it+1]) },key,motionAware)
+    }
     fun guide(values: FloatArray,width: Int,height: Int): FloatArray {
         val w=(width+3)/4; val h=(height+3)/4
         return FloatArray(w*h) { i ->
@@ -123,6 +148,7 @@ object BackgroundTemporal {
         return (values[b*width+a]*(1-dx)+values[b*width+n]*dx)*(1-dy)+(values[m*width+a]*(1-dx)+values[m*width+n]*dx)*dy
     }
     private fun guide(frame: BackgroundMatte,u: Float,v: Float)=sample(frame.guide,frame.guideWidth,frame.guideHeight,u,v)
+    fun probe(frame: BackgroundMatte)=FloatArray(32*18) { guide(frame,(it%32+.5f)/32,(it/32+.5f)/18) }
     fun cut(a: FloatArray,b: FloatArray): Boolean {
         require(a.size==b.size && a.isNotEmpty())
         val ha=IntArray(16); val hb=IntArray(16); var difference=0.0
@@ -132,21 +158,27 @@ object BackgroundTemporal {
         val d=difference/a.size; val h=ha.indices.sumOf { abs(ha[it]-hb[it]) }.toDouble()/(2*a.size)
         return d>.20 || d>.08 && h>.30
     }
-    fun apply(frames: List<BackgroundMatte>,key: Boolean): FloatArray {
+    fun apply(frames: List<BackgroundMatte>,key: Boolean,motionAware: Boolean=false): FloatArray {
         require(frames.isNotEmpty())
         val first=frames.first(); val count=min(if (key) 6 else 8,frames.size)
         val result=first.alpha.copyOf()
-        val sampled=frames.take(count).map { frame -> FloatArray(32*18) { guide(frame,(it%32+.5f)/32,(it/32+.5f)/18) } }
+        val sampled=frames.take(count).map(::probe)
         val cuts=BooleanArray(count-1) { cut(sampled[it],sampled[it+1]) }
         for (i in 0 until first.width*first.height) {
             val u=(i%first.width+.5f)/first.width;val v=(i/first.width+.5f)/first.height
             var remaining=1f; var sum=0f
             for (f in 0 until count-1) {
                 var prior=if (cuts[f]) 0f else if (key) .25f else 1f/3
-                if (key) {
+                if (key || motionAware) {
                     val motion=abs(guide(frames[f],u,v)-guide(frames[f+1],u,v))
-                    val t=((motion-.01f)/.01f).coerceIn(0f,1f)
+                    val t=((motion-(if (key) .01f else .025f))/(if (key) .01f else .075f)).coerceIn(0f,1f)
                     prior*=1-t*t*(3-2*t)
+                    if (!key) {
+                        val a=sample(frames[f].alpha,frames[f].width,frames[f].height,u,v)
+                        val b=sample(frames[f+1].alpha,frames[f+1].width,frames[f+1].height,u,v)
+                        val change=((abs(a-b)-.15f)/.45f).coerceIn(0f,1f)
+                        prior*=1-change*change*(3-2*change)
+                    }
                 }
                 val frame=frames[f]
                 val alpha=if (frame.width==first.width && frame.height==first.height) frame.alpha[i] else sample(frame.alpha,frame.width,frame.height,u,v)

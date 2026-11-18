@@ -31,7 +31,10 @@ data class Effect(
             "Noir" -> Noir.parameters()
             "16mm" -> SixteenMm.parameters()
             else -> EffectContracts.parameters(kind)
-        }).also { if (kind == "Stabilize") StabilizationSettings.initialize(it) }
+        }).also {
+            if (kind == "Stabilize") StabilizationSettings.initialize(it)
+            if (kind in BackgroundEffect.kinds) it.values["matteVersion"]="2"
+        }
     }
     fun parameter(key: String) = parameters.firstOrNull { it.id == key }
         ?: if (key == "strength") parameters.firstOrNull { it.id == "intensity" } else null
@@ -776,6 +779,10 @@ class Editor(var project: Project = Project()) {
                         }
                         to = min(to, oldDuration)
                         if (kind == "Dolly Zoom" || kind in BackgroundEffect.kinds || kind in ExistingEffects.kinds) values.putIfAbsent("origin", c.sourceTime(c.start + from).toString())
+                        if (kind in BackgroundEffect.kinds) {
+                            values.putIfAbsent("backgroundStart",c.sourceTime(c.start+from).toString())
+                            values.putIfAbsent("backgroundEnd",c.sourceTime(c.start+to).toString())
+                        }
                         if (kind in ExistingEffects.kinds) values.putIfAbsent("clockEnd",c.sourceTime(c.start+to).toString())
                     }
                 )

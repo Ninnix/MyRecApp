@@ -302,16 +302,38 @@ object BackgroundDeviceTests {
             }
             waitFor("Background preview unavailable") { var ready=false;main { ready=frame.get(capture)!=null };ready }
             val previous=a.editor.project.clips.map { it.path }.toSet()
-            main { capture.start() };waitFor("Recording did not start") { capture.recording }
+            waitFor("Recording did not start") { main { if (!capture.recording) capture.start() };capture.recording }
             var changes=0;var previousFrame: Any?=null
             repeat(40) {
                 main { val current=frame.get(capture);if (current!=null && current!==previousFrame) { changes++;previousFrame=current } }
                 Thread.sleep(40)
             }
-            check(changes>=2) { "The background camera preview stopped updating" }
+            check(changes>=2) {
+                val masks=Capture::class.java.getDeclaredField("recordedBackground").apply { isAccessible=true }.get(capture) as? RecordedBackground
+                "The background camera preview stopped updating ($changes): offered=${masks?.offered}, accepted=${masks?.accepted}, input=${masks?.lastInput}, output=${masks?.lastOutput}"
+            }
+            val masks=Capture::class.java.getDeclaredField("recordedBackground").apply { isAccessible=true }.get(capture) as RecordedBackground
+            main { capture.pause();check(capture.paused) }
+            Thread.sleep(200);val offered=masks.offered;Thread.sleep(200)
+            check(masks.offered==offered) { "Paused capture still reads mask candidates" }
+            waitFor("Recording did not resume") { main { if (capture.paused) capture.pause() };!capture.paused }
+            Thread.sleep(500)
             snapshot("live-auto-background");main { capture.stop() }
             waitFor("Recording not added") { a.editor.project.clips.any { it.path !in previous } }
-            val clip=a.editor.project.clips.first { it.path !in previous }.duplicate().apply { start=0.0;sourceOut=min(sourceOut,.35);audio=false }
+            val recorded=a.editor.project.clips.first { it.path !in previous }
+            val effect=recorded.effects.first { it.kind=="Auto Background" }
+            BackgroundJournal.Reader(File(effect.values.getValue("matteJournal"))).use { journal ->
+                check(journal.sourceHash==SourceAudio.identity(File(recorded.path)) { false } && !journal.incomplete)
+                val times=journal.times(effect.values.getValue("matteTrack"));check(times.size>=2)
+                val sourceTimes=VideoFrameIndex.get(recorded.path) {}.times
+                check(times.all { at -> sourceTimes.binarySearch(at).let { found ->
+                    found>=0 || listOf(-found-1,-found-2).any { it in sourceTimes.indices && abs(sourceTimes[it]-at)<.00001 }
+                } }) { "A saved mask timestamp was not accepted into the movie" }
+            }
+            main { check(a.saveProject()) }
+            val loaded=a.store.editor(a.editor.project).project.clips.first { it.path==recorded.path }
+            check(loaded.effects.first { it.kind=="Auto Background" }.values["matteJournal"]==effect.values["matteJournal"])
+            val clip=recorded.duplicate().apply { start=0.0;sourceOut=min(sourceOut,.6);audio=false }
             check(clip.effects.any { it.kind=="Auto Background" && it.values["origin"]=="0.0" })
             main { a.showEditor() }
             val project=Project(width=160,height=90,clips=mutableListOf(clip))

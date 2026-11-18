@@ -18,10 +18,16 @@ class DeviceTests : Instrumentation() {
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
+        MainActivity.instrumented=true
         suite = arguments?.getString("suite") ?: ""
         arguments?.getString("testSessionId")?.takeIf { it.matches(Regex("[A-Za-z0-9-]+")) }?.let { testSessionId = it }
         currentProject = arguments?.getString("currentProject") == "true"
         start()
+    }
+
+    override fun onDestroy() {
+        MainActivity.instrumented=false
+        super.onDestroy()
     }
 
     private fun test(name: String, block: () -> Unit) {
@@ -43,14 +49,16 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "remaining-parity" || suite == "hdr-color-parity" || suite == "text" || suite == "existing-effects" || suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
+        if (suite == "background-performance" || suite == "recorded-backgrounds" || suite == "remaining-parity" || suite == "hdr-color-parity" || suite == "text" || suite == "existing-effects" || suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {
                 val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
                     .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
                 activity = a
-                if (suite=="remaining-parity") RemainingParityTests.run(this,a,::onMain,::test)
+                if (suite=="background-performance") BackgroundPerformanceTests.run(this,a,::onMain,::test)
+                else if (suite=="recorded-backgrounds") RecordedBackgroundTests.run(this,a,::onMain,::test)
+                else if (suite=="remaining-parity") RemainingParityTests.run(this,a,::onMain,::test)
                 else if (suite=="hdr-color-parity") HdrColorDeviceTests.run(this,a,::onMain,::test)
                 else if (suite=="text") TextDeviceTests.run(this,a,::onMain,::test)
                 else if (suite=="existing-effects") ExistingEffectsDeviceTests.run(this,a,::onMain,::test)

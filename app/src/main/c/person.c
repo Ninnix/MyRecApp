@@ -135,6 +135,9 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_personMask(JNIEnv *env, 
     }
     if (!checked(env, p, api->GetTensorMutableData(output, (void **)&mask)))
         goto done;
+    /* These probabilities already quantize to zero in saved masks. Keep later
+     * edge filtering away from subnormal arithmetic on empty backgrounds. */
+    for (int i=0;i<AREA;i++) if (mask[AREA+i]<1e-20f) mask[AREA+i]=0;
     result = (*env)->NewFloatArray(env, AREA);
     if (result)
         (*env)->SetFloatArrayRegion(env, result, 0, AREA, mask + AREA);

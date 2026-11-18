@@ -18,6 +18,9 @@ class CaptureRecorder(
     cache: AudioCache,
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
+    @Volatile var onVideoAccepted: ((Long,Double,Int)->Unit)?=null
+    @Volatile var onVideoRejected: ((Long)->Unit)?=null
+    private var acceptedFrames=0
     internal val clock = RecordingClock()
     private val video=if (hdr) MediaCodec.createByCodecName(HlgEncoder.name(width,height,fps)
         ?: error("No ten-bit HEVC encoder supports this size and frame rate")) else MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -96,14 +99,18 @@ class CaptureRecorder(
                     val original=info.presentationTimeUs*1000
                     val time=clock.time(original)?.div(1000)
                     val key=info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME!=0
+                    var accepted=false
                     if (key && original>=resumeAfter) waitKey=false
                     if (info.size>0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG==0 && time!=null && !(waitKey && original>=resumeAfter)) {
                         if ((lastVideo>=0 || key) && muxing) {
                             info.presentationTimeUs=time.coerceAtLeast(lastVideo+1)
                             lastVideo=info.presentationTimeUs
                             muxer!!.writeSampleData(track,video.getOutputBuffer(index)!!,info)
+                            onVideoAccepted?.invoke(original/1000,info.presentationTimeUs/1_000_000.0,acceptedFrames++)
+                            accepted=true
                         }
                     }
+                    if (!accepted) onVideoRejected?.invoke(original/1000)
                     val done=info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM!=0
                     video.releaseOutputBuffer(index,false)
                     if (done) break

@@ -10,6 +10,85 @@ static float at(const float *p,int w,int h,int channels,float x,float y,int c) {
     float dx=x-a,dy=y-b;
     return (1-dy)*(p[(b*w+a)*channels+c]*(1-dx)+p[(b*w+n)*channels+c]*dx)+dy*(p[(m*w+a)*channels+c]*(1-dx)+p[(m*w+n)*channels+c]*dx);
 }
+
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundGuide(JNIEnv *env,jobject self,jfloatArray values,jint w,jint h) {
+    (void)self;
+    if (w<=0 || h<=0 || w>512 || h>512 || (*env)->GetArrayLength(env,values)!=w*h) return NULL;
+    int gw=(w+3)/4,gh=(h+3)/4;
+    float *input=(*env)->GetFloatArrayElements(env,values,NULL),*guide=malloc((size_t)gw*gh*sizeof(float));
+    jfloatArray output=NULL;
+    if (!input || !guide) goto done;
+    for (int y=0;y<gh;y++) for (int x=0;x<gw;x++) {
+        double sum=0;int count=0;
+        for (int dy=0;dy<4 && y*4+dy<h;dy++) for (int dx=0;dx<4 && x*4+dx<w;dx++) {
+            double v=input[(y*4+dy)*w+x*4+dx];
+            sum+=v<=.04045?v/12.92:pow((v+.055)/1.055,2.4);count++;
+        }
+        double v=sum/count;
+        guide[y*gw+x]=(float)(v<=.0031308?v*12.92:1.055*pow(v,1/2.4)-.055);
+    }
+    output=(*env)->NewFloatArray(env,gw*gh);
+    if (output) (*env)->SetFloatArrayRegion(env,output,0,gw*gh,guide);
+done:
+    if (input) (*env)->ReleaseFloatArrayElements(env,values,input,JNI_ABORT);
+    free(guide);if (!output && !(*env)->ExceptionCheck(env)) failure(env);return output;
+}
+
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundTemporal(JNIEnv *env,jobject self,jobjectArray alphas,jobjectArray guides,jintArray sizes,jbooleanArray cuts,jboolean key,jboolean motion) {
+    (void)self;
+    int count=(*env)->GetArrayLength(env,alphas),shape[32]={0};
+    if (count<1 || count>(key?6:8) || (*env)->GetArrayLength(env,guides)!=count ||
+        (*env)->GetArrayLength(env,sizes)!=count*4 || (*env)->GetArrayLength(env,cuts)!=count-1) return NULL;
+    (*env)->GetIntArrayRegion(env,sizes,0,count*4,shape);
+    jboolean reset[7]={0};(*env)->GetBooleanArrayRegion(env,cuts,0,count-1,reset);
+    jfloatArray aa[8]={0},gg[8]={0};float *alpha[8]={0},*guide[8]={0},*result=NULL;
+    jfloatArray output=NULL;
+    for (int f=0;f<count;f++) {
+        int *s=shape+f*4;
+        if (s[0]<1 || s[0]>512 || s[1]<1 || s[1]>512 || s[2]<1 || s[2]>512 || s[3]<1 || s[3]>512) goto done;
+        aa[f]=(jfloatArray)(*env)->GetObjectArrayElement(env,alphas,f);
+        gg[f]=(jfloatArray)(*env)->GetObjectArrayElement(env,guides,f);
+        if (!aa[f] || !gg[f] || (*env)->GetArrayLength(env,aa[f])!=s[0]*s[1]+3 || (*env)->GetArrayLength(env,gg[f])!=s[2]*s[3]) goto done;
+        alpha[f]=(*env)->GetFloatArrayElements(env,aa[f],NULL);guide[f]=(*env)->GetFloatArrayElements(env,gg[f],NULL);
+        if (!alpha[f] || !guide[f]) goto done;
+    }
+    int w=shape[0],h=shape[1],n=w*h;
+    result=malloc((size_t)(n+3)*sizeof(float));if (!result) goto done;
+    for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
+        int i=y*w+x;float u=(x+.5f)/w,v=(y+.5f)/h,remaining=1,sum=0;
+        for (int f=0;f<count-1;f++) {
+            int *s=shape+f*4,*t=s+4;
+            float prior=reset[f]?0:key?.25f:1.f/3;
+            if (prior==0) { sum+=remaining*(s[0]==w && s[1]==h?alpha[f][i]:at(alpha[f],s[0],s[1],1,u*s[0]-.5f,v*s[1]-.5f,0));remaining=0;break; }
+            if (key || motion) {
+                float a=at(guide[f],s[2],s[3],1,u*s[2]-.5f,v*s[3]-.5f,0);
+                float b=at(guide[f+1],t[2],t[3],1,u*t[2]-.5f,v*t[3]-.5f,0);
+                float z=yr_clamp((fabsf(a-b)-(key?.01f:.025f))/(key?.01f:.075f),0,1);
+                prior*=1-z*z*(3-2*z);
+                if (!key) {
+                    a=s[0]==w && s[1]==h?alpha[f][i]:at(alpha[f],s[0],s[1],1,u*s[0]-.5f,v*s[1]-.5f,0);
+                    b=t[0]==w && t[1]==h?alpha[f+1][i]:at(alpha[f+1],t[0],t[1],1,u*t[0]-.5f,v*t[1]-.5f,0);
+                    z=yr_clamp((fabsf(a-b)-.15f)/.45f,0,1);prior*=1-z*z*(3-2*z);
+                }
+            }
+            float a=s[0]==w && s[1]==h?alpha[f][i]:at(alpha[f],s[0],s[1],1,u*s[0]-.5f,v*s[1]-.5f,0);
+            sum+=remaining*(1-prior)*a;remaining*=prior;
+            if (remaining==0) break;
+        }
+        int *s=shape+(count-1)*4;
+        float oldest=s[0]==w && s[1]==h?alpha[count-1][i]:at(alpha[count-1],s[0],s[1],1,u*s[0]-.5f,v*s[1]-.5f,0);
+        result[i]=yr_clamp(sum+remaining*oldest,0,1);
+    }
+    memcpy(result+n,alpha[0]+n,3*sizeof(float));
+    output=(*env)->NewFloatArray(env,n+3);if (output) (*env)->SetFloatArrayRegion(env,output,0,n+3,result);
+done:
+    for (int f=0;f<count;f++) {
+        if (alpha[f]) (*env)->ReleaseFloatArrayElements(env,aa[f],alpha[f],JNI_ABORT);
+        if (guide[f]) (*env)->ReleaseFloatArrayElements(env,gg[f],guide[f],JNI_ABORT);
+        if (aa[f]) (*env)->DeleteLocalRef(env,aa[f]);if (gg[f]) (*env)->DeleteLocalRef(env,gg[f]);
+    }
+    free(result);if (!output && !(*env)->ExceptionCheck(env)) failure(env);return output;
+}
 static int blur(float *p,int w,int h,int channels,float sigma) {
     if (sigma<.01f) return 1;
     int r=(int)ceilf(sigma*3); if (r>64) r=64;
@@ -19,13 +98,24 @@ static int blur(float *p,int w,int h,int channels,float sigma) {
     float *tmp=malloc((size_t)w*h*channels*sizeof(float)); if (!tmp) return 0;
     for (int axis=0;axis<2;axis++) {
         const float *src=axis?tmp:p; float *dst=axis?p:tmp;
-        for (int y=0;y<h;y++) for (int x=0;x<w;x++) for (int c=0;c<channels;c++) {
-            float value=0;
+        for (int y=0;y<h;y++) {
+            float *restrict out=dst+(size_t)y*w*channels;
+            memset(out,0,(size_t)w*channels*sizeof(float));
             for (int i=-r;i<=r;i++) {
-                int sx=axis?x:(int)yr_clamp(x+i,0,w-1),sy=axis?(int)yr_clamp(y+i,0,h-1):y;
-                value+=src[(sy*w+sx)*channels+c]*weights[i+r];
+                float weight=weights[i+r];
+                if (axis) {
+                    int sy=y+i;if (sy<0) sy=0;if (sy>=h) sy=h-1;
+                    const float *restrict row=src+(size_t)sy*w*channels;
+                    for (int k=0;k<w*channels;k++) out[k]+=row[k]*weight;
+                } else {
+                    const float *restrict row=src+(size_t)y*w*channels;
+                    int start=i<0?-i:0;if (start>w) start=w;
+                    int end=w-i;if (end>w) end=w;if (end<start) end=start;
+                    for (int x=0;x<start;x++) for (int c=0;c<channels;c++) out[x*channels+c]+=row[c]*weight;
+                    for (int k=start*channels;k<end*channels;k++) out[k]+=row[k+i*channels]*weight;
+                    for (int x=end;x<w;x++) for (int c=0;c<channels;c++) out[x*channels+c]+=row[(w-1)*channels+c]*weight;
+                }
             }
-            dst[(y*w+x)*channels+c]=value;
         }
     }
     free(tmp); return 1;
@@ -169,8 +259,10 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundComposite(JNIEnv *env
         for (int i=0;i<3;i++) { foreground[i]+=c[i]*a; target[i]+=b[i]; } weight+=a;
     }
     for (int y=0;y<h && ok;y++) for (int x=0;x<w;x++) {
-        float u=(x+.5f)/w,v=(y+.5f)/h,c[4],b[4],screen[4],out[4],a=yr_clamp(at(mask,mw,mh,1,u*mw-.5f,v*mh-.5f,0),0,1);
-        yr_read(&image,x,y,c); yr_sample(&bg,u*bg.info.width-.5f,v*bg.info.height-.5f,b);
+        float u=(x+.5f)/w,v=(y+.5f)/h,c[4],b[4],screen[4],out[4],a=yr_clamp(mw==w && mh==h?mask[y*w+x]:at(mask,mw,mh,1,u*mw-.5f,v*mh-.5f,0),0,1);
+        yr_read(&image,x,y,c);
+        if (bg.info.width==(unsigned)w && bg.info.height==(unsigned)h) yr_read(&bg,x,y,b);
+        else yr_sample(&bg,u*bg.info.width-.5f,v*bg.info.height-.5f,b);
         for (int i=0;i<3;i++) screen[i]=mask[mw*mh+i];
         if (locked) yr_sample(&clean,u*clean.info.width-.5f,v*clean.info.height-.5f,screen);
         else if (p[0]>.5f) {
@@ -232,7 +324,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundBlur(JNIEnv *env,jobj
     }
     int ok=blur(values,bw,bh,3,sigma/reduction); float gain=exp2f(exposure);
     if (ok) for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
-        float c[4]={0,0,0,1}; for (int i=0;i<3;i++) c[i]=at(values,bw,bh,3,(x+.5f)/reduction-.5f,(y+.5f)/reduction-.5f,i)*gain;
+        float c[4]={0,0,0,1}; for (int i=0;i<3;i++) c[i]=(reduction==1?values[(y*bw+x)*3+i]:at(values,bw,bh,3,(x+.5f)/reduction-.5f,(y+.5f)/reduction-.5f,i))*gain;
         yr_write(&image,x,y,c);
     }
     free(values); AndroidBitmap_unlockPixels(env,bitmap);

@@ -24,7 +24,16 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                 for (path in paths) {
                     val info=ProjectStore.inspect(File(path))
                     if (!info.audio || info.sourceOut<=.001) continue
-                    val ramp=SpeedRamp.forClip(clip)
+                    val retimed=clip.frozen==null && (clip.rate!=1.0 || clip.effects.any { it.enabled && it.kind in setOf("Step Printing","Undercranking") })
+                    val ramp=if (retimed) {
+                        val whole=clip.duplicate().apply {
+                            sourceIn=0.0
+                            sourceOut=maxOf(sourceOut,if (photo) 0.0 else ProjectStore.inspect(File(this.path)).sourceOut,
+                                effects.maxOfOrNull { max(it.values["backgroundEnd"]?.toDoubleOrNull() ?: 0.0,it.values["clockEnd"]?.toDoubleOrNull() ?: 0.0) } ?: 0.0)
+                            pauses=null
+                        }
+                        SpeedRamp(whole.playbackSpans)
+                    } else null
                     if (ramp!=null) {
                         val pcm=cache.get(path,cancelled)
                         val raw=sources.getOrPut(path to 1.0) { Source(RandomAccessFile(pcm,"r"),info.sourceOut,pcm.length()/8) }
@@ -45,10 +54,11 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
     }
 
     private fun loopSource(path: String,source: Source,origin: Double,end: Double,cancelled: ()->Boolean): File {
-        val hash=SourceAudio.hash(File(path),cancelled)+":background-source-loop-1:$origin:$end"
+        require(origin.isFinite() && end.isFinite() && end>=0)
+        val hash=SourceAudio.identity(File(path),cancelled)+":background-source-loop-2:$origin:$end"
         val key=java.security.MessageDigest.getInstance("SHA-256").digest(hash.toByteArray()).joinToString("") { "%02x".format(it) }
         val file=File(cache.root,"$key.loop.f32");val frames=(end*48000).roundToLong()
-        if (file.isFile && file.length()==frames*8) return file
+        if (file.length()==frames*8 && PcmCache.valid(file,cancelled)) return file
         val partial=File(cache.root,"$key-${uid()}.partial")
         try {
             check(cache.root.usableSpace>frames*8+16L*1024*1024) { "Not enough storage to prepare background audio" }
@@ -68,7 +78,7 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                     output.write(bytes.array());at+=n
                 }
             }
-            check(partial.renameTo(file));return file
+            check(partial.renameTo(file));PcmCache.seal(file,cancelled);return file
         } finally { partial.delete() }
     }
 
@@ -128,12 +138,16 @@ class BackgroundAudio(private val cache: AudioCache) : Closeable {
                 val source=ramp?.source ?: sources[path to rate] ?: continue
                 val clock=if (freeze==null) setting else freeze.sourceTime+freeze.offset+local
                 val phase=BackgroundEffect.loop(clock-origin,source.duration)
-                var gain=10.0.pow(-18.0/20)*min(1.0,max(0.0,at-begin)/.008)*
-                    min(1.0,max(0.0,finish-at)/.008)
+                fun distance(a: Double,b: Double)=if (ramp==null) (a-b)/rate else ramp.clock.outputTime(a)-ramp.clock.outputTime(b)
+                val head=range.values["backgroundStart"]?.toDoubleOrNull()
+                val tail=range.values["backgroundEnd"]?.toDoubleOrNull()
+                val fadeIn=if (freeze==null && head!=null) distance(setting,head) else at-begin
+                val fadeOut=if (freeze==null && tail!=null) distance(tail,setting) else finish-at
+                var gain=10.0.pow(-18.0/20)*min(1.0,max(0.0,fadeIn)/.008)*min(1.0,max(0.0,fadeOut)/.008)
                 if (changes.isNotEmpty()) {
                     val next=changes.binarySearch(setting).let { if (it>=0) it+1 else -it-1 }
-                    if (next>0) gain*=min(1.0,max(0.0,setting-changes[next-1])/rate/.008)
-                    if (next<changes.size) gain*=min(1.0,max(0.0,changes[next]-setting)/rate/.008)
+                    if (next>0) gain*=min(1.0,max(0.0,distance(setting,changes[next-1]))/.008)
+                    if (next<changes.size) gain*=min(1.0,max(0.0,distance(changes[next],setting))/.008)
                 }
                 if (freeze!=null && freezeMode in listOf("Fade out","Fade out over hold")) {
                     val hold=freezeEffect?.number("hold",freeze.duration.toFloat())?.toDouble() ?: freeze.duration

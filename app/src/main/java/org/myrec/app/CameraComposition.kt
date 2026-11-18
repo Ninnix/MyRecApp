@@ -489,19 +489,10 @@ class CameraComposition(
             )
         check(buffer != EGL14.EGL_NO_SURFACE)
         try {
-            draw(buffer, w, h, 0, index)
+            draw(buffer, w, h, 0, index,analysis=true)
             val pixels = ByteBuffer.allocateDirect(w * h * 4)
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
-            val colors = IntArray(w * h)
-            for (y in 0 until h) for (x in 0 until w) {
-                val p = ((h - y - 1) * w + x) * 4
-                colors[y * w + x] =
-                    -0x1000000 or
-                        ((pixels.get(p).toInt() and 255) shl 16) or
-                        ((pixels.get(p + 1).toInt() and 255) shl 8) or
-                        (pixels.get(p + 2).toInt() and 255)
-            }
-            Bitmap.createBitmap(colors, w, h, Bitmap.Config.ARGB_8888)
+            CameraReadback.bitmap(pixels,w,h)
         } finally {
             EGL14.eglMakeCurrent(display, window, window, context)
             EGL14.eglDestroySurface(display, buffer)
@@ -618,12 +609,16 @@ class CameraComposition(
         }
     }
 
+    @Volatile var previewCovered=false
     private fun render() {
-        if (inputs.isEmpty() || !inputs.all { it.ready }) return
+        // The effect frame covers this surface; camera inputs and encoder draws still advance.
+        if (previewCovered || inputs.isEmpty() || !inputs.all { it.ready }) return
         draw(window, width, height, 0)
     }
 
-    private fun draw(target: EGLSurface, w: Int, h: Int, hint: Int, snapshot: Int = -1) {
+    @Volatile var analysisFrame: ((Long,()->Bitmap)->Unit)?=null
+    private val readback=CameraReadback()
+    private fun draw(target: EGLSurface, w: Int, h: Int, hint: Int, snapshot: Int = -1,analysis: Boolean=false) {
         check(EGL14.eglMakeCurrent(display, target, target, context))
         GLES20.glViewport(0, 0, w, h)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -632,9 +627,10 @@ class CameraComposition(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"diagonalFlip"),if (geometry.diagonalFlipped) 1f else 0f)
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "tone"),
-            if (snapshot >= 0) -1f else if (hdr && target !== encoder) 1f else 0f,
+            if (snapshot >= 0) -1f else if (hdr && (target !== encoder || analysis)) 1f else 0f,
         )
-        val canvasAspect = if (hint % 180 == 0) w.toFloat() / h else h.toFloat() / w
+        val canvasAspect = if (analysis && target!==encoder && snapshot<0) width.toFloat()/height
+            else if (hint % 180 == 0) w.toFloat() / h else h.toFloat() / w
         val worldAspect = if (target === encoder) width.toFloat() / height else canvasAspect
         val fitX = min(1f, worldAspect / canvasAspect)
         val fitY = min(1f, canvasAspect / worldAspect)
@@ -728,8 +724,10 @@ class CameraComposition(
             }
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         }
+        if (analysis) return
         if (target === encoder) {
             val timestamp=encoderFrameTime
+            analysisFrame?.invoke(timestamp) { readback.read(w,h,hint) { sw,sh -> draw(target,sw,sh,hint,analysis=true) } }
             recordingClock?.invoke(timestamp)
             EGLExt.eglPresentationTimeANDROID(display, target, timestamp)
         }
@@ -755,6 +753,7 @@ class CameraComposition(
         closed = true
         call {
             EGL14.eglMakeCurrent(display, window, window, context)
+            readback.close()
             inputs.forEach {
                 it.image?.setOnFrameAvailableListener(null)
                 it.surface.release()

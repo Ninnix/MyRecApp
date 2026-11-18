@@ -801,7 +801,16 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             clip.effects.filter { it.kind in setOf("Color LUTs","Step Printing","Freeze","Strobe") }
         val source=java.io.File(clip.path)
         val identity="${clip.path}:${source.length()}:${source.lastModified()}:${prefix.hashCode()}:${bitmap.config}:$preserveHdr"
-        backgrounds.render(bitmap,effect,time,origin,identity,times,backgroundTime,original) { at,w,h ->
+        val journal=backgrounds.journal(effect,source)
+        val matteTime=if (journal==null || clip.photo) time else VideoFrameIndex.get(clip.path,onAnalysis).let { index ->
+            index.times[index.first(max(0.0,time-.001)).coerceAtMost(index.times.lastIndex)]
+        }
+        val captured=journal?.at(effect.values["matteTrack"] ?: effect.id,matteTime)?.captureTime ?: time
+        val inputs=BackgroundEffect.prefix(clip.effects.filter { it.active(clip.timelineOffset(time)) },effect).map { it.sampled(time) }
+        val signature=if (journal==null) "" else backgrounds.signature(original.sampled(captured),
+            BackgroundEffect.prefix(clip.effects.filter { it.active(clip.timelineOffset(time)) },effect).map { it.sampled(captured) })
+        val inputSignature=if (journal==null) "" else backgrounds.inputSignature(inputs)
+        backgrounds.render(bitmap,effect,matteTime,origin,identity,times,backgroundTime,original,journal,signature,inputSignature) { at,w,h ->
             val local=clip.timelineOffset(at)
             val active=EffectOrder.ordered(clip.effects).filter { it.active(local) }.map { it.sampled(at) }
             val grade=active.lastOrNull { it.kind=="Color LUTs" }

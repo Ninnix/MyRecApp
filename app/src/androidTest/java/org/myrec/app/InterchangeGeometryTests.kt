@@ -120,8 +120,8 @@ object InterchangeGeometryTests {
                 val loaded=ProjectArchive.restore(store,native).project;val clip=loaded.clips.single()
                 check(clip.path==clip.effects.single { it.kind=="Image" }.values["path"])
                 Frames().use { f -> same(f.render(p,.4,320,180),f.render(loaded,.4,320,180)) }
-                val document=store.encode(loaded);check(document.getInt("version")==13)
-                check(runCatching { store.decode(JSONObject(document.toString()).put("version",14)) }.exceptionOrNull() is NewerProject)
+                val document=store.encode(loaded);check(document.getInt("version")==14)
+                check(runCatching { store.decode(JSONObject(document.toString()).put("version",15)) }.exceptionOrNull() is NewerProject)
             }
         } finally { root.deleteRecursively() }
     }

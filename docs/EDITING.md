@@ -124,8 +124,8 @@ placement combinations, independently styled caption series, saved platform
 analysis, sliced native transitions and incompatible inference/color recipes.
 Actual iOS import/export acceptance remains open.
 
-This development build saves MyRec project format 13. Older builds refuse the
-new format rather than interpreting native geometry as legacy screen offsets.
+This development build saves MyRec project format 14. Older builds refuse the
+new format so they cannot silently discard recorded masks or native geometry.
 
 Unzip an archive and open Timeline.otio in an external editor for a source
 conform with tracks, gaps, trims, speed, bookmarks, and simple dissolves.
@@ -261,10 +261,17 @@ foreground hold; held-audio settings control its sound. Cuts, trims and speed ch
 retain the effect's background clock. Source-bound matte windows make repeated and
 backward seeks deterministic and reset on scene cuts.
 
-Auto Background uses PPHumanSeg rather than Apple Vision. Saved footage currently
-recomputes masks from its source; replay of the exact masks accepted by live preview
-is still pending. Broad background blur uses area reduction before Gaussian filtering
-to bound CPU and scratch memory, so it is not a pixel-identical Core Image result.
+Recordings keep checked mask samples alongside the original movie. Playback and
+export reuse the accepted result, including after seeks, cuts and speed edits.
+Replacement colors and backgrounds can change without rerunning segmentation;
+editing mask controls recalculates their result. MyRec archives and project copies
+carry the masks. Compatible YouRec ZIP export refuses these recordings until a
+native analysis converter is available; use a MyRec archive or a rendered video.
+
+Auto Background uses PPHumanSeg. New effects reduce temporal carryover at moving
+edges and occlusions while retaining support in stable regions. Older effects keep
+their previous filtering. Broad background blur uses area reduction before Gaussian
+filtering to bound CPU and scratch memory; its pixels can differ from Core Image.
 
 New Blur effects have a Blur radius control in pixels at 1080p and a separate
 Intensity control. Gaussian filtering and intensity use linear light; the radius

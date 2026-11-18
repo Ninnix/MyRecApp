@@ -18,6 +18,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : Activity() {
+    companion object {
+        @Volatile internal var instrumented=false
+    }
     internal lateinit var toolLibrary: SharedPreferences
         private set
     internal lateinit var toolLibraryDirectory: File
@@ -103,7 +106,7 @@ class MainActivity : Activity() {
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         val testSession =
             intent.getBooleanExtra("testSession", false) &&
-                applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+                (instrumented || applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
         val testSessionId =
             intent.getStringExtra("testSessionId")?.takeIf { it.matches(Regex("[a-zA-Z0-9-]+")) }
                 ?: "shared"

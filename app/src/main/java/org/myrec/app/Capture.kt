@@ -190,9 +190,19 @@ class Capture(
     private var liveFrame: Bitmap? = null
     private var rendering = false
     private var effectGeneration = 0
-    private val imageWorker = Executors.newSingleThreadExecutor()
+    private val imageWorker = Executors.newSingleThreadExecutor { task ->
+        Thread({
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+            task.run()
+        },"camera-effects")
+    }
     private val backgroundEffects=BackgroundRenderer()
+    private var recordedBackground: RecordedBackground?=null
     private val backgroundPreviewStart=SystemClock.elapsedRealtime()
+    private val nextBackgroundFrame=Runnable {
+        if (!rendering && !closed && texture.isAvailable && failedEffectGeneration!=effectGeneration.toLong() &&
+            liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }) updateLiveFrame()
+    }
     private var failedEffectGeneration=Long.MIN_VALUE
     private var lastZoomTap = 0L
     private var lastZoom = 0f
@@ -234,6 +244,7 @@ class Capture(
             override fun run() {
                 if (closed) return
                 val now = System.nanoTime()
+                composition?.previewCovered=liveFrame!=null && liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }
                 val arriving = microphone.readings.arriving(now)
                 amplitude = if (arriving) ((microphone.readings.peakDB + 60) / 60).coerceIn(0f,1f) else 0f
                 updateRecordingAudioControls(now)
@@ -1216,10 +1227,22 @@ class Capture(
         val file=File(store.media,"recording-${System.currentTimeMillis()}.mp4")
         var next: CaptureRecorder?=null
         try {
+            val masks=RecordedBackground(File(store.media,"${file.nameWithoutExtension}.masks"),prefs.getInt("fps",30),{ bitmap,_ ->
+                ui.post {
+                    if (!recording || closed || recordedBackground==null) bitmap.recycle()
+                    else {
+                        val frame=if (front && dualLayout==4 && mirrorPreview!=mirrorRecording) SourceMirror.flip(bitmap) else bitmap
+                        if (focusPeaking && dualLayout==4) Native.focusPeaking(frame)
+                        liveFrame?.recycle();liveFrame=frame;overlay.invalidate()
+                    }
+                }
+            },{ error -> ui.post { if (recording) stop();activity.message(error.message ?: "Cannot preserve recorded background masks") } })
+            recordedBackground=masks
             for (fx in liveEffects.filter { it.kind in BackgroundEffect.kinds || ExistingEffects.modern(it) }) {
                 fx.values["origin"]="0.0";fx.values.remove("release");fx.values.remove("triggered");fx.values.remove("rangeStart");fx.values.remove("rangeEnd");fx.values.remove("phaseOffset")
                 for (id in listOf("targetX","targetY")) fx.parameter(id)?.keyframes?.clear()
             }
+            bindRecordedBackground(liveEffects)
             receipt=store.beginCapture(activity.editor.project,file,liveEffects.filter { it.kind !in setOf("Dolly Zoom","Crash Zoom") },activity.recordingInsertion())
             recordingDisplayRotation=activity.windowManager.defaultDisplay.rotation
             recordingOrientation=cameraOrientation()
@@ -1230,9 +1253,12 @@ class Capture(
                 }
             }
             next=r; recorder=r
+            r.onVideoAccepted=masks::accepted;r.onVideoRejected=masks::rejected
             if (composition!=null) composition!!.record(r.surface,videoSize.width,videoSize.height,recordingOrientation,prefs.getInt("fps",30),r::videoFrame)
             else recordingSurface=CameraRecordingSurface(r.surface,videoSize.width,videoSize.height,
                 r::videoFrame) { error -> ui.post { if (recording) stop(); activity.message(error.message ?: "Camera frame processing failed") } }
+            composition?.analysisFrame=masks::offer
+            recordingSurface?.apply { analysisRotation=recordingOrientation;analysisFrame=masks::offer }
             recordingFile=file
             recording=true; paused=false; duration=0
             recordingMarks.clear(); effectHistory.clear(); effectSince=0.0
@@ -1242,6 +1268,7 @@ class Capture(
             else { pendingStart=true; createSession() }
         } catch (e: Exception) {
             recorder=null; next?.close(); closeRecordingSurface()
+            runCatching { recordedBackground?.close() };recordedBackground=null
             if (file.length()==0L) file.delete()
             receipt?.let { runCatching { store.abandonCapture(it) } }; receipt=null
             recording=false; pendingStart=false
@@ -1413,6 +1440,7 @@ class Capture(
     }
 
     private fun closeRecordingSurface() {
+        composition?.analysisFrame=null
         composition?.record(null)
         val surface = recordingSurface
         recordingSurface = null
@@ -1443,6 +1471,7 @@ class Capture(
                 duration=(recorder?.pausedSeconds?.times(1000))?.roundToLong() ?: (duration+SystemClock.elapsedRealtime()-since)
                 paused = true
             }
+            recordedBackground?.running=!paused
         } catch (e: Exception) {
             activity.message(e.message ?: "Cannot pause recording")
         }
@@ -1475,6 +1504,12 @@ class Capture(
         }
         val file = recordingFile
         recordingFile = null
+        try { recordedBackground?.finish(file) }
+        catch (error: Exception) { activity.message("Recorded mask recovery: ${error.message}") }
+        finally { recordedBackground=null }
+        for (fx in effectHistory+liveEffects) if (fx.values["matteJournal"]?.let { !File(it).isFile }==true) {
+            fx.values.remove("matteJournal");fx.values.remove("matteTrack")
+        }
         val completed = receipt
         receipt = null
         if (file != null && file.length() > 0)
@@ -2023,7 +2058,14 @@ class Capture(
         }
     }
 
+    internal var cameraReadTime: ((Double)->Unit)?=null
     internal fun cameraFrame(width: Int, height: Int): Bitmap? {
+        composition?.let {
+            val start=if (cameraReadTime==null) 0L else System.nanoTime()
+            val frame=it.previewFrame(width,height)
+            if (start!=0L) cameraReadTime?.invoke((System.nanoTime()-start)/1e6)
+            return frame
+        }
         val raw = texture.getBitmap(width, height) ?: return null
         val transform = texture.getTransform(Matrix())
         if (transform.isIdentity) return raw
@@ -2147,6 +2189,8 @@ class Capture(
     }
 
     private fun updateLiveFrame() {
+        if (rendering || closed || !texture.isAvailable) return
+        if (recording && recordedBackground!=null && liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }) return
         val now=SystemClock.elapsedRealtime()
         val clock=effectClock()
         val cadence=EffectCadence(liveEffects.filter { ExistingEffects.modern(it) }.map { it.copyEffect().apply {
@@ -2217,6 +2261,10 @@ class Capture(
                     liveFrame?.recycle()
                     liveFrame = raw
                     overlay.invalidate()
+                    if (backdrop) {
+                        ui.removeCallbacks(nextBackgroundFrame)
+                        ui.postDelayed(nextBackgroundFrame,(33-(SystemClock.elapsedRealtime()-now)).coerceAtLeast(0))
+                    }
                 }
             }
             } catch (error: Exception) {
@@ -2276,10 +2324,20 @@ class Capture(
                 if (ExistingEffects.modern(this)) {
                     values["clockEnd"]=end.toString();values["rangeStart"]=from.toString();values["rangeEnd"]=end.toString()
                 }
+                if (kind in BackgroundEffect.kinds) { values["backgroundStart"]=from.toString();values["backgroundEnd"]=end.toString() }
                 if (kind == "Negative Strobe") phase = EffectPhase(0.0)
             }
         )
         effectSince = end
+    }
+
+    private fun bindRecordedBackground(effects: List<Effect>) {
+        val masks=recordedBackground ?: return
+        for (fx in effects.filter { it.kind in BackgroundEffect.kinds }) {
+            fx.values["matteJournal"]=masks.path.path
+            fx.values["matteTrack"]=fx.id
+        }
+        masks.effects=effects.map { it.copyEffect() }
     }
 
     fun effects() {
@@ -2304,6 +2362,7 @@ class Capture(
                     if (fx.kind in setOf("Super 8","Undercranking")) fx.values["phaseOffset"]=phase.toString()
                 }
             }
+            if (recording) bindRecordedBackground(next)
             if (next != liveEffects) effectGeneration++
             liveEffects = next
             updateRequest()
@@ -2317,6 +2376,7 @@ class Capture(
     }
 
     private fun closeCamera() {
+        ui.removeCallbacks(nextBackgroundFrame)
         dollyFollower=null;dollyEnabled=false;lastCadence=null;selectedEffectTarget=null;targetGeneration++
         if (!imageWorker.isShutdown) imageWorker.execute { trackedFrame?.recycle();trackedFrame=null }
         rememberLayout()
@@ -2528,6 +2588,7 @@ class Capture(
             w = width / s
             h = height / s
             liveFrame?.let {
+                paint.alpha=255
                 c.drawBitmap(
                     it,
                     null,

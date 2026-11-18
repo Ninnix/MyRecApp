@@ -9,6 +9,8 @@ suite.add_argument('--text',action='store_true')
 suite.add_argument('--existing-effects',action='store_true')
 suite.add_argument('--effect-audit',action='store_true')
 suite.add_argument('--background-effects',action='store_true')
+suite.add_argument('--recorded-backgrounds',action='store_true')
+suite.add_argument('--background-performance',action='store_true')
 suite.add_argument('--camera-assistance',action='store_true')
 suite.add_argument('--microphone',action='store_true')
 suite.add_argument('--responsive-layout',action='store_true')
@@ -88,6 +90,8 @@ if args.text:command+=['-e','suite','text']
 if args.existing_effects:command+=['-e','suite','existing-effects']
 if args.effect_audit:command+=['-e','suite','effect-audit']
 if args.background_effects:command+=['-e','suite','background-effects']
+if args.recorded_backgrounds:command+=['-e','suite','recorded-backgrounds']
+if args.background_performance:command+=['-e','suite','background-performance']
 if args.camera_assistance:command+=['-e','suite','camera-assistance']
 if args.microphone:command+=['-e','suite','microphone']
 if args.responsive_layout:command+=['-e','suite','responsive-layout']
@@ -164,6 +168,8 @@ elif args.text:name='text-test.txt'
 elif args.existing_effects:name='existing-effects-test.txt'
 elif args.effect_audit:name='effect-audit-test.txt'
 if args.background_effects:name='background-effects-test.txt'
+if args.recorded_backgrounds:name='recorded-backgrounds-test.txt'
+if args.background_performance:name='background-performance-test.txt'
 if args.camera_assistance:name='camera-assistance-test.txt'
 if args.microphone:name='microphone-test.txt'
 if args.responsive_layout:name='responsive-layout-test.txt'
@@ -173,6 +179,6 @@ if args.stabilization:name='stabilization-test.txt'
 if not settings_unchanged or result.returncode or any(text in result.stdout for text in ['FAIL ', 'Process crashed', 'INSTRUMENTATION_FAILED']) or 'PASS ' not in result.stdout:sys.exit(1)
 if args.parity:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/parity-screens/.',str(root/'artifacts/parity/android')],check=True)
-elif not args.remaining_parity and not args.hdr_color_parity and not args.text and not args.existing_effects and not args.effect_audit and not args.background_effects and not args.camera_assistance and not args.microphone and not args.hdr_graphics and not args.responsive_layout and not args.stabilization and not args.capture_endurance and not args.originals and not args.covers and not args.movie_exports and not args.capture_focus and not args.showcase and not args.capture_compatibility and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
+elif not args.background_performance and not args.recorded_backgrounds and not args.remaining_parity and not args.hdr_color_parity and not args.text and not args.existing_effects and not args.effect_audit and not args.background_effects and not args.camera_assistance and not args.microphone and not args.hdr_graphics and not args.responsive_layout and not args.stabilization and not args.capture_endurance and not args.originals and not args.covers and not args.movie_exports and not args.capture_focus and not args.showcase and not args.capture_compatibility and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-screens/.',str(root/'artifacts/screens')],check=True)
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-export.mp4',str(root/'artifacts/test-export.mp4')],check=True)

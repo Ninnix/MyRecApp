@@ -146,6 +146,7 @@ object YouRecDocument {
             objects(array(o,"clock")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
     }
     private fun content(clip: Clip,source: String,canvas: Pair<Int,Int>,shape: (String)->Pair<Int,Int>): JSONObject {
+        if (clip.effects.any { it.values["matteJournal"]!=null }) unsupported("recorded background masks; use a MyRec archive or rendered video")
         if (clip.frozen!=null && clip.effects.any { it.kind !in Effects.audio && (it.from>0 || it.to<clip.duration) }) unsupported("locally scoped held-frame layers")
         val out=JSONObject().put("id",uuid(clip.id)).put("sourceID",source).put("start",clip.sourceIn).put("end",clip.sourceOut)
         val effects=JSONArray()

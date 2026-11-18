@@ -41,8 +41,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 13) throw NewerProject()
-        require(version in 1L..13L) { "Invalid project version" }
+        if (version > 14) throw NewerProject()
+        require(version in 1L..14L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -267,7 +267,7 @@ class ProjectStore(val root: File) {
             }
         }
         val o = JSONObject().apply {
-            put("version", 13); put("id", p.id); put("name", p.name)
+            put("version", 14); put("id", p.id); put("name", p.name)
             put("state", revision(p))
             put("undo", history(saved.undo)); put("redo", history(saved.redo))
             put("captures", clips(saved.captures)); put("originals", clips(saved.originals))
@@ -786,7 +786,7 @@ class ProjectStore(val root: File) {
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 13)
+            put("version", 14)
             put("captureCount", p.captureCount)
             put("bookmarks",JSONArray().apply { p.bookmarks.forEach { put(JSONObject().put("id",it.id).put("time",it.time).put("label",it.label)) } })
             put("id", p.id)
@@ -968,6 +968,7 @@ class ProjectStore(val root: File) {
                         },
                     )
                 values.keys().forEach { fx.values[it] = values.getString(it) }
+                if (fx.kind in BackgroundEffect.kinds && fx.values["matteVersion"]?.let { it!="2" }==true) throw NewerProject()
                 if (algorithm == 5L) require(StabilizationSettings.modern(fx)) { "Invalid stabilization algorithm" }
                 if (fx.kind in AudioFilter.direct && fx.values["dsp"]?.let { it != "2" } == true) throw NewerProject()
                 if (algorithm == 0L && integer(o, "version", 1) < 4 && !e.has("parameters")) EffectImport.convert(fx)
@@ -977,10 +978,20 @@ class ProjectStore(val root: File) {
                     val retained=if (ExistingEffects.modern(fx)) fx.values.filterKeys { it in setOf("origin","clockEnd","release","phaseOffset","captured","rangeStart","rangeEnd") } else emptyMap()
                     for ((key,value) in retained) require(value.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..(if (key=="phaseOffset") 24*604800.0 else 604800.0) }==true) { "Invalid effect clock $key" }
                     val origin=if (fx.kind in BackgroundEffect.kinds) fx.values["origin"] else null
+                    val background=if (fx.kind in BackgroundEffect.kinds) fx.values.filterKeys {
+                        it in setOf("matteVersion","matteJournal","matteTrack","backgroundStart","backgroundEnd")
+                    } else emptyMap()
+                    require(background.containsKey("matteJournal")==background.containsKey("matteTrack")) { "Incomplete recorded mask reference" }
+                    background["matteJournal"]?.let { require(it.length in 1..4096) { "Invalid recorded mask path" } }
+                    background["matteTrack"]?.let { require(it.matches(Regex("[A-Za-z0-9-]{1,64}"))) { "Invalid recorded mask track" } }
+                    for (key in listOf("backgroundStart","backgroundEnd")) background[key]?.let {
+                        require(it.toDoubleOrNull()?.let { v -> v.isFinite() && v in 0.0..604800.0 }==true) { "Invalid background audio clock" }
+                    }
                     if (origin!=null) require(origin.toDoubleOrNull()?.let { it.isFinite() && it in 0.0..604800.0 }==true) { "Invalid background origin" }
                     fx.values.clear()
                     if (origin!=null) fx.values["origin"]=origin
                     fx.values.putAll(retained)
+                    fx.values.putAll(background)
                 }
                 if (e.has("phase")) fx.phase = TimeEffectJson.decode(e.getJSONObject("phase"))
                 if (e.has("subtitle")) fx.subtitle = SubtitleJson.decode(e.getJSONObject("subtitle"))

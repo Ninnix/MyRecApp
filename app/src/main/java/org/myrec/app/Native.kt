@@ -111,6 +111,8 @@ object Native {
     external fun backgroundMatte(bitmap: Bitmap, person: FloatArray?, plate: Bitmap?, settings: FloatArray): FloatArray
     external fun backgroundComposite(bitmap: Bitmap, background: Bitmap, plate: Bitmap?, matte: FloatArray, width: Int, height: Int, settings: FloatArray)
     external fun backgroundBlur(bitmap: Bitmap, sigma: Float, exposure: Float)
+    external fun backgroundTemporal(alpha: Array<FloatArray>,guides: Array<FloatArray>,sizes: IntArray,cuts: BooleanArray,key: Boolean,motion: Boolean): FloatArray
+    external fun backgroundGuide(values: FloatArray,width: Int,height: Int): FloatArray
 
 
     external fun isolate(

@@ -21,6 +21,9 @@ class CameraRecordingSurface(
     private val onFrame: (Long) -> Unit = {},
     private val onError: (Throwable) -> Unit,
 ) : Closeable {
+    @Volatile var analysisFrame: ((Long,()->android.graphics.Bitmap)->Unit)?=null
+    var analysisRotation=0
+    private val readback=CameraReadback()
     private val thread = HandlerThread("camera-encoder").apply { start() }
     private val handler = Handler(thread.looper)
     private var display = EGL14.EGL_NO_DISPLAY
@@ -309,6 +312,12 @@ class CameraRecordingSurface(
                 else System.nanoTime() - stamp
         val timestamp = (stamp + input.offset!!).coerceAtLeast(lastTimestamp + 1_000)
         lastTimestamp = timestamp
+        analysisFrame?.invoke(timestamp) {
+            readback.read(width,height,analysisRotation) { w,h ->
+                GLES20.glViewport(0,0,w,h);GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4)
+            }
+        }
         onFrame(timestamp)
         EGLExt.eglPresentationTimeANDROID(display, window, timestamp)
         check(EGL14.eglSwapBuffers(display, window)) { "Cannot submit camera frame" }
@@ -329,6 +338,7 @@ class CameraRecordingSurface(
         closed = true
         try {
             call {
+                readback.close()
                 releaseInput()
                 if (program != 0) GLES20.glDeleteProgram(program)
                 EGL14.eglMakeCurrent(
