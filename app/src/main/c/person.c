@@ -1,4 +1,5 @@
 #include "pixels.h"
+#include "display.h"
 #include <jni.h>
 #include <math.h>
 #include <onnxruntime_c_api.h>
@@ -70,7 +71,7 @@ JNIEXPORT jlong JNICALL Java_org_myrec_app_Native_personLoad(JNIEnv *env, jobjec
     int ok =
         checked(env, p, api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "myrec-person", &p->env)) &&
         checked(env, p, api->CreateSessionOptions(&options)) &&
-        checked(env, p, api->SetIntraOpNumThreads(options, 2)) &&
+        checked(env, p, api->SetIntraOpNumThreads(options, 1)) &&
         checked(env, p, api->SetInterOpNumThreads(options, 1)) &&
         checked(env, p,
                 api->AddSessionConfigEntry(options, "session.intra_op.allow_spinning", "0")) &&
@@ -96,6 +97,31 @@ static float clamp(float value, float low, float high) {
     return fmaxf(low, fminf(high, value));
 }
 
+static int input_pixels(JNIEnv *env,jobject bitmap,float *pixels) {
+    YrPixels image;
+    if (!yr_lock(env, bitmap, &image)) { failure(env, "Cannot read the person effect frame"); return 0; }
+    AndroidBitmapInfo info = image.info;
+    display_prepare();
+    for (int y = 0; y < SIDE; y++)
+        for (int x = 0; x < SIDE; x++) {
+            float sx = clamp((x + .5f) * info.width / SIDE - .5f, 0, (float)info.width - 1);
+            float sy = clamp((y + .5f) * info.height / SIDE - .5f, 0, (float)info.height - 1);
+            float value[4]; yr_sample(&image, sx, sy, value);
+            for (int ch = 0; ch < 3; ch++)
+                pixels[ch * AREA + y * SIDE + x] = display_byte(value[ch]) / 127.5f - 1;
+        }
+    AndroidBitmap_unlockPixels(env, bitmap);
+    return 1;
+}
+
+JNIEXPORT void JNICALL Java_org_myrec_app_Native_personInput(JNIEnv *env,jobject self,jobject bitmap,jfloatArray values) {
+    (void)self;
+    if ((*env)->GetArrayLength(env,values)!=3*AREA) { failure(env,"Invalid person input shape");return; }
+    float *pixels=(*env)->GetFloatArrayElements(env,values,NULL);if (!pixels) return;
+    input_pixels(env,bitmap,pixels);
+    (*env)->ReleaseFloatArrayElements(env,values,pixels,0);
+}
+
 JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_personMask(JNIEnv *env, jobject self,
                                                                     jlong handle,
                                                                     jobject bitmap) {
@@ -105,18 +131,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_personMask(JNIEnv *env, 
         failure(env, "Person effect is not ready");
         return NULL;
     }
-    YrPixels image;
-    if (!yr_lock(env, bitmap, &image)) { failure(env, "Cannot read the person effect frame"); return NULL; }
-    AndroidBitmapInfo info = image.info;
-    for (int y = 0; y < SIDE; y++)
-        for (int x = 0; x < SIDE; x++) {
-            float sx = clamp((x + .5f) * info.width / SIDE - .5f, 0, (float)info.width - 1);
-            float sy = clamp((y + .5f) * info.height / SIDE - .5f, 0, (float)info.height - 1);
-            float value[4]; yr_sample(&image, sx, sy, value);
-            for (int ch = 0; ch < 3; ch++)
-                p->pixels[ch * AREA + y * SIDE + x] = roundf(yr_clamp(yr_srgb(value[ch]), 0, 1) * 255) / 127.5f - 1;
-        }
-    AndroidBitmap_unlockPixels(env, bitmap);
+    if (!input_pixels(env,bitmap,p->pixels)) return NULL;
     const char *names[] = {"x"}, *outputs[] = {"save_infer_model/scale_0.tmp_1"};
     const OrtValue *inputs[] = {p->input};
     OrtValue *output = NULL;

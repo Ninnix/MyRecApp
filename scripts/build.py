@@ -45,11 +45,14 @@ def native():
     lib.mkdir(parents=True, exist_ok=True)
     run(clang, '-std=c11', '-O3', '-Wall', '-Wextra', '-Werror', '-fPIC', '-shared',
         '-I' + str(ROOT / '.build/runtime-sources/onnxruntime-current'),
+        '-I' + str(ROOT / '.build/runtime-sources/ncnn-20261020'),
         '-Wl,-z,max-page-size=16384', '-Wl,-z,common-page-size=16384',
         *sorted(p for p in ROOT.glob('app/src/main/c/*.c') if p.name not in ('qwen.c', 'gguf.c')), '-o', lib / 'libmyrec.so',
         ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so',
+        ROOT / '.build/runtime-sources/ncnn-20261020/libncnn.so',
         '-landroid', '-ljnigraphics', '-llog', '-lm', '-ldl')
     shutil.copyfile(ROOT / '.build/runtime-sources/onnxruntime-current/libonnxruntime.so', lib / 'libonnxruntime.so')
+    shutil.copyfile(ROOT / '.build/runtime-sources/ncnn-20261020/libncnn.so', lib / 'libncnn.so')
     rn = ROOT / '.build/runtime-sources/rnnoise-0.1'
     if rn.exists():
         run(clang, '-std=c11', '-O3', '-fPIC', '-shared', '-DRNNOISE_BUILD', '-D__ANDROID__',
@@ -96,7 +99,7 @@ def build():
     shutil.copyfile(apk, unsigned)
     with zipfile.ZipFile(unsigned, 'a', zipfile.ZIP_DEFLATED) as z:
         for path in dex.glob('*.dex'): z.write(path, path.name)
-        for name in ('myrec', 'onnxruntime', 'rnnoise', 'qwen_asr'):
+        for name in ('myrec', 'onnxruntime', 'ncnn', 'rnnoise', 'qwen_asr'):
             path = BUILD / 'lib/arm64-v8a' / ('lib' + name + '.so')
             if path.exists(): z.write(path, path.relative_to(BUILD))
     aligned = BUILD / 'aligned.apk'

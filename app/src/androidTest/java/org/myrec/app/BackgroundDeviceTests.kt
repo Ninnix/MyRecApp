@@ -310,7 +310,13 @@ object BackgroundDeviceTests {
             }
             check(changes>=2) {
                 val masks=Capture::class.java.getDeclaredField("recordedBackground").apply { isAccessible=true }.get(capture) as? RecordedBackground
-                "The background camera preview stopped updating ($changes): offered=${masks?.offered}, accepted=${masks?.accepted}, input=${masks?.lastInput}, output=${masks?.lastOutput}"
+                var state=""
+                main {
+                    val source=Capture::class.java.getDeclaredField("composition").apply { isAccessible=true }.get(capture) as? CameraComposition
+                    val message=MainActivity::class.java.getDeclaredField("lastMessage").apply { isAccessible=true }.get(a)
+                    state="paused=${capture.paused}, running=${masks?.running}, effects=${masks?.effects?.map { it.kind to it.enabled }}, analysis=${source?.analysisFrame!=null}, message=$message"
+                }
+                "The background camera preview stopped updating ($changes): offered=${masks?.offered}, accepted=${masks?.accepted}, input=${masks?.lastInput}, output=${masks?.lastOutput}; $state"
             }
             val masks=Capture::class.java.getDeclaredField("recordedBackground").apply { isAccessible=true }.get(capture) as RecordedBackground
             main { capture.pause();check(capture.paused) }

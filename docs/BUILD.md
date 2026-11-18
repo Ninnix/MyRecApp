@@ -16,7 +16,7 @@ python3 scripts/prepare-person.py
 ./scripts/build.sh :app:assembleDebug :app:assembleDebugAndroidTest :app:testEditor
 ```
 
-The runtime script downloads the pinned sources and ONNX Runtime into
+The runtime script downloads the pinned sources, ONNX Runtime and ncnn into
 `.build/runtime-sources/`. [runtimes.json](../runtimes.json) records the sources
 and checksums. The person script verifies or restores the bundled segmentation
 model from [data/models.json](../data/models.json). Audio and caption downloads
@@ -38,8 +38,9 @@ sdk.dir=/absolute/path/to/Android/Sdk
 
 For an NDK outside the SDK, pass
 `-PmyrecNdkPath=/absolute/path/to/android-ndk` to the build command.
-The app targets ARM64 and needs Android 9 or later. Inference uses the CPU;
-there is no manufacturer SDK to install.
+The app targets ARM64 and needs Android 9 or later. Auto Background preview can
+use Vulkan through ncnn; ONNX Runtime remains the CPU fallback. There is no
+manufacturer SDK to install.
 
 ## Install
 

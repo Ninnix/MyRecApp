@@ -28,3 +28,8 @@ if not valid(target):
     finally:
         temporary.unlink(missing_ok=True)
 print('Verified PPHumanSeg:', spec['sha256'])
+for item in json.loads((root/'data/models.json').read_text())['person_preview']['files']:
+    path=target.parent/item['name']
+    if not path.is_file() or path.stat().st_size!=item['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest()!=item['sha256']:
+        raise SystemExit('Regenerate the FP32 preview graph with scripts/prepare-person-preview.py')
+print('Verified FP32 person preview graph')

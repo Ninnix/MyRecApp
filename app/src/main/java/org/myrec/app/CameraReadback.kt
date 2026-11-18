@@ -1,7 +1,7 @@
 package org.myrec.app
 
 import android.graphics.Bitmap
-import android.graphics.Matrix
+import android.graphics.Rect
 import android.opengl.GLES20
 import java.nio.ByteBuffer
 import kotlin.math.*
@@ -44,13 +44,21 @@ class CameraReadback {
         texture=0;buffer=0;width=0;height=0
     }
     companion object {
+        fun previewCrop(width: Int,height: Int,viewWidth: Int,viewHeight: Int): Rect {
+            require(width>0 && height>0 && viewWidth>0 && viewHeight>0)
+            val scale=min(width.toDouble()/viewWidth,height.toDouble()/viewHeight)
+            val w=(viewWidth*scale).roundToInt().coerceIn(1,width)
+            val h=(viewHeight*scale).roundToInt().coerceIn(1,height)
+            return Rect((width-w)/2,(height-h)/2,(width+w)/2,(height+h)/2)
+        }
         fun bitmap(bytes: ByteBuffer,width: Int,height: Int,rotation: Int=0): Bitmap {
-            val input=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
+            val turn=((rotation%360)+360)%360
+            require(turn%90==0 && width>0 && height>0 && bytes.isDirect && bytes.capacity().toLong()>=width.toLong()*height*4)
+            val result=Bitmap.createBitmap(if (turn%180==0) width else height,if (turn%180==0) height else width,Bitmap.Config.ARGB_8888)
             try {
-                bytes.rewind();input.copyPixelsFromBuffer(bytes)
-                val transform=Matrix().apply { setScale(1f,-1f);postRotate(rotation.toFloat()) }
-                return Bitmap.createBitmap(input,0,0,width,height,transform,false)
-            } finally { input.recycle() }
+                Native.cameraReadback(bytes,result,turn)
+                return result
+            } catch (error: Throwable) { result.recycle();throw error }
         }
     }
 }

@@ -16,6 +16,15 @@ movement, microphone identities, and camera capability selection. It needs no
 phone. Storage and ZIP tests use isolated cache projects and need a device for
 Android filesystem and JSON APIs; they do not need a camera or foreground UI.
 
+The background kernels also have host comparisons for display-byte conversion
+and sliding guided-filter moments:
+
+```sh
+python3 scripts/test-background-filters.py
+cc -std=c11 -O3 scripts/test-background-color.c -o .build/background-color-test -lm -pthread
+.build/background-color-test
+```
+
 ## Choose a device suite
 
 ```sh
@@ -45,8 +54,8 @@ restores access, retries the save, and verifies the latest edit was retained.
 | --- | --- |
 | `--effect-audit` | Every available spatial effect with non-neutral controls, moving-source time effects and zero intensity, Gaussian blur/linear strength, reference frame ratios/Black/Blur fill/colored horizontal flares, clean bars after rotation over another track with text above, legacy and typed schema persistence, portrait/landscape controls, live Letterbox/Blur recording and decoded export |
 | `--background-effects` | Linear green/blue keying, border detection, clean plates, transparent fringes in ARGB/half float, real person inference, background fit/fill and loops, frozen foreground motion, deterministic matte seeks, −18 dB/keyed background audio, held-audio cut, owned assets and ZIP clocks, portrait/landscape apply/undo, live screen sampling, camera preview and recorded recipe/export |
-| `--recorded-backgrounds` | Accepted-mask playback/export, reverse seeks and holds, split/undo/archive ownership, source and mask corruption, rejected/paused candidates, continuous background audio through constant/animated speed cuts and checked PCM recovery, live recording |
-| `--background-performance` | Scalar/native filtering agreement, exact camera readback orientation, fresh frames under an opaque effect preview, warm stage timings and live/recording preview frame rates |
+| `--recorded-backgrounds` | Accepted-mask playback/export, reverse seeks and holds, split/undo/archive ownership, corruption, rejected/paused candidates, continuous background audio, live recording, fixed-canvas preview geometry through both starting orientations and live rotation with decoded tail export, mask analysis after paused camera rebuilds |
+| `--background-performance` | Camera startup before surface layout, scalar/native and compact-guide agreement, exact camera readback orientation, fresh frames under an opaque preview, matched frame/mask prefetch, GPU/CPU FP32 agreement and service-death recovery, warm timings and actual drawn portrait/landscape preview and recording frame rates |
 | `--camera-assistance` | Actual face detection and manual-pan cancellation, gravity and Max angle preview, HDR HLG preservation, portrait/landscape dual dividers/diagonal/shapes/reset, starting-picture gesture ownership across the diagonal, paused camera setup changes; controlled GPU fixtures for no-face hold, mirrored panning, leveled edges, matching decoded movie pixels and reference diagonal coverage/opacity |
 | `--microphone` | Encoded AAC gain/stereo/priming, remembered input gain, portrait/landscape volume controls and clipping hold, one input across camera switches, read-failure recovery, SDR/HDR pause/resume, missing-audio pause/restart and one-minute SDR timing |
 | `--responsive-layout` | Actual screen pixels for Projects headings with cards and after scrolling, portrait/landscape/portrait navigation, inset-aware editor controls, five compact/tall screen sizes, unchanged project and recorder visibility |

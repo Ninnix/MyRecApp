@@ -1,4 +1,16 @@
 #include "pixels.h"
+#include "display.h"
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
+static void write_display(const YrPixels *p,int x,int y,const float c[4]) {
+    if (p->info.format==ANDROID_BITMAP_FORMAT_RGBA_F16) { yr_write(p,x,y,c);return; }
+    uint8_t *pixel=(uint8_t *)yr_address(p,x,y);
+    for (int i=0;i<3;i++) pixel[i]=display_byte(c[i]);
+    pixel[3]=(uint8_t)lroundf(yr_clamp(c[3],0,1)*255);
+}
+#define yr_write write_display
 
 static void failure(JNIEnv *env) {
     jclass t=(*env)->FindClass(env,"java/lang/IllegalStateException");
@@ -9,6 +21,87 @@ static float at(const float *p,int w,int h,int channels,float x,float y,int c) {
     int a=(int)x,b=(int)y,n=a+1<w?a+1:a,m=b+1<h?b+1:b;
     float dx=x-a,dy=y-b;
     return (1-dy)*(p[(b*w+a)*channels+c]*(1-dx)+p[(b*w+n)*channels+c]*dx)+dy*(p[(m*w+a)*channels+c]*(1-dx)+p[(m*w+n)*channels+c]*dx);
+}
+
+static void expand_guide(float *out,const float *input,int gw,int gh,int w,int h) {
+#if defined(__aarch64__)
+    if (w==gw*4 && h==gh*4) {
+        const float steps[4]={.125f,.375f,.625f,.875f};
+        float32x4_t dx=vld1q_f32(steps),one=vdupq_n_f32(1),left=vsubq_f32(one,dx);
+        for (int y=0;y<h;y++) {
+            float sy=yr_clamp((y+.5f)/4-.5f,0,gh-1);int iy=(int)sy,ny=iy+1<gh?iy+1:iy;float dy=sy-iy;
+            const float *a=input+iy*gw,*b=input+ny*gw;
+            float *row=out+(size_t)y*w;
+            row[0]=row[1]=(1-dy)*a[0]+dy*b[0];
+            int x=2;
+            for (;x+3<w;x+=4) {
+                int ix=(x-2)/4,nx=ix+1<gw?ix+1:ix;
+                float32x4_t top=vaddq_f32(vmulq_n_f32(left,a[ix]),vmulq_n_f32(dx,a[nx]));
+                float32x4_t bottom=vaddq_f32(vmulq_n_f32(left,b[ix]),vmulq_n_f32(dx,b[nx]));
+                vst1q_f32(row+x,vaddq_f32(vmulq_n_f32(top,1-dy),vmulq_n_f32(bottom,dy)));
+            }
+            for (;x<w;x++) row[x]=(1-dy)*a[gw-1]+dy*b[gw-1];
+        }
+        return;
+    }
+#endif
+    for (int y=0;y<h;y++) for (int x=0;x<w;x++)
+        out[y*w+x]=at(input,gw,gh,1,(x+.5f)/w*gw-.5f,(y+.5f)/h*gh-.5f,0);
+}
+
+/* Fixed-size live windows can filter a whole observation at a time. The
+ * contiguous passes avoid resampling the same guide for both adjacent pairs. */
+static int temporal_window(float *restrict out,float **alpha,float **guides,const int *shape,const jboolean *cuts,int count,int key,int motion) {
+    int w=shape[0],h=shape[1],n=w*h,gated=key || motion;
+    float *scratch=malloc((size_t)n*(gated?3:1)*sizeof(float));
+    if (!scratch) return 0;
+    float *restrict remaining=scratch;
+    float *a=gated?scratch+n:NULL,*b=gated?scratch+n*2:NULL;
+    for (int i=0;i<n;i++) { out[i]=0;remaining[i]=1; }
+    if (gated) expand_guide(a,guides[0],shape[2],shape[3],w,h);
+    for (int f=0;f<count-1;f++) {
+        if (gated) expand_guide(b,guides[f+1],shape[(f+1)*4+2],shape[(f+1)*4+3],w,h);
+        const float *restrict current=alpha[f],*restrict previous=alpha[f+1];
+        if (cuts[f]) {
+            for (int i=0;i<n;i++) out[i]=yr_clamp(out[i]+remaining[i]*current[i],0,1);
+            free(scratch);return 1;
+        }
+        int i=0;
+#if defined(__aarch64__)
+        float32x4_t zero=vdupq_n_f32(0),one=vdupq_n_f32(1),two=vdupq_n_f32(2),three=vdupq_n_f32(3);
+        for (;i+3<n;i+=4) {
+            float32x4_t prior=vdupq_n_f32(key?.25f:1.f/3),value=vld1q_f32(current+i);
+            if (gated) {
+                float32x4_t z=vmulq_n_f32(vsubq_f32(vabdq_f32(vld1q_f32(a+i),vld1q_f32(b+i)),vdupq_n_f32(key?.01f:.025f)),1/(key?.01f:.075f));
+                z=vmaxq_f32(zero,vminq_f32(one,z));
+                prior=vmulq_f32(prior,vsubq_f32(one,vmulq_f32(vmulq_f32(z,z),vsubq_f32(three,vmulq_f32(two,z)))));
+                if (!key) {
+                    z=vmulq_n_f32(vsubq_f32(vabdq_f32(value,vld1q_f32(previous+i)),vdupq_n_f32(.15f)),1/.45f);
+                    z=vmaxq_f32(zero,vminq_f32(one,z));
+                    prior=vmulq_f32(prior,vsubq_f32(one,vmulq_f32(vmulq_f32(z,z),vsubq_f32(three,vmulq_f32(two,z)))));
+                }
+            }
+            float32x4_t weight=vld1q_f32(remaining+i);
+            vst1q_f32(out+i,vaddq_f32(vld1q_f32(out+i),vmulq_f32(vmulq_f32(weight,vsubq_f32(one,prior)),value)));
+            vst1q_f32(remaining+i,vmulq_f32(weight,prior));
+        }
+#endif
+        for (;i<n;i++) {
+            float prior=key?.25f:1.f/3;
+            if (gated) {
+                float z=yr_clamp((fabsf(a[i]-b[i])-(key?.01f:.025f))/(key?.01f:.075f),0,1);
+                prior*=1-z*z*(3-2*z);
+                if (!key) {
+                    z=yr_clamp((fabsf(current[i]-previous[i])-.15f)/.45f,0,1);
+                    prior*=1-z*z*(3-2*z);
+                }
+            }
+            out[i]+=remaining[i]*(1-prior)*current[i];remaining[i]*=prior;
+        }
+        float *swap=a;a=b;b=swap;
+    }
+    for (int i=0;i<n;i++) out[i]=yr_clamp(out[i]+remaining[i]*alpha[count-1][i],0,1);
+    free(scratch);return 1;
 }
 
 JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundGuide(JNIEnv *env,jobject self,jfloatArray values,jint w,jint h) {
@@ -54,6 +147,8 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundTemporal(JNIEn
     }
     int w=shape[0],h=shape[1],n=w*h;
     result=malloc((size_t)(n+3)*sizeof(float));if (!result) goto done;
+    int same=1;for (int f=1;f<count;f++) if (shape[f*4]!=w || shape[f*4+1]!=h) same=0;
+    if (same && temporal_window(result,alpha,guide,shape,reset,count,key,motion)) goto output;
     for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
         int i=y*w+x;float u=(x+.5f)/w,v=(y+.5f)/h,remaining=1,sum=0;
         for (int f=0;f<count-1;f++) {
@@ -79,6 +174,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundTemporal(JNIEn
         float oldest=s[0]==w && s[1]==h?alpha[count-1][i]:at(alpha[count-1],s[0],s[1],1,u*s[0]-.5f,v*s[1]-.5f,0);
         result[i]=yr_clamp(sum+remaining*oldest,0,1);
     }
+output:
     memcpy(result+n,alpha[0]+n,3*sizeof(float));
     output=(*env)->NewFloatArray(env,n+3);if (output) (*env)->SetFloatArrayRegion(env,output,0,n+3,result);
 done:
@@ -144,16 +240,43 @@ static int morph(float *p,int w,int h,float radius) {
 static int refine(float *a,const float *guide,int w,int h,float softness,int person) {
     float *ab=malloc((size_t)w*h*2*sizeof(float)); if (!ab) return 0;
     int r=(int)((2+6*softness)*fminf(w,h)/1080); if (r<1) r=1; if (r>6) r=6;
-    for (int y=0;y<h;y++) for (int x=0;x<w;x++) {
-        float si=0,sp=0,sii=0,sip=0,count=0;
-        for (int dy=-r;dy<=r;dy++) for (int dx=-r;dx<=r;dx++) {
-            int sx=(int)yr_clamp(x+dx,0,w-1),sy=(int)yr_clamp(y+dy,0,h-1),i=sy*w+sx;
-            si+=guide[i]; sp+=a[i]; sii+=guide[i]*guide[i]; sip+=guide[i]*a[i]; count++;
+    float *rows=malloc((size_t)w*h*4*sizeof(float));
+    if (!rows) { free(ab);return 0; }
+    /* Accumulate in double so sliding windows do not drift across a wide
+     * picture. The same clamped box moments feed the existing guided filter. */
+    for (int y=0;y<h;y++) {
+        double sum[4]={0};
+        for (int dx=-r;dx<=r;dx++) {
+            int x=(int)yr_clamp(dx,0,w-1),i=y*w+x;float g=guide[i],p=a[i];
+            sum[0]+=g;sum[1]+=p;sum[2]+=g*g;sum[3]+=g*p;
         }
-        si/=count; sp/=count; sii/=count; sip/=count;
-        float k=(sip-si*sp)/(fmaxf(0,sii-si*si)+.001f);
-        ab[(y*w+x)*2]=k; ab[(y*w+x)*2+1]=sp-k*si;
+        for (int x=0;x<w;x++) {
+            for (int c=0;c<4;c++) rows[((size_t)y*w+x)*4+c]=(float)sum[c];
+            int left=y*w+(x-r<0?0:x-r),right=y*w+(x+r+1>=w?w-1:x+r+1);
+            float g=guide[left],p=a[left],ng=guide[right],np=a[right];
+            sum[0]+=(double)ng-g;sum[1]+=(double)np-p;
+            sum[2]+=(double)(ng*ng)-g*g;sum[3]+=(double)(ng*np)-g*p;
+        }
     }
+    float count=(float)((2*r+1)*(2*r+1));
+    double *columns=calloc((size_t)w*4,sizeof(double));
+    if (!columns) { free(rows);free(ab);return 0; }
+    for (int dy=-r;dy<=r;dy++) {
+        int y=(int)yr_clamp(dy,0,h-1);
+        for (int i=0;i<w*4;i++) columns[i]+=rows[(size_t)y*w*4+i];
+    }
+    for (int y=0;y<h;y++) {
+        for (int x=0;x<w;x++) {
+            const double *sum=columns+x*4;
+            float si=(float)(sum[0]/count),sp=(float)(sum[1]/count),sii=(float)(sum[2]/count),sip=(float)(sum[3]/count);
+            float k=(sip-si*sp)/(fmaxf(0,sii-si*si)+.001f);
+            ab[(y*w+x)*2]=k;ab[(y*w+x)*2+1]=sp-k*si;
+        }
+        int top=y-r<0?0:y-r,bottom=y+r+1>=h?h-1:y+r+1;
+        for (int i=0;i<w*4;i++) columns[i]+=(double)rows[(size_t)bottom*w*4+i]-rows[(size_t)top*w*4+i];
+    }
+    free(columns);
+    free(rows);
     int ok=blur(ab,w,h,2,person?.25f+.75f*softness:1+softness);
     if (ok) for (int i=0;i<w*h;i++) {
         float value=yr_clamp(ab[i*2]*guide[i]+ab[i*2+1],0,1),black=.02f+.05f*(1-softness);
@@ -187,27 +310,31 @@ static void screen_reference(const YrPixels *image,const float *p,float color[3]
         color[c]=values[count/2][c];
     }
 }
-JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundMatte(JNIEnv *env,jobject self,jobject bitmap,jfloatArray person,jobject plate,jfloatArray settings) {
+JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundMatte(JNIEnv *env,jobject self,jobject bitmap,jfloatArray person,jobject plate,jfloatArray settings,jboolean compact) {
     (void)self;
     if ((*env)->GetArrayLength(env,settings)!=19 || (person && (*env)->GetArrayLength(env,person)!=192*192)) return NULL;
     float p[19]; (*env)->GetFloatArrayRegion(env,settings,0,19,p);
     YrPixels image,clean; if (!yr_lock(env,bitmap,&image)) return NULL;
     int locked=plate && yr_lock(env,plate,&clean),w=(int)image.info.width,h=(int)image.info.height,n=w*h,ok=1;
     if (plate && !locked) { AndroidBitmap_unlockPixels(env,bitmap); return NULL; }
-    float *result=calloc((size_t)n*2+3,sizeof(float)),*hint=NULL,*eroded=NULL;
+    float *result=malloc(((size_t)n*2+3)*sizeof(float)),*hint=NULL,*eroded=NULL;
+    int gw=(w+3)/4,gh=(h+3)/4;
+    double *guide=compact?calloc((size_t)gw*gh,sizeof(double)):NULL;
     jfloat *mask=person?(*env)->GetFloatArrayElements(env,person,NULL):NULL;
-    if (!result || (person && !mask)) { ok=0; goto done; }
+    if (!result || (person && !mask) || (compact && !guide)) { ok=0; goto done; }
     float color[3]; screen_reference(&image,p,color);
     if (mask) {
-        hint=malloc((size_t)n*sizeof(float)); eroded=malloc((size_t)n*sizeof(float));
-        if (!hint || !eroded) { ok=0; goto done; }
+        int protect=p[0]<.5f && p[9]>.5f;
+        hint=malloc((size_t)n*sizeof(float));if (protect) eroded=malloc((size_t)n*sizeof(float));
+        if (!hint || (protect && !eroded)) { ok=0; goto done; }
         for (int y=0;y<h;y++) for (int x=0;x<w;x++) hint[y*w+x]=at(mask,192,192,1,(x+.5f)*192/w-.5f,(y+.5f)*192/h-.5f,0);
-        memcpy(eroded,hint,(size_t)n*sizeof(float));
-        if (p[0]<.5f && p[9]>.5f) ok=morph(hint,w,h,h*.04f) && morph(eroded,w,h,-h*.03f);
+        if (protect) { memcpy(eroded,hint,(size_t)n*sizeof(float));ok=morph(hint,w,h,h*.04f) && morph(eroded,w,h,-h*.03f); }
     }
     for (int y=0;y<h && ok;y++) for (int x=0;x<w;x++) {
         int i=y*w+x; float c[4],screen[4]={color[0],color[1],color[2],1}; yr_read(&image,x,y,c);
-        result[n+3+i]=yr_srgb(yr_clamp(yr_luma(c),0,1));
+        float luminance=yr_clamp(yr_luma(c),0,1);
+        result[n+3+i]=yr_srgb(luminance);
+        if (guide) guide[(y/4)*gw+x/4]+=luminance;
         if (locked) yr_sample(&clean,(x+.5f)*clean.info.width/w-.5f,(y+.5f)*clean.info.height/h-.5f,screen);
         int blue=p[1]>1.5f || (p[1]<.5f && screen[2]>screen[1]);
         float other=c[blue?1:2],so=screen[blue?1:2];
@@ -223,9 +350,17 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_backgroundMatte(JNIEnv *
     for (int c=0;c<3;c++) result[n+c]=color[c];
 done:;
     jfloatArray output=NULL;
-    if (ok) { output=(*env)->NewFloatArray(env,n*2+3); if (output) (*env)->SetFloatArrayRegion(env,output,0,n*2+3,result); }
+    if (ok) {
+        if (guide) for (int y=0;y<gh;y++) for (int x=0;x<gw;x++) {
+            int cw=w-x*4<4?w-x*4:4,ch=h-y*4<4?h-y*4:4;
+            double value=guide[y*gw+x]/(cw*ch);
+            result[n+3+y*gw+x]=(float)(value<=.0031308?value*12.92:1.055*pow(value,1/2.4)-.055);
+        }
+        int length=n+3+(guide?gw*gh:n);
+        output=(*env)->NewFloatArray(env,length);if (output) (*env)->SetFloatArrayRegion(env,output,0,length,result);
+    }
     if (mask) (*env)->ReleaseFloatArrayElements(env,person,mask,JNI_ABORT);
-    free(hint); free(eroded); free(result);
+    free(hint); free(eroded); free(result);free(guide);
     if (locked) AndroidBitmap_unlockPixels(env,plate);
     AndroidBitmap_unlockPixels(env,bitmap);
     if (!ok && !(*env)->ExceptionCheck(env)) failure(env);
@@ -233,6 +368,7 @@ done:;
 }
 JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundComposite(JNIEnv *env,jobject self,jobject bitmap,jobject background,jobject plate,jfloatArray matte,jint mw,jint mh,jfloatArray settings) {
     (void)self;
+    display_prepare();
     if (mw<=0 || mh<=0 || (*env)->GetArrayLength(env,matte)!=mw*mh+3 || (*env)->GetArrayLength(env,settings)!=19) return;
     float p[19]; (*env)->GetFloatArrayRegion(env,settings,0,19,p);
     YrPixels image,bg,clean; if (!yr_lock(env,bitmap,&image)) return;
@@ -260,16 +396,27 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundComposite(JNIEnv *env
     }
     for (int y=0;y<h && ok;y++) for (int x=0;x<w;x++) {
         float u=(x+.5f)/w,v=(y+.5f)/h,c[4],b[4],screen[4],out[4],a=yr_clamp(mw==w && mh==h?mask[y*w+x]:at(mask,mw,mh,1,u*mw-.5f,v*mh-.5f,0),0,1);
+        if (p[18]==0 && image.info.format==ANDROID_BITMAP_FORMAT_RGBA_8888) {
+            uint8_t *pixel=(uint8_t *)yr_address(&image,x,y);
+            if (a==1 && p[0]>.5f && p[16]<=.5f && pixel[3]==255) continue;
+            if (a==0 && p[13]==1 && bg.info.format==ANDROID_BITMAP_FORMAT_RGBA_8888 &&
+                bg.info.width==(unsigned)w && bg.info.height==(unsigned)h) {
+                memcpy(pixel,yr_address(&bg,x,y),3);pixel[3]=255;continue;
+            }
+        }
         yr_read(&image,x,y,c);
         if (bg.info.width==(unsigned)w && bg.info.height==(unsigned)h) yr_read(&bg,x,y,b);
         else yr_sample(&bg,u*bg.info.width-.5f,v*bg.info.height-.5f,b);
         for (int i=0;i<3;i++) screen[i]=mask[mw*mh+i];
+        float straight[3];
+        if (p[0]>.5f && (a==0 || a==1)) {
+            for (int i=0;i<3;i++) straight[i]=yr_clamp(c[i],0,1);
+        } else {
         if (locked) yr_sample(&clean,u*clean.info.width-.5f,v*clean.info.height-.5f,screen);
         else if (p[0]>.5f) {
             float cover=at(estimate,qw,qh,4,u*qw-.5f,v*qh-.5f,3);
             for (int i=0;i<3;i++) screen[i]=cover>.001f?at(estimate,qw,qh,4,u*qw-.5f,v*qh-.5f,i)/cover:c[i];
         }
-        float straight[3];
         for (int i=0;i<3;i++) straight[i]=yr_clamp((c[i]-(1-a)*screen[i])/fmaxf(a,.0001f),0,1);
         if (p[0]<.5f) {
             int blue=p[1]>1.5f || (p[1]<.5f && screen[2]>screen[1]),channel=blue?2:1;
@@ -277,6 +424,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundComposite(JNIEnv *env
             straight[channel]=fminf(before,before+(limit-before)*p[14]);
             float removed=before-straight[channel]; const float compensation[3]={.3f,.6f,.1f};
             for (int i=0;i<3;i++) straight[i]+=removed*compensation[i]*.5f;
+        }
         }
         for (int i=0;i<3;i++) {
             if (p[16]>.5f && weight>.001f) straight[i]*=1+(yr_clamp((target[i]/2304)/fmaxf(foreground[i]/weight,.01f),.5f,2)-1)*p[17];
@@ -296,6 +444,7 @@ done:
 }
 JNIEXPORT void JNICALL Java_org_myrec_app_Native_backgroundBlur(JNIEnv *env,jobject self,jobject bitmap,jfloat sigma,jfloat exposure) {
     (void)self;
+    display_prepare();
     if (sigma<.01f && exposure==0) return;
     YrPixels image; if (!yr_lock(env,bitmap,&image)) return;
     int w=(int)image.info.width,h=(int)image.info.height;

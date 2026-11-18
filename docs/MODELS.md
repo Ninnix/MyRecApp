@@ -2,8 +2,9 @@
 
 Models run on the phone. The application calls external runtimes through C APIs;
 [runtimes.json](../runtimes.json) pins them. Download URLs, sizes, and hashes are
-in [data/models.json](../data/models.json). The Android backend is ONNX Runtime
-on the CPU, with the Qwen C runtime for captions.
+in [data/models.json](../data/models.json). Android uses ONNX Runtime on the CPU,
+ncnn/Vulkan for standalone Auto Background preview, and the Qwen C runtime for
+captions.
 
 ## Included models
 
@@ -15,10 +16,27 @@ person hint reuse this model, without another download. Their C11 path refines
 edges against the source, then uses finite source-bound matte history, motion
 gating for keying and scene-cut resets.
 
+Standalone Auto Background preview runs the same 146 FP32 weight and bias tensors
+through ncnn's C API on Vulkan. FP16 and INT8 inference are disabled. The bundled
+preview representation is a lossless repacking of the pinned ONNX graph; its
+final transpose/softmax/transpose becomes channel softmax. The original ONNX
+file remains available for CPU fallback, recording, editing and export.
+`scripts/prepare-person-preview.py` reproduces the representation with host
+`onnx` and `numpy`; normal builds only verify the bundled files and their hashes.
+
+GPU inference runs in a private bound service process. The camera uses CPU masks
+while GPU shaders warm up, and pairs each returned mask with its source frame.
+Initialization errors, timeouts and service death disable the GPU path for the
+current app process and retain CPU rendering. Camera readback and inference run
+away from the UI thread. Background preparation shares the inference worker,
+overlapping matte rendering on the preceding frame. Work remains bounded to
+avoid a growing queue. Other effect stacks and recording retain CPU inference.
+
 Hair, occlusion, movement, and multiple people need more testing. The model
 neither identifies people nor sends frames away. It does not reproduce Apple's
-Vision segmentation. Recorded live matte journals are not yet replayed; saved
-footage is analysed again from its source.
+Vision segmentation. Recorded live matte journals preserve accepted masks for
+playback and export; unsampled source frames derive a fresh matte against that
+accepted history.
 
 ## Audio downloads
 

@@ -30,6 +30,10 @@ class CameraComposition(
     private var context = EGL14.EGL_NO_CONTEXT
     private var config: EGLConfig? = null
     private var window = EGL14.EGL_NO_SURFACE
+    private var frameSurface=EGL14.EGL_NO_SURFACE
+    private var frameWidth=0
+    private var frameHeight=0
+    private var framePixels=ByteBuffer.allocateDirect(0)
     private var encoder = EGL14.EGL_NO_SURFACE
     private var encoderWidth = 0
     private var encoderHeight = 0
@@ -480,22 +484,26 @@ class CameraComposition(
     fun previewFrame(w: Int,h: Int)=readFrame(-1,w,h)
     private fun readFrame(index: Int,w: Int,h: Int): Bitmap?=call {
         if (inputs.isEmpty() || if (index>=0) inputs.getOrNull(index)?.ready!=true else !inputs.all { it.ready }) return@call null
-        val buffer =
-            EGL14.eglCreatePbufferSurface(
+        if (frameSurface==EGL14.EGL_NO_SURFACE || frameWidth!=w || frameHeight!=h) {
+            if (frameSurface!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,frameSurface)
+            frameSurface=EGL14.EGL_NO_SURFACE
+            val buffer=EGL14.eglCreatePbufferSurface(
                 display,
                 config,
                 intArrayOf(EGL14.EGL_WIDTH, w, EGL14.EGL_HEIGHT, h, EGL14.EGL_NONE),
                 0,
             )
-        check(buffer != EGL14.EGL_NO_SURFACE)
+            check(buffer!=EGL14.EGL_NO_SURFACE)
+            frameSurface=buffer;frameWidth=w;frameHeight=h
+            framePixels=ByteBuffer.allocateDirect(w*h*4)
+        }
         try {
-            draw(buffer, w, h, 0, index,analysis=true)
-            val pixels = ByteBuffer.allocateDirect(w * h * 4)
-            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
-            CameraReadback.bitmap(pixels,w,h)
+            draw(frameSurface, w, h, 0, index,analysis=true)
+            framePixels.clear()
+            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, framePixels)
+            CameraReadback.bitmap(framePixels,w,h)
         } finally {
             EGL14.eglMakeCurrent(display, window, window, context)
-            EGL14.eglDestroySurface(display, buffer)
         }
     }
 
@@ -769,6 +777,7 @@ class CameraComposition(
                 EGL14.EGL_NO_CONTEXT,
             )
             if (encoder != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, encoder)
+            if (frameSurface!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,frameSurface)
             EGL14.eglDestroySurface(display, window)
             EGL14.eglDestroyContext(display, context)
             EGL14.eglTerminate(display)

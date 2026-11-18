@@ -20,5 +20,13 @@
     "directory": "onnxruntime-current",
     "archive": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.31.1/onnxruntime-android-1.31.1.aar",
     "sha256_arm64": "46e0c16cd515c62a1dd6c5994448b5413705478354bc20a756a5a82634c3ca03"
+  },
+  "ncnn": {
+    "url": "https://github.com/Tencent/ncnn",
+    "version": "20261020",
+    "directory": "ncnn-20261020",
+    "archive": "https://github.com/Tencent/ncnn/releases/download/20261020/ncnn-20261020-android-vulkan-shared.zip",
+    "sha256_archive": "1b01048590564bae1c3d2d2a2b37ff101d50ad86c2cd2dc862bce7087905444d",
+    "sha256_arm64": "6361033c58466c8db3211126cbe2a4164783745f2aff231e359b4a747bef203a"
   }
 }

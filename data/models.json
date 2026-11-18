@@ -119,5 +119,21 @@
         "sha256": "d534ace99f19552fadd89d07d8cef0e3ff398b608ed2247c975c153b95b17f04"
       }
     ]
+  },
+  "person_preview": {
+    "source_sha256": "552d8a984054e59b5d773d24b9b12022b22046ceb2bbc4c9aaeaceb36a9ddf24",
+    "format": "ncnn-fp32",
+    "files": [
+      {
+        "name": "person-preview.param",
+        "bytes": 16535,
+        "sha256": "bed3dd1c6dac8d37b938984f37caf1f7ec9e9e85739a0151de5e16dc133dfbb4"
+      },
+      {
+        "name": "person-preview.bin",
+        "bytes": 6131756,
+        "sha256": "372276b7608fd3b7ff1945fcb3f1c9759f14891b67f9926d5be3f421d5d9a267"
+      }
+    ]
   }
 }

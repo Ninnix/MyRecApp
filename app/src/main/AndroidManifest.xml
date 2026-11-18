@@ -10,6 +10,7 @@
     <application android:theme="@style/AppTheme"
         android:label="MyRec" android:icon="@mipmap/ic_launcher"
         android:allowBackup="false" android:supportsRtl="true">
+        <service android:name=".PersonGpuService" android:process=":person" android:exported="false" />
         <provider android:name=".SharedImages" android:authorities="${applicationId}.images"
             android:exported="false" android:grantUriPermissions="true" />
         <activity android:name=".MainActivity" android:exported="true"

@@ -20,6 +20,7 @@ Application source is Kotlin and C11. Android framework APIs provide camera, dec
 * GGUF Q4_K quantization format reference, ggml authors, MIT. The C11 loader follows the packed format; no ggml runtime is bundled. Its notice is included under `licenses/ggml.txt`.
 * Kotlin standard library, JetBrains, Apache 2.0.
 * ONNX Runtime 1.31.1, Microsoft, MIT with third-party notices. The ARM64 Android library is used through its C API. [Source](https://github.com/microsoft/onnxruntime). Notices are bundled under `licenses/ONNX-Runtime.txt` and `licenses/ONNX-Runtime-ThirdParty.txt`.
+* ncnn 20261020, Tencent, BSD 3-Clause with third-party notices. Its external ARM64 Vulkan runtime is called through the C API for Auto Background preview, using the same FP32 PPHumanSeg tensors. [Source](https://github.com/Tencent/ncnn/tree/20261020). The complete redistribution notice is bundled under `licenses/ncnn.txt`.
 * PPHumanSeg FP32 model from OpenCV Zoo, revision `2027dd2f5a8a5746b5d4964900a0465afc6d3a53`, Apache 2.0. [Source](https://github.com/opencv/opencv_zoo/tree/2027dd2f5a8a5746b5d4964900a0465afc6d3a53/models/human_segmentation_pphumanseg). The bundled model's notice is `licenses/PPHumanSeg.txt`; no OpenCV runtime is included.
 * Optional LavaSR v2 learned weights and its ONNX conversion, Apache 2.0. [Author's source](https://github.com/ysharma3501/LavaSR), [ONNX conversion](https://github.com/Topping1/LavaSR-ONNX). Notices are bundled under `licenses/LavaSR.txt` and `licenses/LavaSR-ONNX.txt`; model files are downloaded separately.
 

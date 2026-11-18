@@ -3,6 +3,11 @@ package org.myrec.app
 import android.graphics.Bitmap
 
 object Native {
+    external fun personInput(bitmap: Bitmap,values: FloatArray)
+    external fun personGpuLoad(param: String,weights: String): Long
+    external fun personGpuMask(handle: Long,values: FloatArray): FloatArray
+    external fun personGpuFree(handle: Long)
+    external fun cameraReadback(bytes: java.nio.ByteBuffer,bitmap: Bitmap,rotation: Int)
     external fun transition(first: Bitmap,second: Bitmap,result: Bitmap,kind: Int,progress: Float,amount: Float,angle: Float,soft: Boolean,parameters: FloatArray)
     external fun nightFuse(original: Bitmap, fused: Bitmap, neighbor: Bitmap, mass: FloatArray, distance: Int, precise: Boolean, progress: AudioProgress?=null)
     external fun nightRestore(bitmap: Bitmap, fused: Bitmap, strength: Float, brightness: Float, reduction: Float, detail: Float, progress: AudioProgress?=null)
@@ -108,7 +113,7 @@ object Native {
     external fun personLoad(path: String): Long
 
     external fun personMask(handle: Long, bitmap: Bitmap): FloatArray
-    external fun backgroundMatte(bitmap: Bitmap, person: FloatArray?, plate: Bitmap?, settings: FloatArray): FloatArray
+    external fun backgroundMatte(bitmap: Bitmap, person: FloatArray?, plate: Bitmap?, settings: FloatArray,compact: Boolean=false): FloatArray
     external fun backgroundComposite(bitmap: Bitmap, background: Bitmap, plate: Bitmap?, matte: FloatArray, width: Int, height: Int, settings: FloatArray)
     external fun backgroundBlur(bitmap: Bitmap, sigma: Float, exposure: Float)
     external fun backgroundTemporal(alpha: Array<FloatArray>,guides: Array<FloatArray>,sizes: IntArray,cuts: BooleanArray,key: Boolean,motion: Boolean): FloatArray

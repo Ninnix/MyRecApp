@@ -145,13 +145,14 @@ when you choose captions or a neural audio filter.
 | Model | Use | Download |
 | --- | --- | --- |
 | RNNoise | Voice isolation | Included |
-| PPHumanSeg | Keep people in color | Included, 5.9 MB |
+| PPHumanSeg | Person isolation and Auto Background | Included, FP32 |
 | DeepFilterNet3 | Noise reduction | 8.6 MB |
 | VoiceFixer | Studio restoration | 415 MB |
 | LavaSR v2 | Speech detail | 56 MB |
 | Qwen3-ASR-0.6B Q4_K | Captions | 636 MB |
 
-Inference runs on the CPU. [Models](docs/MODELS.md) explains storage,
+Auto Background preview can use Vulkan; other inference uses the CPU.
+[Models](docs/MODELS.md) explains storage,
 processing, and licenses. Downloads are pinned in [data/models.json](data/models.json).
 
 ## Privacy

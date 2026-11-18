@@ -7,6 +7,16 @@ import kotlin.math.*
 
 class BackgroundRenderer : Closeable {
     internal var frameTime: ((Double)->Unit)?=null
+    internal var stageTime: ((String,Double)->Unit)?=null
+    private inline fun <T> stage(name: String,block: ()->T): T {
+        val observer=stageTime ?: return block()
+        val start=System.nanoTime()
+        val cpu=android.os.Debug.threadCpuTimeNanos()
+        try { return block() } finally {
+            observer(name,(System.nanoTime()-start)/1e6)
+            observer("$name.cpu",(android.os.Debug.threadCpuTimeNanos()-cpu)/1e6)
+        }
+    }
     private val mattes=linkedMapOf<String,BackgroundMatte>()
     private val live=mutableMapOf<String,List<BackgroundMatte>>()
     private val readers=Frames()
@@ -44,10 +54,10 @@ class BackgroundRenderer : Closeable {
         val width=max(2,(bitmap.width*scale).roundToInt()); val height=max(2,(bitmap.height*scale).roundToInt())
         val small=Bitmap.createScaledBitmap(bitmap,width,height,true)
         try {
-            val person=if (effect.kind=="Auto Background" || BackgroundEffect.toggle(effect,"personHint")) personMask ?: Person.mask(small) else null
-            val data=Native.backgroundMatte(small,person,plate,options)
+            val person=if (effect.kind=="Auto Background" || BackgroundEffect.toggle(effect,"personHint")) personMask ?: stage("person") { Person.mask(small) } else null
+            val data=stage("spatial") { Native.backgroundMatte(small,person,plate,options,true) }
             val count=width*height
-            val guide=Native.backgroundGuide(data.copyOfRange(count+3,data.size),width,height)
+            val guide=data.copyOfRange(count+3,data.size)
             fun values(v: FloatArray)=if (canonical) BackgroundJournal.canonical(v) else v
             return BackgroundMatte(width,height,values(data.copyOfRange(0,count+3)),values(guide),time,(width+3)/4,(height+3)/4,person?.let(::values)).also {
                 if (mattes.size>=24) mattes.remove(mattes.keys.first())
@@ -59,7 +69,7 @@ class BackgroundRenderer : Closeable {
     fun render(bitmap: Bitmap,effect: Effect,time: Double,origin: Double,key: String,
         previous: List<Double>?=null,backgroundTime: Double=time,original: Effect=effect,
         journal: BackgroundJournal.Reader?=null,signature: String="",inputSignature: String="",capture: ((BackgroundMatte,FloatArray)->Unit)?=null,
-        source: ((Double,Int,Int)->Bitmap?)?=null) {
+        personMask: FloatArray?=null,backgroundFrame: Bitmap?=null,source: ((Double,Int,Int)->Bitmap?)?=null) {
         if (BackgroundEffect.choice(effect,"view")=="Original" || effect.number("intensity",1f)<=0) return
         val started=if (frameTime==null) 0L else System.nanoTime()
         val plate=BackgroundEffect.media(effect,"cleanPlate")?.let { PhotoSource.frame(it,bitmap.width,bitmap.height) }
@@ -68,12 +78,12 @@ class BackgroundRenderer : Closeable {
             val saved=journal?.at(track,time)
             val exact=saved!=null && abs(saved.raw.time-time)<.00001
             if (exact && saved!!.signature==signature) {
-                val background=background(bitmap,effect,max(0.0,backgroundTime-origin))
+                val background=backgroundFrame ?: background(bitmap,effect,max(0.0,backgroundTime-origin))
                 try { Native.backgroundComposite(bitmap,background,plate,saved.final,saved.raw.width,saved.raw.height,BackgroundEffect.options(effect)) }
-                finally { background.recycle() }
+                finally { if (backgroundFrame==null) background.recycle() }
                 return
             }
-            val current=matte(bitmap,effect,time,key,plate,saved?.takeIf { exact && it.inputSignature==inputSignature }?.raw?.person,capture!=null)
+            val current=matte(bitmap,effect,time,key,plate,saved?.takeIf { exact && it.inputSignature==inputSignature }?.raw?.person ?: personMask,capture!=null)
             val history=mutableListOf(current)
             val capacity=if (effect.kind=="Chroma Key") 6 else 8
             if (previous!=null && source!=null) {
@@ -98,12 +108,12 @@ class BackgroundRenderer : Closeable {
                 if (live.size>8) live.clear()
                 live[signature]=history.toList()
             }
-            val filtered=BackgroundTemporal.fast(history,effect.kind=="Chroma Key",effect.values["matteVersion"]=="2")
+            val filtered=stage("temporal") { BackgroundTemporal.fast(history,effect.kind=="Chroma Key",effect.values["matteVersion"]=="2") }
             val alpha=if (capture!=null) BackgroundJournal.canonical(filtered) else filtered
             capture?.invoke(current,alpha)
-            val background=background(bitmap,effect,max(0.0,backgroundTime-origin))
-            try { Native.backgroundComposite(bitmap,background,plate,alpha,current.width,current.height,BackgroundEffect.options(effect)) }
-            finally { background.recycle() }
+            val background=backgroundFrame ?: stage("background") { background(bitmap,effect,max(0.0,backgroundTime-origin)) }
+            try { stage("composite") { Native.backgroundComposite(bitmap,background,plate,alpha,current.width,current.height,BackgroundEffect.options(effect)) } }
+            finally { if (backgroundFrame==null) background.recycle() }
         } finally { plate?.recycle();if (started!=0L) frameTime?.invoke((System.nanoTime()-started)/1e6) }
     }
 

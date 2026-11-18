@@ -7,10 +7,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** A candidate cannot change temporal history until the muxer accepts its timestamp. */
-class RecordedBackground(val path: File,private val fps: Int,private val publish: (Bitmap,Double)->Unit,private val failure: (Throwable)->Unit) : Closeable {
+class RecordedBackground(val path: File,private val fps: Int,private val publish: (Bitmap,Double)->Unit,private val failure: (Throwable)->Unit,context: android.content.Context?=null) : Closeable {
     private data class Candidate(val stamp: Long,val bitmap: Bitmap,val effects: List<Effect>)
     private val writer=BackgroundJournal.Writer(path)
     private val renderer=BackgroundRenderer()
+    private val frameWork=context?.let { FrameWork(it) }
     private val worker=Executors.newSingleThreadExecutor { task ->
         Thread({
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
@@ -47,9 +48,10 @@ class RecordedBackground(val path: File,private val fps: Int,private val publish
         if (frame>=0) indexed=true
         candidate=null;processing=true
         worker.execute {
+            val start=frameWork?.begin()
             try { render(sample,time,frame) }
             catch (error: Throwable) { sample.bitmap.recycle();problem=error;failure(error) }
-            finally { synchronized(this) { processing=false } }
+            finally { if (start!=null) frameWork?.finish(start);synchronized(this) { processing=false } }
         }
     }
     private fun render(sample: Candidate,time: Double,frame: Int) {
@@ -85,6 +87,7 @@ class RecordedBackground(val path: File,private val fps: Int,private val publish
     }
     fun finish(source: File?) {
         synchronized(this) { closed=true;candidate?.bitmap?.recycle();candidate=null }
+        worker.execute { frameWork?.close() }
         worker.shutdown();check(worker.awaitTermination(30,TimeUnit.SECONDS)) { "Recorded masks did not finish" }
         try {
             problem?.let { throw it }

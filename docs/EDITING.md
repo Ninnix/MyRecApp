@@ -273,6 +273,12 @@ edges and occlusions while retaining support in stable regions. Older effects ke
 their previous filtering. Broad background blur uses area reduction before Gaussian
 filtering to bound CPU and scratch memory; its pixels can differ from Core Image.
 
+With Auto Background alone, the camera preview uses Vulkan inference when available,
+with the original FP32 model and automatic CPU fallback. Other effect stacks and
+recording use the CPU path. Rotating during recording keeps the movie's original
+canvas; the processed preview crops its fitted borders instead of stretching the
+camera image into the rotated screen.
+
 New Blur effects have a Blur radius control in pixels at 1080p and a separate
 Intensity control. Gaussian filtering and intensity use linear light; the radius
 scales with the picture, keeping preview and export softness consistent. New

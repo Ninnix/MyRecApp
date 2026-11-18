@@ -109,7 +109,72 @@ object RecordedBackgroundTests {
             }
         } finally { root.deleteRecursively() }
         BackgroundDeviceTests.run(i,a,main) { name,body -> if (name.startsWith("live background")) test(name,body) }
+        previewRotation(File(a.getExternalFilesDir(null),"rotation-preview"),test)
         cameraModes(a,main,test)
+    }
+
+    private fun previewRotation(evidence: File,test: (String,()->Unit)->Unit) {
+        evidence.mkdirs()
+        for (hint in listOf(0,90)) test("recorded background preview keeps its geometry through rotation (movie turn $hint)") {
+            val thread=android.os.HandlerThread("mask-rotation-test").apply { start() }
+            fun reader()=android.media.ImageReader.newInstance(320,180,android.graphics.PixelFormat.RGBA_8888,3).apply {
+                setOnImageAvailableListener({ it.acquireLatestImage()?.close() },android.os.Handler(thread.looper))
+            }
+            val window=reader();val movie=reader()
+            val failure=java.util.concurrent.atomic.AtomicReference<Throwable>()
+            val frames=java.util.concurrent.ArrayBlockingQueue<Bitmap>(1)
+            val renderer=CameraComposition(window.surface,320,180) { failure.set(it) }
+            try {
+                val input=renderer.input(640,360,90,false)
+                renderer.analysisFrame={ _,read -> val bitmap=read();if (!frames.offer(bitmap)) bitmap.recycle() }
+                renderer.record(movie.surface,320,180,hint)
+                val phases=if (hint==0) listOf(false,true,false,true) else listOf(true,false,true,false)
+                for (portrait in phases) {
+                    val w=if (portrait) 180 else 320;val h=if (portrait) 320 else 180
+                    renderer.configure(4,false,if (portrait) 0 else 90,w,h)
+                    while (true) { val old=frames.poll() ?: break;old.recycle() }
+                    val canvas=input.lockCanvas(null)
+                    val paint=android.graphics.Paint()
+                    paint.shader=android.graphics.LinearGradient(0f,0f,640f,360f,Color.rgb(20,40,80),Color.rgb(230,180,140),android.graphics.Shader.TileMode.CLAMP)
+                    canvas.drawRect(0f,0f,640f,360f,paint)
+                    paint.shader=null;paint.color=Color.GREEN;canvas.drawCircle(320f,180f,70f,paint)
+                    input.unlockCanvasAndPost(canvas)
+                    val recorded=frames.poll(4,java.util.concurrent.TimeUnit.SECONDS) ?: throw failure.get() ?: error("No rotation analysis frame")
+                    val expected=renderer.previewFrame(w,h) ?: error("No reference preview")
+                    val actual=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888)
+                    try {
+                        val crop=CameraReadback.previewCrop(recorded.width,recorded.height,w,h)
+                        android.graphics.Canvas(actual).drawBitmap(recorded,crop,android.graphics.Rect(0,0,w,h),android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+                        for ((name,bitmap) in listOf("actual" to actual,"expected" to expected,"recorded" to recorded))
+                            File(evidence,"$hint-$portrait-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG,100,it) }
+                        fun bounds(bitmap: Bitmap): android.graphics.Rect {
+                            val box=android.graphics.Rect(w,h,0,0)
+                            for (y in 0 until h) for (x in 0 until w) {
+                                val color=bitmap.getPixel(x,y)
+                                if (Color.green(color)>230 && Color.red(color)<20 && Color.blue(color)<20) {
+                                    box.left=min(box.left,x);box.top=min(box.top,y);box.right=max(box.right,x+1);box.bottom=max(box.bottom,y+1)
+                                }
+                            }
+                            check(!box.isEmpty);return box
+                        }
+                        val actualBox=bounds(actual);val expectedBox=bounds(expected)
+                        check(listOf(actualBox.left-expectedBox.left,actualBox.top-expectedBox.top,actualBox.right-expectedBox.right,actualBox.bottom-expectedBox.bottom).all { abs(it)<=3 }) {
+                            "Rotation changed the subject bounds: $actualBox instead of $expectedBox"
+                        }
+                        for (v in listOf(.2f,.4f,.6f,.8f)) for (u in listOf(.2f,.4f,.6f,.8f)) {
+                            val x=(u*w).toInt();val y=(v*h).toInt();val a=actual.getPixel(x,y);val b=expected.getPixel(x,y)
+                            if (Color.green(a)>max(Color.red(a),Color.blue(a))+20 || Color.green(b)>max(Color.red(b),Color.blue(b))+20) continue
+                            check(listOf(Color.red(a)-Color.red(b),Color.green(a)-Color.green(b),Color.blue(a)-Color.blue(b)).all { abs(it)<=12 }) {
+                                "Rotating the recording changed preview proportions (portrait=$portrait, turn=$hint, x=$x, y=$y, actual=${a.toUInt().toString(16)}, expected=${b.toUInt().toString(16)})"
+                            }
+                        }
+                    } finally { recorded.recycle();expected.recycle();actual.recycle() }
+                }
+            } finally {
+                renderer.record(null);renderer.close();window.close();movie.close();thread.quitSafely()
+                while (true) { val bitmap=frames.poll() ?: break;bitmap.recycle() }
+            }
+        }
     }
 
     private fun cameraModes(a: MainActivity,main: (()->Unit)->Unit,test: (String,()->Unit)->Unit) {
@@ -118,6 +183,8 @@ object RecordedBackgroundTests {
             if (front) android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT else android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK }
         val rear=facing(false)
         val modes=mutableListOf(Triple("front mirror",true,false))
+        modes.add(Triple("rotation",false,false))
+        modes.add(Triple("camera rebuild",false,false))
         if (DualCamera.pairs(manager).isNotEmpty()) modes.add(Triple("dual layout",false,false))
         if (HdrRecorder.supported(manager,rear) && HdrGraphics.support.reason==null) modes.add(Triple("HDR landscape",false,true))
         for ((label,front,hdr) in modes) test("recorded mask geometry and final movie clock survive $label") {
@@ -148,6 +215,21 @@ object RecordedBackgroundTests {
                 val paths=a.editor.project.clips.map { it.path }.toSet()
                 waitFor("Recording did not start: $label") { main { if (!capture.recording) capture.start() };capture.recording }
                 Thread.sleep(1800)
+                if (label=="camera rebuild") {
+                    val masks=Capture::class.java.getDeclaredField("recordedBackground").apply { isAccessible=true }.get(capture) as RecordedBackground
+                    val before=masks.accepted
+                    main { capture.pause();capture.suspendCamera();capture.resumeCamera() }
+                    waitFor("Rebuilt camera unavailable") { capture.readyToRecord }
+                    main { if (capture.paused) capture.pause() }
+                    waitFor("Rebuilt camera lost mask analysis") { masks.accepted>=before+2 }
+                    Thread.sleep(300)
+                }
+                if (label=="rotation") {
+                    main { a.requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+                    waitFor("Recording did not rotate") { a.root.width<a.root.height }
+                    Thread.sleep(1500)
+                    check(capture.recording) { "Rotation stopped the recording" }
+                }
                 main { capture.stop() }
                 val clip=a.editor.project.clips.first { it.path !in paths }
                 val effect=clip.effects.first { it.kind=="Auto Background" }
@@ -165,7 +247,9 @@ object RecordedBackgroundTests {
                 if (hdr) {
                     check(WorkingColor.hdr(clip.path)) { "HDR capture silently changed to SDR" }
                 }
-                val short=Project(width=160,height=90,clips=mutableListOf(clip.duplicate().apply { start=0.0;sourceOut=min(sourceOut,.5);audio=false }))
+                val short=Project(width=160,height=90,clips=mutableListOf(clip.duplicate().apply {
+                    start=0.0;if (label=="rotation") sourceIn=max(sourceIn,sourceOut-.5) else sourceOut=min(sourceOut,.5);audio=false
+                }))
                 val output=File(a.cacheDir,"mask-$label-${uid()}.mp4")
                 try { Export(a.audioCache).run(short,output,160,90,ExportColor.SDR) {};check(output.length()>1000) }
                 finally { output.delete() }

@@ -44,6 +44,7 @@ class Capture(
                 val display = activity.windowManager.defaultDisplay
                 if (id == display.displayId && display.rotation != displayRotation) {
                     displayRotation = display.rotation
+                    if (!recording) effectGeneration++
                     if (!closed) transform()
                 }
             }
@@ -188,6 +189,7 @@ class Capture(
     private var strobePreviewSince = 0L
     private var strobePreviewUntil = 0L
     private var liveFrame: Bitmap? = null
+    private var liveRecorded=false
     private var rendering = false
     private var effectGeneration = 0
     private val imageWorker = Executors.newSingleThreadExecutor { task ->
@@ -197,10 +199,28 @@ class Capture(
         },"camera-effects")
     }
     private val backgroundEffects=BackgroundRenderer()
+    private val backgroundSource=BackgroundRenderer()
+    private val frameWork=FrameWork(activity,15_000_000L)
+    private val segmentationWork=FrameWork(activity,15_000_000L)
+    private val personGpu=PersonGpu(activity)
+    internal val gpuBackground get()=personGpu.active
+    private val segmentationWorker=Executors.newSingleThreadExecutor { task ->
+        Thread({
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY) }
+            task.run()
+        },"camera-person")
+    }
+    private var segmenting=false
+    private var nextBackgroundRead=0L
+    private var pendingBackground: Pair<()->Unit,()->Unit>?=null
+    internal var segmentationTime: ((Double)->Unit)?=null
+    internal var segmentationCpuTime: ((Double)->Unit)?=null
+    internal var backgroundPrepareTime: ((Double)->Unit)?=null
+    internal var previewDraw: ((Bitmap)->Unit)?=null
     private var recordedBackground: RecordedBackground?=null
     private val backgroundPreviewStart=SystemClock.elapsedRealtime()
     private val nextBackgroundFrame=Runnable {
-        if (!rendering && !closed && texture.isAvailable && failedEffectGeneration!=effectGeneration.toLong() &&
+        if (!closed && texture.isAvailable && failedEffectGeneration!=effectGeneration.toLong() &&
             liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }) updateLiveFrame()
     }
     private var failedEffectGeneration=Long.MIN_VALUE
@@ -257,7 +277,7 @@ class Capture(
                         activity.message("No microphone audio is arriving. Recording paused; check the microphone before resuming.")
                     }
                 }
-                if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && !rendering && failedEffectGeneration!=effectGeneration.toLong())
+                if ((liveEffects.any { it.enabled } || focusPeaking && dualLayout == 4) && texture.isAvailable && failedEffectGeneration!=effectGeneration.toLong())
                     updateLiveFrame()
                 overlay.invalidate()
                 ui.postDelayed(this, 66)
@@ -275,6 +295,7 @@ class Capture(
                 }
 
                 override fun onSurfaceTextureSizeChanged(s: SurfaceTexture, w: Int, h: Int) {
+                    if (!recording) effectGeneration++
                     transform()
                 }
 
@@ -330,7 +351,7 @@ class Capture(
     }
 
     private fun openDefault() {
-        if (closed || device != null || opening || dualCamera != null) return
+        if (closed || !texture.isAvailable || device != null || opening || dualCamera != null) return
         if (dualLayout != 4) {
             openDual()
             return
@@ -1233,10 +1254,10 @@ class Capture(
                     else {
                         val frame=if (front && dualLayout==4 && mirrorPreview!=mirrorRecording) SourceMirror.flip(bitmap) else bitmap
                         if (focusPeaking && dualLayout==4) Native.focusPeaking(frame)
-                        liveFrame?.recycle();liveFrame=frame;overlay.invalidate()
+                        liveFrame?.recycle();liveFrame=frame;liveRecorded=true;overlay.invalidate()
                     }
                 }
-            },{ error -> ui.post { if (recording) stop();activity.message(error.message ?: "Cannot preserve recorded background masks") } })
+            },{ error -> ui.post { if (recording) stop();activity.message(error.message ?: "Cannot preserve recorded background masks") } },activity)
             recordedBackground=masks
             for (fx in liveEffects.filter { it.kind in BackgroundEffect.kinds || ExistingEffects.modern(it) }) {
                 fx.values["origin"]="0.0";fx.values.remove("release");fx.values.remove("triggered");fx.values.remove("rangeStart");fx.values.remove("rangeEnd");fx.values.remove("phaseOffset")
@@ -1254,10 +1275,10 @@ class Capture(
             }
             next=r; recorder=r
             r.onVideoAccepted=masks::accepted;r.onVideoRejected=masks::rejected
+            composition?.analysisFrame=masks::offer
             if (composition!=null) composition!!.record(r.surface,videoSize.width,videoSize.height,recordingOrientation,prefs.getInt("fps",30),r::videoFrame)
             else recordingSurface=CameraRecordingSurface(r.surface,videoSize.width,videoSize.height,
                 r::videoFrame) { error -> ui.post { if (recording) stop(); activity.message(error.message ?: "Camera frame processing failed") } }
-            composition?.analysisFrame=masks::offer
             recordingSurface?.apply { analysisRotation=recordingOrientation;analysisFrame=masks::offer }
             recordingFile=file
             recording=true; paused=false; duration=0
@@ -1598,6 +1619,7 @@ class Capture(
                 activity.message(it.message ?: "Camera composition failed")
             }
         }
+        result.analysisFrame=recordedBackground?.let { it::offer }
         if (recording) recorder?.let { result.record(it.surface,videoSize.width,videoSize.height,recordingOrientation,prefs.getInt("fps",30),it::videoFrame) }
         return result
     }
@@ -2189,9 +2211,19 @@ class Capture(
     }
 
     private fun updateLiveFrame() {
-        if (rendering || closed || !texture.isAvailable) return
+        if (closed || !texture.isAvailable) return
         if (recording && recordedBackground!=null && liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }) return
+        val enabled=liveEffects.filter { it.enabled }
+        val source=composition
+        val pipeline=source!=null && !recording && enabled.size==1 && enabled[0].kind=="Auto Background" &&
+            BackgroundEffect.choice(enabled[0],"view")!="Original" && enabled[0].number("intensity",1f)>0
+        if (pipeline) {
+            if (segmenting || pendingBackground!=null) return
+        } else if (rendering) return
         val now=SystemClock.elapsedRealtime()
+        if (pipeline && now<nextBackgroundRead) {
+            ui.removeCallbacks(nextBackgroundFrame);ui.postDelayed(nextBackgroundFrame,nextBackgroundRead-now);return
+        }
         val clock=effectClock()
         val cadence=EffectCadence(liveEffects.filter { ExistingEffects.modern(it) }.map { it.copyEffect().apply {
             from=values["rangeStart"]?.toDoubleOrNull() ?: values["origin"]?.toDoubleOrNull() ?: 0.0;to=604800.0
@@ -2200,18 +2232,22 @@ class Capture(
         if (cadenceKey!=null && lastCadence==cadenceKey && liveFrame!=null) return
         val renderClock=cadence?.boundary ?: clock
         val backdrop=liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }
-        val frame = cameraFrame(if (backdrop) if (width>height) 512 else 288 else 640,
-            if (backdrop) if (width>height) 288 else 512 else if (width > height) 360 else 1138) ?: return
+        val frameWidth=if (backdrop) if (width>height) 512 else 288 else 640
+        val frameHeight=if (backdrop) if (width>height) 288 else 512 else if (width>height) 360 else 1138
         val flip = front && dualLayout == 4 && mirrorPreview != mirrorRecording
-        var raw = if (flip) SourceMirror.flip(frame) else frame
-        rendering = true
+        if (pipeline) nextBackgroundRead=max(now,nextBackgroundRead+33)
         val generation = effectGeneration
         val backgroundClock=renderClock
         val backgroundKey="$cameraId:$dualLayout:$displayRotation:$flip:$generation"
         val effects = EffectOrder.ordered(liveEffects).filter {
             it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") && (it.kind != "Negative Strobe" || recording || now < strobePreviewUntil)
         }.map { it.copyEffect() }
+        fun render(input: Bitmap,personMask: FloatArray?,background: Bitmap?=null) {
+        var raw=input
+        if (generation!=effectGeneration || closed || recording && pipeline) { raw.recycle();background?.recycle();return }
+        rendering=true
         imageWorker.execute {
+            val workStart=frameWork.begin()
             try {
             trackEffectTarget(raw,clock)
             val person =
@@ -2229,7 +2265,7 @@ class Capture(
                 if (fx.kind == "Negative Strobe" && TimeEffects.negative(original.copy(phase = EffectPhase(0.0)), clock, prefs.getInt("fps", 30).toDouble()))
                     Native.workingNegative(raw, fx.strength(0.0, 1.0))
                 if (fx.kind in BackgroundEffect.kinds) backgroundEffects.render(raw,fx,backgroundClock,
-                    fx.values["origin"]?.toDoubleOrNull() ?: 0.0,backgroundKey)
+                    fx.values["origin"]?.toDoubleOrNull() ?: 0.0,backgroundKey,personMask=personMask,backgroundFrame=background)
                 else Effects.correct(raw, fx, fx.strength(0.0, 1.0), person,elapsed = renderClock-(fx.values["origin"]?.toDoubleOrNull() ?: 0.0),
                     frame = floor(renderClock.coerceAtLeast(0.0) * prefs.getInt("fps",30) + .000001).toLong(),decorate=false)
                 FrameEffects.liveGeometry(raw,fx,fx.strength(0.0,1.0))
@@ -2260,23 +2296,72 @@ class Capture(
                     lastCadence=cadenceKey
                     liveFrame?.recycle()
                     liveFrame = raw
+                    liveRecorded=false
                     overlay.invalidate()
                     if (backdrop) {
                         ui.removeCallbacks(nextBackgroundFrame)
-                        ui.postDelayed(nextBackgroundFrame,(33-(SystemClock.elapsedRealtime()-now)).coerceAtLeast(0))
+                        ui.postDelayed(nextBackgroundFrame,if (pipeline) 0 else (33-(SystemClock.elapsedRealtime()-now)).coerceAtLeast(0))
                     }
                 }
+                pendingBackground?.let { pending -> pendingBackground=null;pending.second() }
             }
             } catch (error: Exception) {
                 raw.recycle()
                 ui.post {
                     rendering=false
+                    pendingBackground?.first?.invoke();pendingBackground=null
                     if (generation==effectGeneration) {
                         failedEffectGeneration=generation.toLong(); liveFrame?.recycle(); liveFrame=null
                         activity.message(error.message ?: "Cannot render background effect")
                     }
                 }
-            }
+            } finally { background?.recycle();frameWork.finish(workStart) }
+        }
+        }
+        if (!pipeline) {
+            val frame=cameraFrame(frameWidth,frameHeight) ?: return
+            render(if (flip) SourceMirror.flip(frame) else frame,null);return
+        }
+        segmenting=true
+        segmentationWorker.execute {
+            val start=segmentationWork.begin()
+            val cpu=if (segmentationCpuTime==null) 0L else Debug.threadCpuTimeNanos()
+            var owned: Bitmap?=null
+            var ownedBackground: Bitmap?=null
+            try {
+                val read=System.nanoTime()
+                val frame=source!!.previewFrame(frameWidth,frameHeight)
+                cameraReadTime?.invoke((System.nanoTime()-read)/1e6)
+                if (frame==null) { ui.post { segmenting=false };return@execute }
+                val input=if (flip) SourceMirror.flip(frame) else frame
+                owned=input
+                val mask=personGpu.mask(input) ?: Person.mask(input)
+                segmentationTime?.invoke((System.nanoTime()-start)/1e6)
+                if (cpu!=0L) segmentationCpuTime?.invoke((Debug.threadCpuTimeNanos()-cpu)/1e6)
+                val effect=effects.single().sampled(renderClock)
+                val backgroundAt=System.nanoTime()
+                val background=backgroundSource.background(input,effect,max(0.0,backgroundClock-(effect.values["origin"]?.toDoubleOrNull() ?: 0.0)))
+                ownedBackground=background
+                backgroundPrepareTime?.invoke((System.nanoTime()-backgroundAt)/1e6)
+                ui.post {
+                    segmenting=false
+                    if (generation!=effectGeneration || closed || recording) { input.recycle();background.recycle() }
+                    else {
+                        if (rendering) pendingBackground=({ input.recycle();background.recycle() }) to { render(input,mask,background) } else render(input,mask,background)
+                        ui.removeCallbacks(nextBackgroundFrame);ui.post(nextBackgroundFrame)
+                    }
+                }
+                owned=null;ownedBackground=null
+            } catch (error: Exception) {
+                owned?.recycle();ownedBackground?.recycle()
+                ui.post {
+                    segmenting=false
+                    if (generation==effectGeneration && !closed) {
+                        failedEffectGeneration=generation.toLong()
+                        activity.message(error.message ?: "Cannot segment the camera frame")
+                    }
+                }
+            } finally { segmentationWork.finish(start) }
         }
     }
 
@@ -2377,8 +2462,10 @@ class Capture(
 
     private fun closeCamera() {
         ui.removeCallbacks(nextBackgroundFrame)
+        pendingBackground?.first?.invoke();pendingBackground=null;nextBackgroundRead=0
+        if (!segmentationWorker.isShutdown) segmentationWorker.execute { segmentationWork.close();personGpu.close();backgroundSource.close() }
         dollyFollower=null;dollyEnabled=false;lastCadence=null;selectedEffectTarget=null;targetGeneration++
-        if (!imageWorker.isShutdown) imageWorker.execute { trackedFrame?.recycle();trackedFrame=null }
+        if (!imageWorker.isShutdown) imageWorker.execute { trackedFrame?.recycle();trackedFrame=null;frameWork.close() }
         rememberLayout()
         assistZoomAnimator?.let { assistZoomAnimator=null; it.cancel() }
         zoomAnimator?.cancel()
@@ -2436,6 +2523,7 @@ class Capture(
         receiptWorker.shutdown()
         imageWorker.execute { backgroundEffects.close() }
         imageWorker.shutdown()
+        segmentationWorker.shutdown()
         liveFrame?.recycle()
     }
 
@@ -2591,7 +2679,8 @@ class Capture(
                 paint.alpha=255
                 c.drawBitmap(
                     it,
-                    null,
+                    if (liveRecorded && texture.width>0 && texture.height>0)
+                        CameraReadback.previewCrop(it.width,it.height,texture.width,texture.height) else null,
                     RectF(
                         texture.left.toFloat(),
                         texture.top.toFloat(),
@@ -2600,6 +2689,7 @@ class Capture(
                     ),
                     paint,
                 )
+                previewDraw?.invoke(it)
             }
             if (screenLight) {
                 val border = min(width, height) * lightWidth
