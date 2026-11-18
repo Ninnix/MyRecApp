@@ -81,6 +81,7 @@ class Panels(private val a: MainActivity) {
     private var body: LinearLayout? = null
     private var applyPanel: (() -> Unit)? = null
     private var toolsPanel = false
+    private var toolsScroll: Float?=null
     private var captureSheet = false
     private var captureExpanded = false
     private var reflowControls: (() -> Unit)? = null
@@ -203,20 +204,56 @@ class Panels(private val a: MainActivity) {
         title: String,
         kind: String,
         color: Int,
+        chevron: Boolean = false,
         click: () -> Unit,
     ) {
-        val item =
-            row().apply {
-                background = shape(tint(color))
-                setPadding(px(8f), 0, px(8f), 0)
-                setOnClickListener { click() }
-            }
-        item.addView(Glyph(a, kind, color), LinearLayout.LayoutParams(px(22f), px(24f)))
+        parent.addView(toolCard(title,kind,color,chevron,click),LinearLayout.LayoutParams(-1,px(34f)).apply { bottomMargin=px(7f) })
+    }
+
+    private fun toolCard(title: String,kind: String,color: Int,chevron: Boolean=false,click: ()->Unit): LinearLayout {
+        val item=row().apply {
+            background=shape(Color.rgb(
+                (Color.red(color)*.09f+15*.91f).roundToInt(),
+                (Color.green(color)*.09f+15*.91f).roundToInt(),
+                (Color.blue(color)*.09f+15*.91f).roundToInt()),10f)
+            setPadding(px(9f),0,px(9f),0)
+            contentDescription=title
+            isFocusable=true
+            setOnClickListener { click() }
+        }
+        item.addView(Glyph(a,kind,color),LinearLayout.LayoutParams(px(20f),px(22f)))
         item.addView(
-            text(title, 10f).apply { setPadding(px(6f), 0, 0, 0) },
+            text(title,9f,Color.WHITE,true).apply { setPadding(px(7f),0,0,0);maxLines=2 },
             LinearLayout.LayoutParams(0, -1, 1f),
         )
-        parent.addView(item, LinearLayout.LayoutParams(-1, px(39f)).apply { bottomMargin = px(7f) })
+        if (chevron) item.addView(Glyph(a,"Chevron right",MUTED),LinearLayout.LayoutParams(px(10f),px(12f)))
+        return item
+    }
+
+    private fun toolColor(kind: String): Int = when {
+        kind=="Text" -> Color.rgb(191,90,242)
+        kind in listOf("Crop","Rotation") -> Color.rgb(94,92,230)
+        kind=="Color LUTs" -> Color.rgb(255,55,95)
+        kind in listOf("Image","Placement","Transition","Add video layer") -> Color.rgb(255,159,10)
+        kind=="Speed" -> Color.rgb(10,132,255)
+        kind in listOf("Pauses","Freeze Frame","Fonts","Bookmarks") -> Color.WHITE
+        kind in listOf("Stabilize","Enhance audio","Add audio","Voiceover here","Censor audio","Volume") || kind in Effects.audio -> Color.rgb(102,212,207)
+        kind in listOf("Mirror","Select cover") -> Color.rgb(64,200,224)
+        kind=="Record here" -> RED
+        else -> Color.rgb(100,210,255)
+    }
+
+    private fun toolsGrid(parent: LinearLayout,titles: List<String>,columns: Int=2,click: (Int)->Unit) {
+        for (start in titles.indices step columns) {
+            val line=row()
+            for (i in start until min(start+columns,titles.size)) {
+                val name=titles[i]
+                line.addView(toolCard(name,name,toolColor(name)) { click(i) },
+                    LinearLayout.LayoutParams(0,px(39f),1f).apply { if (i%columns!=columns-1) rightMargin=px(7f) })
+            }
+            repeat((columns-(titles.size-start)).coerceAtLeast(0)) { line.addView(View(a),LinearLayout.LayoutParams(0,0,1f)) }
+            parent.addView(line,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=px(7f) })
+        }
     }
 
     private fun grid(
@@ -406,6 +443,7 @@ class Panels(private val a: MainActivity) {
         kind: String,
         value: Boolean,
         label: String = title,
+        explanation: String? = null,
         changed: (Boolean) -> Unit,
     ): LinearLayout {
         var checked = value
@@ -414,13 +452,10 @@ class Panels(private val a: MainActivity) {
                 pad(this, 8f)
                 contentDescription = title
                 isFocusable = true
-                background =
-                    shape(Color.rgb(31, 31, 31), 11f).apply {
-                        setStroke(max(1, px(.65f)), Color.rgb(112, 112, 114))
-                    }
             }
         val top = row()
-        top.addView(Glyph(a, kind, Color.WHITE), LinearLayout.LayoutParams(px(18f), -1))
+        val symbol=Glyph(a,kind,Color.WHITE)
+        top.addView(symbol, LinearLayout.LayoutParams(px(18f), -1))
         top.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f))
         val mark = FrameLayout(a)
         top.addView(mark, LinearLayout.LayoutParams(px(11f), px(11f)))
@@ -430,9 +465,14 @@ class Panels(private val a: MainActivity) {
         space(card, 5f)
         add(card, text(label, 9f).apply { gravity = Gravity.TOP }, 28f)
         fun update() {
+            val foreground=if (checked) Color.WHITE else MUTED
+            card.background=shape(if (checked) Color.rgb(39,39,39) else Color.rgb(25,25,25),10f).apply {
+                setStroke(max(1,px(.65f)),Color.argb(if (checked) 140 else 31,255,255,255))
+            }
+            symbol.setTint(foreground);state.setTextColor(foreground)
             state.text = if (checked) "On" else "Off"
             mark.removeAllViews()
-            mark.addView(Glyph(a, if (checked) "Selected" else "Unselected", Color.WHITE))
+            mark.addView(Glyph(a, if (checked) "Selected" else "Unselected", foreground))
         }
         update()
         card.accessibilityDelegate =
@@ -451,6 +491,10 @@ class Panels(private val a: MainActivity) {
             checked = !checked
             update()
             changed(checked)
+        }
+        if (explanation!=null) card.setOnLongClickListener {
+            android.app.AlertDialog.Builder(a).setTitle(title).setMessage(explanation).setPositiveButton("Got it",null).show()
+            true
         }
         return card
     }
@@ -663,6 +707,20 @@ class Panels(private val a: MainActivity) {
 
     fun relayout() {
         if (panel == null) return
+        if (title=="Tools") {
+            val old=body?.getChildAt(1) as? ScrollView
+            val range=old?.let { it.getChildAt(0).height-it.height } ?: 0
+            val progress=toolsScroll ?: if (range>0) old!!.scrollY.toFloat()/range else 0f
+            tools()
+            val next=body?.getChildAt(1) as? ScrollView ?: return
+            if (progress>0) next.viewTreeObserver.addOnGlobalLayoutListener(object: android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    next.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    next.scrollTo(0,((next.getChildAt(0).height-next.height).coerceAtLeast(0)*progress).roundToInt())
+                }
+            })
+            return
+        }
         if (title == "Select cover") {
             panel?.let { a.root.removeView(it) }
             coverPicker?.attach(createPanel(title,null,false),InspectorUi(a,factor))
@@ -1504,39 +1562,43 @@ class Panels(private val a: MainActivity) {
 
     fun tools() {
         val body = setup("Tools", tools = true)
-        val scroll = ScrollView(a)
+        toolsScroll=null
+        val scroll = object: ScrollView(a) {
+            override fun onSizeChanged(w: Int,h: Int,oldw: Int,oldh: Int) {
+                if (oldh>0 && childCount>0) {
+                    val range=(getChildAt(0).height-oldh).coerceAtLeast(1)
+                    toolsScroll=(scrollY.toFloat()/range).coerceIn(0f,1f)
+                }
+                super.onSizeChanged(w,h,oldw,oldh)
+            }
+        }
         val content = column()
         pad(content, 12f)
         if (landscape) content.setPadding(px(60f), px(12f), px(60f), px(12f))
         scroll.addView(content)
         body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        hint(content, "Insert video at ${timeLabel(editor.cursor)}")
-        toolRow(content, "Add video", "Add video", Effects.color("Video effects")) {
-            close()
-            a.importVideo()
+        hint(content, "Add media at ${timeLabel(editor.cursor)}")
+        toolsGrid(content,listOf("Add video","Add audio")) {
+            if (it==0) { close();a.importVideo() } else addAudio()
         }
-        toolRow(content, "Add video layer", "Add video", Effects.color("Placement")) {
-            close()
-            a.importVideo(layer = true)
+        toolRow(content,"Select cover","Select cover",toolColor("Select cover"),chevron=true) { cover() }
+        toolsGrid(content,listOf("Add video layer","Record here","Voiceover here","Transition"),if (landscape) 4 else 2) {
+            when (it) {
+                0 -> { close();a.importVideo(layer=true) }
+                1 -> { close();a.recordHere() }
+                2 -> { close();a.voiceover() }
+                else -> transition()
+            }
         }
-        toolRow(content, "Add audio", "Volume", TEAL) { addAudio() }
-        toolRow(content, "Select cover", "Image", TEAL) { cover() }
-        toolRow(content, "Record here", "Camera", RED) { close(); a.recordHere() }
-        toolRow(content, "Voiceover here", "Volume", TEAL) { close(); a.voiceover() }
-        toolRow(content, "Censor audio", "Volume", TEAL) { censor() }
-        toolRow(content, "Transition", "Transition", Effects.color("Transition")) { transition() }
         hint(content, "Select a clip boundary, the start, or the end.")
         if (editor.clipboard.isNotEmpty())
-            button(content, "Paste", RED) {
+            toolRow(content,"Paste","Paste",Color.WHITE) {
                 close()
                 a.editorView.action("paste")
             }
         label(content, "Overlays")
         hint(content, rangeLabel())
-        grid(
-            content,
-            listOf("Aa  Text" to Effects.color("Text"), "▧  Image" to Effects.color("Transition")),
-        ) {
+        toolsGrid(content,listOf("Text","Image"),if (landscape) 4 else 2) {
             if (it == 0) effect("Text")
             else
                 a.importImage { path ->
@@ -1553,28 +1615,26 @@ class Panels(private val a: MainActivity) {
                 "Mirror",
                 "Color LUTs",
                 "Speed",
-                "Freeze Frame",
                 "Pauses",
                 "Enhance audio",
+                "Censor audio",
+                "Auto captions",
+                "Freeze Frame",
                 "Placement",
             )
-        grid(
-            content,
-            kinds.map { it to Effects.color(it) },
-            if (landscape) 4 else 2,
-            height = if (landscape) 36f else 40f,
-            gap = if (landscape) 5f else 7f,
-        ) { i ->
+        toolsGrid(content,kinds,if (landscape) 4 else 2) { i ->
             when (kinds[i]) {
                 "Video effects" -> videoEffects()
                 "Enhance audio" -> audio()
                 "Speed" -> speed()
                 "Pauses" -> pauses()
+                "Censor audio" -> censor()
+                "Auto captions" -> captions()
                 else -> effect(kinds[i])
             }
         }
         space(content)
-        val applied = editor.project.clips.flatMap { it.effects }.distinctBy { it.kind }
+        val applied = editor.project.clips.flatMap { it.effects }.distinctBy { it.kind to (it.subtitle!=null) }
         if (applied.isNotEmpty()) {
             label(content, "In this project")
             for (effect in applied) {
@@ -1584,23 +1644,33 @@ class Panels(private val a: MainActivity) {
                         "Color LUTs" -> " · ${effect.values["name"] ?: effect.values["lut"] ?: "Natural"}"
                         else -> ""
                     }
+                val kind=when {
+                    effect.subtitle!=null -> "Subtitles"
+                    effect.kind in Effects.video && effect.kind !in kinds -> "Video effects"
+                    effect.kind in Effects.audio -> "Enhance audio"
+                    else -> effect.kind
+                }
                 toolRow(
                     content,
-                    effect.kind + suffix + "   ›",
-                    effect.kind,
-                    Effects.color(effect.kind),
+                    (if (effect.subtitle!=null) "Subtitles" else effect.kind) + suffix,
+                    kind,
+                    toolColor(kind),
+                    chevron=true,
                 ) {
                     editExisting(effect.id)
                 }
             }
         }
-        button(content, "Auto captions", Effects.color("Text")) { captions() }
+        space(content,6f)
+        add(content,View(a).apply { setBackgroundColor(Color.argb(20,255,255,255)) },.65f)
+        space(content,6f)
         label(content, "Settings")
         val settings = row()
         settings.weightSum = if (landscape) 4f else 2f
         if (landscape) settings.setPadding(0, 0, px(16f), 0)
         settings.addView(
-            settingCard("Snap to cuts", "Snap", editor.snap) { editor.snap = it },
+            settingCard("Snap to cuts", "Snap", editor.snap,
+                explanation="Align the playhead and selection marks with nearby clip boundaries. Turn it off for free placement. This does not change cuts inside a Pauses effect.") { editor.snap = it },
             LinearLayout.LayoutParams(0, px(72f), 1f).apply { rightMargin = px(8f) },
         )
         settings.addView(
@@ -1609,14 +1679,17 @@ class Panels(private val a: MainActivity) {
                 "Listening",
                 editor.matchLoudness,
                 "Match listening\nlevels",
+                explanation="Play Bypass and Enhanced audio at similar levels in Enhance audio. This affects preview only; exported audio keeps its filter gain. Matching is suspended when Output gain is enabled.",
             ) {
                 editor.matchLoudness = it
             },
             LinearLayout.LayoutParams(0, px(72f), 1f),
         )
         add(content, settings)
-        button(content,"Fonts") { FontLibraryDialog(a,InspectorUi(a,factor)).show() }
-        button(content,"Bookmarks") { bookmarks() }
+        space(content,8f)
+        toolRow(content,"Fonts","Fonts",Color.WHITE,chevron=true) { FontLibraryDialog(a,InspectorUi(a,factor)).show() }
+        toolRow(content,"Bookmarks","Bookmarks",Color.WHITE,chevron=true) { bookmarks() }
+        hint(content,"Touch and hold a setting for an explanation.")
     }
 
     fun voiceover(work: VoiceDraft) {

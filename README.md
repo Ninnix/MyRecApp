@@ -93,9 +93,10 @@ reference; see the editing guide for current limits.
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
-Release 0.1.6 adds continuous stereo noise reduction with resumable preparation,
-recoverable stabilization analysis, project interchange, and faster loading of
-long histories and project libraries.
+Release 0.1.7 improves Auto Background preview with Vulkan acceleration and CPU
+fallback, preserves recorded masks through playback and export, and fixes preview
+geometry when rotating during recording. It also improves project interchange
+and aligns Tools icons, colors, spacing and rotation behavior.
 
 The offline caption download is 636 MB, including the
 tokenizer, while retaining Qwen3-ASR-0.6B. Its C11 GGUF backend keeps the decoder
@@ -106,7 +107,7 @@ the phone and audio. Existing projects and subtitles remain usable.
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.6](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.6), install it, and
+[release 0.1.7](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.7), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 

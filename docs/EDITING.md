@@ -151,6 +151,11 @@ appear beneath the timeline. Swipe that row to reach more of them, then tap an
 effect to reopen it. Most numeric readouts accept exact values. Text and placement
 can be dragged or pinched in the preview.
 
+Censor audio and Auto captions are under Adjust. Audio tools share mint, with
+separate waveform, microphone and censor icons; captions use a cyan speech bubble.
+Fonts and Bookmarks are under Settings. Touch and hold Snap to cuts or Match
+listening levels for an explanation.
+
 Crop includes 4:5, Frame/Inspect, and quarter turns. Original restores the source
 shape. Dissolves overlap neighboring footage; solid-color and Still holds can
 add time. Transition controls include split axis, divider and separate framing,

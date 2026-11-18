@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.*
 import android.view.View
 
-class Glyph(context: Context, private val kind: String, private val tint: Int) : View(context) {
+class Glyph(context: Context, private val kind: String, private var tint: Int) : View(context) {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    fun setTint(color: Int) { tint=color;invalidate() }
 
     override fun onDraw(c: Canvas) {
         val scale = minOf(width, height) / 20f
@@ -60,8 +62,14 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 }
                 star.close(); if (kind == "Star filled") p.style = Paint.Style.FILL; c.drawPath(star, p)
             }
+            "Bookmarks",
             "Bookmark" -> path(-5f, 8f, -5f, -8f, 5f, -8f, 5f, 8f, 0f, 4f, -5f, 8f)
             "Folder" -> path(-8f, 6f, -8f, -6f, -2f, -6f, 0f, -3f, 8f, -3f, 8f, 6f, -8f, 6f)
+            "Paste" -> {
+                c.drawRoundRect(-6f,-6f,6f,8f,1f,1f,p)
+                c.drawRoundRect(-3f,-8f,3f,-4f,1f,1f,p)
+                path(-3f,0f,3f,0f);path(-3f,4f,3f,4f)
+            }
             "Round picture in picture" -> {
                 c.drawRoundRect(-8f, -6f, 8f, 6f, 1.5f, 1.5f, p)
                 c.drawCircle(-3f, 1f, 4f, p)
@@ -153,8 +161,11 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 c.drawArc(-6.5f, -6.5f, 6.5f, 6.5f, -150f, 300f, false, p)
                 path(-6f, -8.5f, -6f, -3.5f, -1f, -3.5f)
             }
+            "Voiceover here",
             "Microphone" -> {
+                if (kind=="Voiceover here") p.style=Paint.Style.FILL
                 c.drawRoundRect(-2f, -8f, 2f, 2f, 2f, 2f, p)
+                p.style=Paint.Style.STROKE
                 c.drawArc(-5f, -3f, 5f, 6f, 0f, 180f, false, p)
                 path(0f, 6f, 0f, 9f)
                 path(-3f, 9f, 3f, 9f)
@@ -186,6 +197,7 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(-3f, 2f, 0f, 5f, 3f, 2f)
             }
             "Check" -> path(-6f, 0f, -2f, 5f, 7f, -7f)
+            "Rotation",
             "Rotate" -> {
                 c.drawRect(-4f, -1f, 6f, 8f, p)
                 c.drawArc(-8f, -8f, 6f, 6f, 190f, 190f, false, p)
@@ -202,6 +214,7 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(10f, 0f, 3f, 0f)
                 path(6f, -4f, 2f, 0f, 6f, 4f)
             }
+            "Volume",
             "Listening" -> {
                 path(-8f, -3f, -4f, -3f, 1f, -7f, 1f, 7f, -4f, 3f, -8f, 3f, -8f, -3f)
                 c.drawArc(-6f, -4f, 6f, 4f, -55f, 110f, false, p)
@@ -305,6 +318,7 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(-3f, -8f, 3f, -8f)
                 path(-4f, -3f, 4f, -3f)
             }
+            "Record here",
             "Record" -> {
                 c.drawCircle(0f, 0f, 6f, p)
                 c.drawCircle(0f, 0f, 2f, p)
@@ -322,16 +336,24 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(-8f, 4f, -4f, 4f)
                 path(-6f, 2f, -6f, 6f)
             }
+            "Add video layer" -> {
+                path(-8f,-4f,0f,-8f,8f,-4f,0f,0f,-8f,-4f)
+                path(-8f,0f,0f,4f,2f,3f)
+                path(-8f,4f,0f,8f,2f,7f)
+                c.drawCircle(6f,5f,3.5f,p)
+                path(4f,5f,8f,5f);path(6f,3f,6f,7f)
+            }
             "Video effects" -> {
                 c.drawRoundRect(-7f, -5f, 7f, 4f, 1f, 1f, p)
                 path(-2f, 7f, 2f, 7f)
                 path(0f, 4f, 0f, 7f)
-                path(-3f, -0.5f, 3f, -0.5f)
-                path(0f, -3.5f, 0f, 2.5f)
+                path(-2f,-4f,-1f,-1.5f,1.5f,-.5f,-1f,.5f,-2f,3f,-3f,.5f,-5.5f,-.5f,-3f,-1.5f,-2f,-4f)
+                path(4f,-3f,4f,0f);path(2.5f,-1.5f,5.5f,-1.5f)
             }
             "Stabilize" -> {
                 c.drawRoundRect(-8f, -3f, 8f, 3f, 1f, 1f, p)
-                for (x in -5..5 step 3) path(x.toFloat(), -1f, x.toFloat(), 1f)
+                c.drawCircle(0f,0f,1.7f,p)
+                path(-5f,-3f,-5f,3f);path(5f,-3f,5f,3f)
             }
             "Crop" -> {
                 path(-7f, -4f, 5f, -4f, 5f, 8f)
@@ -343,9 +365,9 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(0f, -8f, 0f, 8f)
             }
             "Color LUTs" -> {
-                c.drawCircle(-2f, -2f, 5f, p)
-                c.drawCircle(2f, 2f, 5f, p)
-                c.drawCircle(-3f, 4f, 4f, p)
+                c.drawCircle(-3f,-2f,4.5f,p)
+                c.drawCircle(3f,-2f,4.5f,p)
+                c.drawCircle(0f,3f,4.5f,p)
             }
             "Speed" -> {
                 c.drawCircle(0f, 0f, 7f, p)
@@ -353,12 +375,45 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 path(-5f, 1f, -4f, 1f)
                 path(4f, 3f, 5f, 4f)
             }
-            "Pauses",
-            "Enhance audio" ->
-                for (x in -7..7 step 3) {
-                    val n = if (x % 2 == 0) 3f else 6f
-                    path(x.toFloat(), -n, x.toFloat(), n)
+            "Pauses" -> path(-8f,0f,-6f,0f,-4f,-5f,-2f,5f,0f,-7f,2f,7f,4f,-5f,6f,0f,8f,0f)
+            "Add audio",
+            "Enhance audio" -> {
+                for ((x,n) in listOf(-8f to 2f,-5f to 5f,-2f to 7f,1f to 4f,4f to 6f,7f to 2f)) {
+                    path(x,-n,x,if (x>=1) -1f else n)
                 }
+                if (kind=="Add audio") {
+                    c.drawCircle(5f,5f,4f,p)
+                    path(3f,5f,7f,5f);path(5f,3f,5f,7f)
+                } else {
+                    c.drawRoundRect(4f,1f,6f,5f,1f,1f,p)
+                    c.drawArc(2f,2f,8f,7f,0f,180f,false,p)
+                    path(5f,7f,5f,9f);path(3f,9f,7f,9f)
+                }
+            }
+            "Censor audio" -> {
+                for (x in -7..7 step 3) {
+                    val n=if (x%2==0) 3f else 6f
+                    if (x-1.5f > -n) path(x.toFloat(),-n,x.toFloat(),minOf(n,x-1.5f))
+                    if (x+1.5f < n) path(x.toFloat(),maxOf(-n,x+1.5f),x.toFloat(),n)
+                }
+                path(-8f,-8f,8f,8f)
+            }
+            "Auto captions",
+            "Subtitles" -> {
+                val bubble=Path().apply {
+                    moveTo(-6f,-7f);lineTo(6f,-7f);quadTo(8f,-7f,8f,-5f)
+                    lineTo(8f,3f);quadTo(8f,5f,6f,5f);lineTo(-2f,5f)
+                    lineTo(-6f,8f);lineTo(-6f,5f);quadTo(-8f,5f,-8f,3f)
+                    lineTo(-8f,-5f);quadTo(-8f,-7f,-6f,-7f);close()
+                }
+                c.drawPath(bubble,p)
+                path(-5f,-3f,1f,-3f);path(4f,-3f,5f,-3f)
+                path(-5f,1f,-3f,1f);path(0f,1f,5f,1f)
+            }
+            "Freeze Frame" -> {
+                c.drawRoundRect(-8f,-6f,8f,6f,1.5f,1.5f,p)
+                path(-2f,-3f,-2f,3f);path(2f,-3f,2f,3f)
+            }
             "Placement",
             "Presets" ->
                 for (y in -4..4 step 4) path(
@@ -377,11 +432,14 @@ class Glyph(context: Context, private val kind: String, private val tint: Int) :
                 c.drawRoundRect(-7f, -7f, 3f, 3f, 1f, 1f, p)
                 c.drawRoundRect(-3f, -3f, 7f, 7f, 1f, 1f, p)
             }
+            "Select cover",
             "Image" -> {
+                if (kind=="Select cover") path(-5f,-7f,-3f,-9f,9f,-6f,7f,4f)
                 c.drawRoundRect(-7f, -6f, 7f, 6f, 1f, 1f, p)
                 c.drawCircle(3f, -2f, 1f, p)
                 path(-6f, 4f, -2f, -1f, 1f, 2f, 3f, 0f, 6f, 4f)
             }
+            "Fonts",
             "Text" -> {
                 p.style = Paint.Style.FILL
                 p.typeface = Typeface.create("sans-serif", Typeface.NORMAL)

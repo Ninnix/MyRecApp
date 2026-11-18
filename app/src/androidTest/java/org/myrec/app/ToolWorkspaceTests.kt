@@ -154,6 +154,46 @@ object ToolWorkspaceTests {
                 onMain { a.editor.load(before.duplicate()) }
             }
         }
+        test("open Tools reflows its grid and keeps Settings visible through rotation without editing") {
+            onMain { a.panels.close();a.editor.load(before.duplicate());a.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
+            Thread.sleep(650)
+            onMain { a.panels.tools() }
+            Thread.sleep(100)
+            val snap=a.editor.snap;val listening=a.editor.matchLoudness
+            fun scroll(view: View): ScrollView? {
+                if (view is ScrollView) return view
+                if (view is ViewGroup) for (i in 0 until view.childCount) scroll(view.getChildAt(i))?.let { return it }
+                return null
+            }
+            onMain { checkNotNull(scroll(a.root)).apply { isSmoothScrollingEnabled=false;fullScroll(View.FOCUS_DOWN) } }
+            for ((name,orientation) in listOf("landscape" to ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,"portrait" to ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)) {
+                onMain { a.requestedOrientation=orientation }
+                // Window rotation outlasts the view hierarchy's layout change.
+                Thread.sleep(800)
+                var ready=false
+                var detail=""
+                val deadline=android.os.SystemClock.elapsedRealtime()+5000
+                while (!ready && android.os.SystemClock.elapsedRealtime()<deadline) {
+                    onMain {
+                        if ((a.root.width>a.root.height)==(name=="landscape")) {
+                            val video=IntArray(2);val crop=IntArray(2)
+                            find(a.root,"Video effects")?.getLocationInWindow(video)
+                            find(a.root,"Crop")?.getLocationInWindow(crop)
+                            val visible=Rect()
+                            ready=(abs(video[1]-crop[1])<2)==(name=="landscape") &&
+                                find(a.root,"Fonts")?.getGlobalVisibleRect(visible)==true
+                            val panel=scroll(a.root)
+                            detail="videoY=${video[1]} cropY=${crop[1]} fonts=$visible scroll=${panel?.scrollY} height=${panel?.height} content=${panel?.getChildAt(0)?.height}"
+                        }
+                    }
+                    if (!ready) Thread.sleep(50)
+                }
+                check(ready) { "Tools did not reflow or retain its Settings position in $name: $detail" }
+                check(a.editor.project==before && !a.editor.canUndo && a.editor.snap==snap && a.editor.matchLoudness==listening)
+                snapshot("$name-tools-settings-rotated")
+            }
+            onMain { a.panels.close() }
+        }
         test("title shaping uses bundled fonts and renders gradient outline background and motion in export") {
             val plain = Effect(kind = "Text", to = 3.5, values = mutableMapOf("text" to "Coast"))
             TitleStyle.initialize(plain, true); plain.values["shadow"] = "false"
