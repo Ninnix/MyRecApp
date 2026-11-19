@@ -61,11 +61,11 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--responsive-layout` | Actual screen pixels for Projects headings with cards and after scrolling, portrait/landscape/portrait navigation, inset-aware editor controls, five compact/tall screen sizes, unchanged project and recorder visibility |
 | `--hdr-graphics` | Missing HDR graphics requirements despite camera/codec support, exact extension names, actual ten-bit EGL probe, and preservation of an existing context/framebuffer |
 | `--hdr-color-parity` | Independent Log recovery equations, temperature/tint adaptation, O-Log interpretation, grading drafts and persistence, HDR/SDR preview/export agreement, native Log control probes, real P010 camera capture and ten-bit ramp/color-patch recording without external YUV textures |
-| `--stabilization` | Actual 60 fps/VFR presentation times, held frames at trims/seeks, rendered shake reduction, bounded crops and rotation, reference reuse through split/trim/speed/freeze/copy/history/ZIP, checked cache reuse/corruption/source replacement, Off and legacy stability, cancellation, decoded export with unchanged audio/duration/source, portrait/landscape inspector comparison/apply/cancel/remove |
-| `--hdr-full` | Requires actual native ten-bit HDR decoding and Main10 HLG output; exports a known ramp and checks code levels, headroom and linear-light error |
+| `--stabilization` | Actual 60 fps/VFR presentation times, held frames at trims/seeks, rejection of isolated moving foreground, rendered shake reduction, bounded crops and rotation, reference reuse through split/trim/speed/freeze/copy/history/ZIP, checked cache reuse/corruption/source replacement, Off and legacy stability, cancellation, decoded export with unchanged audio/duration/source, portrait/landscape inspector comparison/apply/cancel/remove |
+| `--hdr-full` | Requires actual native ten-bit HDR decoding and Main10 HLG output. Checks a known ramp at 720p/1080p/4K and compares linear alpha, preview and decoded SDR/HDR exports for an animated SDR layer over HLG |
 | `--hdr-pipeline` | Half-float headroom and grading, linear composition, synthetic P010 HLG code steps, consistent display conversion, inactive-HDR isolation, actual decoder precision gate, tagged Main10 export or explicit capability rejection, export controls |
 | `--time-effects` | Actual VFR/B-frame index, backward/repeated seeks, linear Step Printing smear, source phase and animated-speed persistence/undo, source clocks and constant-rate audio pieces, stereo pitch, pause detection/padding across speed keys and exact export length, negative inversion |
-| `--restoration` | Stereo/mono rational resampling, anti-aliasing, cancellation and file safety, checkpoint validation and actual 256-frame VoiceFixer inference; restoration model required |
+| `--restoration` | Stereo/mono rational resampling, anti-aliasing, cancellation and file safety, checkpoint validation, actual 256-frame VoiceFixer inference, and full LavaSR/VoiceFixer mixer renders when speech fixtures are available |
 | `--scene` | Optional eight-second landscape excerpt: import/frame index, random-seek time effects, half-speed picture/sound export; install the source at external-files `test-inputs/sicily-8s.mp4` first |
 | `--audio-editing` | Reference Low-cut/EQ frequency response, neutral/headroom gain, stereo state across buffer sizes, mixer seeks, new-stage persistence/reset/undo and legacy stability; pitch/length/stereo and deterministic stretch/seek checks, cancellation, fade/censor persistence and archives, preview/export timing, MP4 AAC priming, tool apply/remove/undo in both orientations |
 | `--movie-exports` | Completed picture/sound reuse across reopening, canonical edit/source/settings identity, same-size/timestamp source/output changes, malformed/future/missing receipts, cancellation/failure/source changes, verified replacement retirement, and real gallery publication/reuse on API 29+ |
@@ -243,3 +243,42 @@ Run `scripts/prepare-model.py`, `scripts/install-model.py` and the device
 The installed caption runtime requires only libc, libdl and libm, and keeps
 16 KB ELF alignment. The model download is 635,475,022 bytes including the
 tokenizer. Previous BF16 files are retained rather than deleted during migration.
+
+## Processing fidelity comparisons
+
+Use a YouRec source checkout under `reference/YouRecApp`. With FFmpeg,
+NumPy and host C/C++ compilers available, pass natural handheld clips to
+`scripts/compare-stabilization.py`. It feeds identical decoded luma planes to
+MyRec's camera tracker and YouRec's reference tracker and reports coverage and
+centered transform differences on jointly tracked pairs. It also checks a hard
+cut and a moving patch surrounded by a flat background. `--myrec-library` can
+select a previously compiled tracker for a before/after comparison.
+
+`scripts/compare-restoration.py` takes a 48 kHz speech WAV, an output folder and
+`--runtime` pointing to the host ONNX Runtime shared library. It uses the pinned
+model directories from `docs/MODELS.md`, with NumPy, SciPy, SoundFile and the
+matching Python ONNX Runtime available. It renders dry and processed examples
+from clean, 8 kHz-sampled and clipped/noisy inputs, and measures errors before
+level matching. The host and Android runs use the same PCM fixtures. Both model
+paths use the same ONNX graphs. YouRec's checked-in C++ DSP
+provides the comparison frontend and LavaSR crossover. VoiceFixer shares the
+host resampler between paths to isolate inference and DSP differences.
+
+For the Android source-processing comparison, place the generated
+`device-inputs` WAVs in external-files `test-inputs/processing-fidelity` and
+install both model packs. When scoped storage blocks files copied by ADB, use
+the debuggable app's private `files/processing-fidelity` directory with the same
+layout (`models/studio-lava-v1`, `models/voicefixer-256` and
+`test-inputs/processing-fidelity`). From a local staging directory that contains
+`models` and `test-inputs`, the debug package accepts:
+
+```sh
+adb shell run-as org.myrec.app mkdir -p files/processing-fidelity
+tar -cf - models test-inputs | adb shell -T run-as org.myrec.app tar -xf - -C files/processing-fidelity
+```
+
+The `--restoration` suite writes 48 kHz interleaved stereo float PCM and a
+source-hash/timing report under external-files `processing-fidelity-audio`.
+The host WAVs are loudness matched for audition. The host numerical checks
+cover the reference source DSP. Actual Core ML and Metal rendering require an
+Apple-device comparison.

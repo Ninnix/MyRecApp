@@ -72,6 +72,8 @@ class MovieExports(private val root: File) {
             .put("width", width).put("height", height).put("color", color.name)
             .put("edit", editKey(store, project)).put("sources", files).put("models", models)
         if (fps != project.fps) inputs.put("fps", fps)
+        if (project.clips.any { clip -> clip.effects.any { it.enabled && StabilizationSettings.modern(it) &&
+                StabilizationSettings.level(it) != StabilizationLevel.Off } }) inputs.put("stabilization", StabilizationRenderer.VERSION)
         return Ticket(project.id, hash(canonical(inputs)), inputs)
     }
     private fun directory(ticket: Ticket) = File(root, ticket.project).apply {

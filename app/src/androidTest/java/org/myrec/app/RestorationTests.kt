@@ -18,6 +18,12 @@ object RestorationTests {
     }
     fun run(instrumentation: Instrumentation, a: MainActivity, test: (String, () -> Unit) -> Unit) {
         val root = File(a.cacheDir, "restoration-${uid()}").apply { mkdirs() }
+        val staged = File(a.filesDir, "processing-fidelity").takeIf { it.isDirectory }
+        if (staged != null) {
+            val models = File(staged, "models")
+            AudioModels.configure(a, models)
+            Studio.directory = File(models, "studio-lava-v1")
+        }
         try {
             test("rational resampling preserves stereo phase pitch amplitude and exact round trip duration") {
                 val input = File(root, "input.f32"); val down = File(root, "down.f32"); val up = File(root, "up.f32")
@@ -99,6 +105,34 @@ object RestorationTests {
                     check(sqrt(output.sumOf { it.toDouble().pow(2) } / output.size) > .0001)
                     check(output.indices.any { abs(output[it] - input[it]) > .001f })
                 } finally { Native.neuralFree(handle) }
+            }
+            val fidelity = File(staged ?: a.getExternalFilesDir(null), "test-inputs/processing-fidelity")
+            if (fidelity.isDirectory) test("full LavaSR and VoiceFixer renders keep the listening fixtures sample-aligned") {
+                val output = File(a.getExternalFilesDir(null), "processing-fidelity-audio").apply { mkdirs() }
+                val sources = fidelity.listFiles().orEmpty().filter { it.extension == "wav" }.sortedBy { it.name }
+                check(sources.isNotEmpty())
+                val report = org.json.JSONObject().put("runtime", Native.inferenceVersion())
+                val cases = org.json.JSONArray()
+                for (source in sources) {
+                    val hash = SourceAudio.hash(source)
+                    val dry = a.audioCache.get(source.path) { false }
+                    val clock = read(dry)
+                    val row = org.json.JSONObject().put("name", source.name).put("sha256", hash).put("samples", clock.size / 2)
+                    dry.copyTo(File(output, "${source.nameWithoutExtension}-dry.f32"), overwrite = true)
+                    for ((name, kind, amount) in listOf(Triple("lava", "Speech detail", ".35"), Triple("voicefixer", "Studio restoration", ".7"))) {
+                        val clip = ProjectStore.inspect(source).apply { effects.add(Effect(kind = kind, values = mutableMapOf("strength" to amount))) }
+                        val start = android.os.SystemClock.elapsedRealtime()
+                        val rendered = checkNotNull(Studio.prepare(clip, a.audioCache, { false }, {}))
+                        val pcm = read(rendered)
+                        check(pcm.size == clock.size && pcm.all { it.isFinite() } && pcm.indices.any { abs(pcm[it] - clock[it]) > .0001f })
+                        rendered.copyTo(File(output, "${source.nameWithoutExtension}-$name.f32"), overwrite = true)
+                        row.put("${name}_ms", android.os.SystemClock.elapsedRealtime() - start)
+                    }
+                    check(SourceAudio.hash(source) == hash)
+                    cases.put(row)
+                    instrumentation.sendStatus(0, android.os.Bundle().apply { putString("stream", "Restoration fidelity ${source.name}\n") })
+                }
+                File(output, "report.json").writeText(report.put("cases", cases).toString(2) + "\n")
             }
         } finally { root.deleteRecursively() }
     }

@@ -47,6 +47,8 @@ inverse transform, and spectral crossover. All 80 learned tensors, containing
 [LavaSR v2 checkpoint](https://huggingface.co/YatharthS/LavaSR/tree/b98dc8be472da45ab7b6346ad7997e1dfeb5911d/enhancer_v2),
 allowing ONNX's linear-weight transposes. The older `v1` directory names refer
 to our first integration, not LavaSR v1; keeping them preserves downloads.
+The crossover keeps the original band through 4 kHz and blends smoothly into
+the restored band by 6 kHz, using the reference's zero-padded FFT.
 
 Noise reduction uses DeepFilterNet3's encoder, ERB decoder, and complex deep-filter
 decoder. The C11 frontend has a 960-point Vorbis STFT, 32 ERB bands, normalized

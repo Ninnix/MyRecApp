@@ -128,8 +128,8 @@ static float error(const Feature *f, const float t[4]) {
     float dy = t[1] * f->x + t[0] * f->y + t[3] - f->v;
     return dx * dx + dy * dy;
 }
-int yr_similarity(const uint8_t *reference, const uint8_t *current, int width, int height,
-                  float result[5]) {
+static int similarity(const uint8_t *reference, const uint8_t *current, int width, int height,
+                      float result[5], int camera_motion) {
     result[0] = 1;
     result[1] = result[2] = result[3] = result[4] = 0;
     if (width < 64 || height < 64)
@@ -184,16 +184,24 @@ int yr_similarity(const uint8_t *reference, const uint8_t *current, int width, i
             memcpy(best, t, sizeof(best));
         }
     }
-    if (best_count < 6)
+    if (best_count < (camera_motion ? 12 : 6))
         goto done;
     float px = 0, py = 0, qx = 0, qy = 0;
+    float min_x = width, max_x = 0, min_y = height, max_y = 0;
     for (int k = 0; k < n; k++)
         if (error(&matches[k], best) < 2.25f) {
             px += matches[k].x;
             py += matches[k].y;
             qx += matches[k].u;
             qy += matches[k].v;
+            min_x = fminf(min_x, matches[k].x);
+            max_x = fmaxf(max_x, matches[k].x);
+            min_y = fminf(min_y, matches[k].y);
+            max_y = fmaxf(max_y, matches[k].y);
         }
+    // A moving object in a flat scene is not evidence of camera motion.
+    if (camera_motion && (max_x - min_x < .35f * width || max_y - min_y < .30f * height))
+        goto done;
     px /= best_count;
     py /= best_count;
     qx /= best_count;
@@ -221,4 +229,14 @@ done:
         free(b[i].pixels);
     }
     return ok;
+}
+
+int yr_similarity(const uint8_t *reference, const uint8_t *current, int width, int height,
+                  float result[5]) {
+    return similarity(reference, current, width, height, result, 0);
+}
+
+int yr_camera_similarity(const uint8_t *reference, const uint8_t *current, int width, int height,
+                         float result[5]) {
+    return similarity(reference, current, width, height, result, 1);
 }

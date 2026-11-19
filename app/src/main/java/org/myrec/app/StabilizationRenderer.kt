@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.*
 
 object StabilizationRenderer {
+    internal const val VERSION = "myrec-stabilization-2"
     var directory: File? = null
     private data class Source(val stamp: String, val hash: String)
     private data class Entry(val analysis: StabilizationAnalysis, val begin: Double) {
@@ -54,7 +55,7 @@ object StabilizationRenderer {
         }
         return hash
     }
-    private fun key(hash: String, begin: Double, end: Double) = digest("myrec-stabilization-1|$hash|$begin|$end")
+    private fun key(hash: String, begin: Double, end: Double) = digest("$VERSION|$hash|$begin|$end")
     private fun entry(clip: Clip, effect: Effect, requestCancelled: () -> Boolean, progress: (Float?) -> Unit): Entry {
         if (requestCancelled() || cancelled()) throw InterruptedIOException("Stabilization cancelled")
         val (begin,end) = StabilizationSettings.range(effect,clip)
@@ -153,13 +154,13 @@ object StabilizationRenderer {
                     val time = index.times[i]
                     val current = decoder.frame(time,targetWidth,targetHeight) ?: error("A stabilization source frame is unreadable")
                     try {
-                        val motion = Native.similarity(previous,current)
+                        val motion = Native.similarity(previous,current,cameraMotion = true)
                         val a = motion[0].toDouble(); val b = motion[1].toDouble()
                         val cx = previous.width/2.0; val cy = previous.height/2.0
                         val step = StabilizationPose((a*cx-b*cy+motion[2]-cx)*width/previous.width,
                             (b*cx+a*cy+motion[3]-cy)*height/previous.height,atan2(b,a),ln(hypot(a,b)))
                         val next = step.applying(pose)
-                        if (motion[4] >= 6 && time-previousTime < .15 && next.valid()) { pose = next; tracked++ }
+                        if (motion[4] >= 12 && time-previousTime < .15 && next.valid()) { pose = next; tracked++ }
                         else { segment++; pose = StabilizationPose() }
                         add(StabilizationSample(max(0.0,time-begin),pose,segment))
                     } catch (error: Throwable) { current.recycle(); throw error }

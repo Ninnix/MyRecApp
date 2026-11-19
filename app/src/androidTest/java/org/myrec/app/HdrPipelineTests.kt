@@ -172,6 +172,75 @@ object HdrPipelineTests {
                 }
             } finally { target.delete() }
         }
+        if (requireFull) test("mixed SDR alpha and HLG retain per-layer light through SDR and HDR exports") {
+            val width = 640
+            val height = 360
+            val folder = File(a.getExternalFilesDir(null), "test-output").apply { mkdirs() }
+            val source = File(a.cacheDir, "mixed-hlg-${uid()}.mp4")
+            val photo = File(a.cacheDir, "mixed-sdr-${uid()}.png")
+            try {
+                instrumentation.context.assets.open("hdr-ramp.mp4").use { input -> source.outputStream().use { input.copyTo(it) } }
+                val color = Color.argb(128, 110, 177, 60)
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { image ->
+                    image.eraseColor(color)
+                    try { photo.outputStream().use { check(image.compress(Bitmap.CompressFormat.PNG, 100, it)) } }
+                    finally { image.recycle() }
+                }
+                val plate = ProjectStore.inspect(source).apply { audio = false }
+                val project = Project(width = width, height = height, clips = mutableListOf(plate))
+                val placed = Effect(kind = "Placement", values = mutableMapOf(
+                    "geometry" to "canvas", "x" to ".5", "y" to "0", "w" to ".5", "h" to ".5", "reframe" to "0"))
+                val layer = Clip(path = photo.path, sourceOut = .1, start = 1.0 / 30, track = 1, photo = true, audio = false,
+                    effects = mutableListOf(placed))
+                val pose = TransformMotion.pose(placed)
+                placed.motion = EffectMotion(pose, pose + ("x" to .55), duration = layer.duration).anchored(layer, 0.0)
+                val mixed = project.copy(clips = mutableListOf(plate, layer))
+                val at = 2.0 / 30
+                val x = 512
+                val y = 90
+                fun linear(v: Int): Double { val s = v / 255.0; return if (s <= .04045) s / 12.92 else ((s + .055) / 1.055).pow(2.4) }
+                val foreground = listOf(Color.red(color), Color.green(color), Color.blue(color)).map(::linear)
+                val alpha = Color.alpha(color) / 255.0
+                val (expectedLinear, expectedPreview) = Frames().use { frames ->
+                    val bare = frames.render(project, at, width, height, keepLinear = true)
+                    val pixels = frames.render(mixed, at, width, height, keepLinear = true)
+                    val display = frames.render(mixed, at, width, height)
+                    try {
+                        val backing = pixel(bare, x, y)
+                        check(backing[0] > 1f)
+                        val linear = pixel(pixels, x, y)
+                        for (i in 0..2) check(abs(linear[i] - (backing[i] * (1 - alpha) + foreground[i] * alpha)) < .018) {
+                            "SDR foreground channel $i changed the HLG/SDR blend: ${linear.toList()} over ${backing.toList()}"
+                        }
+                        check(pixel(pixels, x, 270).contentEquals(pixel(bare, x, 270)))
+                        linear to display.getPixel(x, y)
+                    } finally { bare.recycle(); pixels.recycle(); display.recycle() }
+                }
+                var rgbaError = 0f
+                var displayError = 0
+                for (format in listOf(ExportColor.SDR, ExportColor.HLG)) {
+                    val target = File(folder, "mixed-${format.name.lowercase()}.mp4")
+                    val hdr = format == ExportColor.HLG
+                    Export(a.audioCache).run(mixed, target, width, height, format) {}
+                    VideoDecoder(target.path, linear = hdr, tenBit = hdr).use { decoder ->
+                        val frame = checkNotNull(decoder.frame(at, width, height))
+                        try {
+                            if (hdr) {
+                                rgbaError = pixel(frame, x, y).take(3).zip(expectedLinear.take(3)).maxOf { (actual, expected) -> abs(actual - expected) }
+                                check(rgbaError < .075f) { "HDR round-trip linear error $rgbaError" }
+                            } else {
+                                val sample = frame.getPixel(x, y)
+                                displayError = listOf(Color.red(sample) - Color.red(expectedPreview), Color.green(sample) - Color.green(expectedPreview),
+                                    Color.blue(sample) - Color.blue(expectedPreview)).maxOf { abs(it) }
+                                check(displayError <= 9) { "SDR round-trip error $displayError" }
+                            }
+                        } finally { frame.recycle() }
+                    }
+                }
+                File(folder, "mixed-color.json").writeText(org.json.JSONObject().put("hdr_max_linear_error", rgbaError)
+                    .put("sdr_max_code_error", displayError).put("highlight_under_alpha", expectedLinear[0]).toString(2))
+            } finally { source.delete(); photo.delete() }
+        }
         if (requireFull) for ((width, height) in listOf(1280 to 720, 1920 to 1080, 3840 to 2160))
         test("real ${width}x${height} Main10 HLG export retains extended highlights and more than 8 bit code levels") {
             val source = File(a.cacheDir, "hdr-ramp-${uid()}.mp4")
@@ -222,9 +291,16 @@ object HdrPipelineTests {
             onMain {
                 a.editor.load(Project(clips = mutableListOf(Clip(path = "test", sourceOut = 1.0))))
                 a.panels.export()
-                fun find(v: android.view.View): Boolean = (v is android.widget.TextView && v.text.toString() == "HDR · HEVC 10-bit HLG") ||
-                    (v is android.view.ViewGroup && (0 until v.childCount).any { find(v.getChildAt(it)) })
-                check(find(a.root)); a.panels.close()
+                fun find(v: android.view.View, title: String): android.view.View? {
+                    if (v.contentDescription == title || v is android.widget.TextView && v.text == title) return v
+                    if (v is android.view.ViewGroup) for (index in 0 until v.childCount)
+                        find(v.getChildAt(index), title)?.let { return it }
+                    return null
+                }
+                check(checkNotNull(find(a.root, "Codec and color, SDR · H.264")).performClick())
+                check(find(checkNotNull(a.choices).contentView, "HDR · HEVC 10-bit HLG") != null)
+                a.choices?.dismiss()
+                a.panels.close()
             }
             instrumentation.waitForIdleSync()
         }

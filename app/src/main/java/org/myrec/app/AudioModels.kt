@@ -40,7 +40,7 @@ object AudioModels {
         if (kind(name) == 2) Studio.directory else File(root, spec(name).getString("directory"))
 
     fun version(name: String) =
-        if (kind(name) == 2) "lava-v1-c-1" else spec(name).getString("version")
+        if (kind(name) == 2) "lava-v2-crossover-2" else spec(name).getString("version")
 
     fun ready(name: String): Boolean {
         if (kind(name) == 2) return Studio.ready

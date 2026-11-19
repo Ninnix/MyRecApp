@@ -177,6 +177,6 @@ object Native {
         soft: Boolean = true,
     )
 
-    external fun similarity(a: Bitmap, b: Bitmap): FloatArray
+    external fun similarity(a: Bitmap, b: Bitmap, cameraMotion: Boolean = false): FloatArray
 
 }

@@ -37,6 +37,21 @@ object StabilizationDeviceTests {
             return null
         }
         fun click(label: String) = onMain { check((find(a.root,label) ?: error("Missing $label")).performClick()) }
+        test("camera motion rejects a moving patch on an otherwise flat picture") {
+            val a = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
+            val b = Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
+            val random = kotlin.random.Random(42)
+            val patch = IntArray(108 * 80) { random.nextInt(30, 225).let { android.graphics.Color.rgb(it, it, it) } }
+            try {
+                a.eraseColor(android.graphics.Color.GRAY)
+                b.eraseColor(android.graphics.Color.GRAY)
+                a.setPixels(patch, 0, 108, 214, 112, 108, 80)
+                b.setPixels(patch, 0, 108, 226, 116, 108, 80)
+                val tracking = Native.similarity(a, b)
+                check(tracking[4] >= 6 && abs(tracking[2] - 12) < 1 && abs(tracking[3] - 4) < 1) { tracking.toList() }
+                check(Native.similarity(a, b, cameraMotion = true)[4] == 0f)
+            } finally { a.recycle(); b.recycle() }
+        }
         test("stabilization analyzes every 60 fps source frame and reuses checked motion after reopening") {
             StabilizationRenderer.clear()
             val start = SystemClock.elapsedRealtime()

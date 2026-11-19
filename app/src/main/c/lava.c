@@ -133,13 +133,15 @@ int yr_lava_process(YrLava *s, const float *input, float *output, int samples) {
     const OrtApi *api = s->api;
     int frames = (samples - HOP) / HOP + 1, pad = (FFT - HOP) / 2;
     int length = (frames - 1) * HOP + FFT;
+    int merge_size = 1;
+    while (merge_size < samples) merge_size *= 2;
     float *features = calloc((size_t)frames * MELS, sizeof(float));
     float *wave = calloc((size_t)length * 2, sizeof(float));
-    float complex *spectra = calloc((size_t)samples * 2, sizeof(*spectra));
+    float complex *difference = calloc((size_t)merge_size, sizeof(*difference));
     OrtValue *mel_input = NULL, *hidden = NULL, *head[2] = {NULL, NULL};
     OrtTensorTypeAndShapeInfo *shape = NULL;
     int success = 0;
-    if (!features || !wave || !spectra) {
+    if (!features || !wave || !difference) {
         snprintf(s->error, sizeof(s->error), "Out of memory");
         goto done;
     }
@@ -186,7 +188,7 @@ int yr_lava_process(YrLava *s, const float *input, float *output, int samples) {
         goto done;
     for (int t = 0; t < frames; t++) {
         for (int f = 0; f < BINS; f++)
-            buffer[f] = real[f * frames + t] + I * imag[f * frames + t];
+            buffer[f] = real[f * frames + t] + I * (f == 0 || f == FFT / 2 ? 0 : imag[f * frames + t]);
         for (int f = BINS; f < FFT; f++)
             buffer[f] = conjf(buffer[FFT - f]);
         yr_fft2(buffer, FFT, 1);
@@ -198,32 +200,26 @@ int yr_lava_process(YrLava *s, const float *input, float *output, int samples) {
     }
     int available = length - pad * 2;
     for (int i = 0; i < samples; i++) {
-        spectra[i] = i < available ? wave[i + pad] / fmaxf(wave[length + i + pad], 1e-8f) : 0;
-        spectra[samples + i] = input[i];
+        float restored = i < available ? wave[i + pad] / fmaxf(wave[length + i + pad], 1e-8f) : 0;
+        difference[i] = restored - input[i];
     }
-    if (!yr_fft(spectra, (size_t)samples, 0) ||
-        !yr_fft(spectra + samples, (size_t)samples, 0))
-        goto memory_error;
-    int bins = samples / 2 + 1, cutoff = bins / 6, first = cutoff - 128, last = cutoff + 128;
-    for (int i = 0; i < samples; i++) {
-        int frequency = i <= samples / 2 ? i : samples - i;
-        float fraction = fmaxf(0, fminf(1, (frequency - first) / (float)(last - first - 1)));
-        float mask = fraction * fraction * (3 - 2 * fraction);
-        spectra[i] = spectra[samples + i] + (spectra[i] - spectra[samples + i]) * mask;
+    // The complementary crossover keeps the original through 4 kHz and fully blends in restoration at 6 kHz.
+    yr_fft2(difference, (size_t)merge_size, 0);
+    for (int i = 0; i < merge_size; i++) {
+        int frequency = i <= merge_size / 2 ? i : merge_size - i;
+        float hz = 48000.0f * frequency / merge_size;
+        float t = fmaxf(0, fminf(1, (hz - 4000.0f) / 2000.0f));
+        difference[i] *= t * t * (3 - 2 * t);
     }
-    if (!yr_fft(spectra, (size_t)samples, 1))
-        goto memory_error;
+    yr_fft2(difference, (size_t)merge_size, 1);
     for (int i = 0; i < samples; i++) {
-        output[i] = crealf(spectra[i]);
+        output[i] = input[i] + crealf(difference[i]);
         if (!isfinite(output[i])) {
             snprintf(s->error, sizeof(s->error), "Invalid model output");
             goto done;
         }
     }
     success = 1;
-    goto done;
-memory_error:
-    snprintf(s->error, sizeof(s->error), "Out of memory");
 done:
     if (shape)
         api->ReleaseTensorTypeAndShapeInfo(shape);
@@ -236,6 +232,6 @@ done:
         api->ReleaseValue(mel_input);
     free(features);
     free(wave);
-    free(spectra);
+    free(difference);
     return success;
 }

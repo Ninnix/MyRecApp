@@ -365,7 +365,7 @@ JNIEXPORT void JNICALL Java_org_myrec_app_Native_yuv(JNIEnv *env, jobject self, 
 }
 
 JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_similarity(JNIEnv *env, jobject self,
-                                                                    jobject a, jobject b) {
+                                                                    jobject a, jobject b, jboolean camera_motion) {
     (void)self;
     float transform[5] = {1, 0, 0, 0, 0};
     YrPixels first, second;
@@ -381,7 +381,10 @@ JNIEXPORT jfloatArray JNICALL Java_org_myrec_app_Native_similarity(JNIEnv *env, 
                 gray[y * ai.width + x] = byte(255 * (.299f*c[0] + .587f*c[1] + .114f*c[2]));
                 gray[ai.width * ai.height + y * ai.width + x] = byte(255 * (.299f*d[0] + .587f*d[1] + .114f*d[2]));
             }
-            yr_similarity(gray, gray + ai.width * ai.height, ai.width, ai.height, transform);
+            if (camera_motion)
+                yr_camera_similarity(gray, gray + ai.width * ai.height, ai.width, ai.height, transform);
+            else
+                yr_similarity(gray, gray + ai.width * ai.height, ai.width, ai.height, transform);
             free(gray);
         }
     }
