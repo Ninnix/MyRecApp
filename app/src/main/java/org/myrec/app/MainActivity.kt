@@ -94,7 +94,8 @@ class MainActivity : Activity() {
         private set
     internal var importDialog: AlertDialog? = null
         private set
-    private var lastMessage = ""
+    internal var lastMessage = ""
+        private set
     private var lastMessageAt = 0L
     private var saveWarning: TextView? = null
 
@@ -122,6 +123,7 @@ class MainActivity : Activity() {
                 if (testSession) File(cacheDir, "test-projects/$testSessionId")
                 else File(filesDir, "projects")
             )
+        store.cleanInterruptedSaves()
         store.cleanTransfers()
         store.recoverCaptures()
         val saved = store.currentSession()
@@ -131,7 +133,7 @@ class MainActivity : Activity() {
         Studio.directory = File(getExternalFilesDir(null), "models/studio-lava-v1")
         Studio.cacheDirectory = File(cacheDir, "studio-audio")
         AudioModels.configure(this, File(getExternalFilesDir(null), "models"))
-        AudioThermalGate.configure(this)
+        MediaThermalGate.configure(this)
         Person.configure(this)
         TitleStyle.configure(this)
         audioCache = AudioCache(File(cacheDir, "audio"))

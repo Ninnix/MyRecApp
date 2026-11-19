@@ -3,8 +3,22 @@ package org.myrec.app
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import org.json.JSONObject
 
 internal class MovieCheckpoint(private val folder: File) {
+    fun prepare(settings: JSONObject) {
+        for (file in folder.listFiles().orEmpty()) if (file.isFile && abandoned.matches(file.name)) file.delete()
+        val target = File(folder, "settings.json")
+        val value = settings.toString()
+        if (target.isFile && target.readText() == value) return
+        val temp = File(folder, ".settings-${uid()}.json")
+        try {
+            FileOutputStream(temp).use { it.write(value.toByteArray(Charsets.UTF_8)); it.fd.sync() }
+            check(temp.renameTo(target)) { "Cannot save export settings" }
+            syncDirectory(folder)
+        } finally { temp.delete() }
+    }
+
     fun segment(start: Int, end: Int, check: () -> Unit, render: (File) -> Unit): File =
         save("frames-$start-$end", "mp4", check, render)
 
@@ -37,8 +51,13 @@ internal class MovieCheckpoint(private val folder: File) {
             FileOutputStream(temporary, true).use { it.fd.sync() }
             FileOutputStream(stamp).use { it.write(checksum.toByteArray(Charsets.US_ASCII)); it.fd.sync() }
             kotlin.check(temporary.renameTo(output) && stamp.renameTo(receipt)) { "Cannot save the export checkpoint" }
+            syncDirectory(folder)
             check()
             return output
         } finally { temporary.delete(); stamp.delete() }
+    }
+
+    private companion object {
+        val abandoned = Regex("\\.(settings|audio|frames-[0-9]+-[0-9]+)-[a-f0-9-]{36}\\.(json|m4a|mp4|sha256)")
     }
 }

@@ -2,9 +2,11 @@ package org.myrec.app
 
 import android.media.*
 import android.os.Bundle
+import android.system.Os
 import android.view.Surface
 import java.io.Closeable
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import kotlin.math.*
 
@@ -26,6 +28,9 @@ class CaptureRecorder(
         ?: error("No ten-bit HEVC encoder supports this size and frame rate")) else MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val videoFile = File(file.path+".video.mp4")
     private val audioFile = File(file.path+".audio.m4a")
+    private val finalizingFile = File(file.path+".finalizing.mp4")
+    private val sealedFile = File(file.path+".sealed.mp4")
+    internal val storedBytes get() = videoFile.length() + audioFile.length()
     private var audio: CaptureAudio? = null
     private var muxer: MediaMuxer? = null
     private var worker: Thread? = null
@@ -133,12 +138,19 @@ class CaptureRecorder(
         val priming=audio!!.finish((duration*48000).roundToLong())
         insertedAudioSilence=audio!!.insertedSilence
         audioClockCorrections=audio!!.clockCorrections
-        merge()
-        Mp4Audio.trim(file,Mp4Audio.PREFIX+priming,duration)
+        try {
+            merge(finalizingFile)
+            Mp4Audio.trim(finalizingFile,Mp4Audio.PREFIX+priming,duration)
+            FileOutputStream(finalizingFile, true).use { it.fd.sync() }
+            Os.rename(finalizingFile.path, sealedFile.path)
+            syncDirectory(file.parentFile!!)
+            Os.rename(sealedFile.path, file.path)
+            syncDirectory(file.parentFile!!)
+        } finally { finalizingFile.delete() }
         completed=true
     }
-    private fun merge() {
-        val output=MediaMuxer(file.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    private fun merge(target: File) {
+        val output=MediaMuxer(target.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         val extractors=listOf(MediaExtractor(),MediaExtractor())
         var muxing=false
         try {

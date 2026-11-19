@@ -3,10 +3,12 @@
 Open Projects, then Record or Continue recording. New footage appends to the
 current project unless you choose Start new project. The red button starts and
 stops the take. Pause keeps the session together. Completed takes use a recording
-ledger, so undoing an older edit does not remove a new take. Interrupted files
-that remain playable are recovered into their recorded project once. Unreadable
-unfinished files are kept for recovery; the app does not yet repair unfinalized
-MP4 containers.
+ledger, so undoing an older edit does not remove a new take. MyRec reserves
+space to assemble the finished movie and stops the take if storage runs low or
+Android reports critical thermal pressure. A finished movie can recover into
+its recorded project once even if MyRec stopped before saving the timeline.
+Unfinished tracks are kept for recovery. Unfinalized MP4 containers still
+require separate repair.
 
 While idle, scissors open the editor and the stacked icon opens Projects.
 During a take, portrait puts Mark to the right and Pause/Resume to the left;

@@ -2,7 +2,6 @@ package org.myrec.app
 
 import android.media.MediaMetadataRetriever
 import android.system.Os
-import android.system.OsConstants
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -26,6 +25,7 @@ class ProjectStore(val root: File) {
     private val deleted = File(root, "deleted")
     private val knownIndexes = ConcurrentHashMap.newKeySet<String>()
     private val stateCache = RevisionCache()
+    internal var beforePublish: ((File) -> Unit)? = null
 
     private fun id(value: String): String {
         require(value.matches(Regex("[A-Za-z0-9-]{1,100}"))) { "Invalid project identity" }
@@ -48,27 +48,31 @@ class ProjectStore(val root: File) {
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
         .digest(data).joinToString("") { "%02x".format(it) }
 
-    private fun sync(directory: File) {
-        val fd = Os.open(directory.absolutePath, OsConstants.O_RDONLY, 0)
-        try { Os.fsync(fd) } finally { Os.close(fd) }
-    }
-
     private fun directory(file: File) {
         if (file.isDirectory) return
         val parent = file.parentFile ?: error("Cannot create project directory")
         directory(parent)
         check(file.mkdir() || file.isDirectory) { "Cannot create ${file.name}" }
-        sync(parent)
+        syncDirectory(parent)
     }
 
-    private fun write(file: File, data: ByteArray) {
+    private fun write(file: File, data: ByteArray): Unit = synchronized(publishing) {
         directory(file.parentFile!!)
         val temp = File(file.parentFile, ".saving-${uid()}")
         try {
             FileOutputStream(temp).use { out -> out.write(data); out.fd.sync() }
+            beforePublish?.invoke(file)
             Os.rename(temp.absolutePath, file.absolutePath)
-            sync(file.parentFile!!)
+            syncDirectory(file.parentFile!!)
         } finally { temp.delete() }
+    }
+
+    internal fun cleanInterruptedSaves() = synchronized(publishing) {
+        val folders = listOf(root) + listOf("pending", "checksums", "deleted", "catalog").map { File(root, it) } +
+            listOf("revisions", "backups").flatMap { File(root, it).listFiles().orEmpty().filter(File::isDirectory) }
+        for (folder in folders) {
+            for (file in folder.listFiles().orEmpty()) if (file.isFile && abandonedSave.matches(file.name)) file.delete()
+        }
     }
 
     private fun bytes(file: File): ByteArray {
@@ -190,7 +194,7 @@ class ProjectStore(val root: File) {
         val temporary=File(target.parentFile,".${uid()}.partial")
         try {
             FileOutputStream(temporary).use { out -> file.inputStream().use { it.copyTo(out) };out.fd.sync() }
-            Os.rename(temporary.path,target.path);sync(target.parentFile!!)
+            Os.rename(temporary.path,target.path);syncDirectory(target.parentFile!!)
         } finally { temporary.delete() }
     }
 
@@ -236,9 +240,9 @@ class ProjectStore(val root: File) {
         val copy = File(root, "backups/${file.nameWithoutExtension}/$stamp-$hash.json")
         val existing = previous.firstOrNull { it.name == "$hash.json" || it.name.endsWith("-$hash.json") }
         if (existing == null) write(copy, data)
-        else { Os.rename(existing.absolutePath, copy.absolutePath); sync(copy.parentFile!!) }
+        else { Os.rename(existing.absolutePath, copy.absolutePath); syncDirectory(copy.parentFile!!) }
         for (old in backups(file.nameWithoutExtension).drop(5)) check(old.delete()) { "Cannot rotate recovery copies" }
-        sync(copy.parentFile!!)
+        syncDirectory(copy.parentFile!!)
     }
 
     @Synchronized
@@ -374,14 +378,16 @@ class ProjectStore(val root: File) {
         val saved = open(receipt.project)
         if (saved.originals.none { it.id == receipt.id || it.path == recordingFile(receipt).absolutePath }) return false
         val file = receiptFile(receipt)
-        if (file.exists()) { check(file.delete()); sync(file.parentFile!!) }
+        if (file.exists()) { check(file.delete()); syncDirectory(file.parentFile!!) }
         return true
     }
 
     fun abandonCapture(receipt: CaptureReceipt) {
-        if (recordingFile(receipt).length() == 0L) {
+        val file = recordingFile(receipt)
+        val parts = listOf(".video.mp4", ".audio.m4a", ".finalizing.mp4", ".sealed.mp4")
+        if (file.length() == 0L && parts.none { File(file.path + it).length() > 0 }) {
             receiptFile(receipt).delete()
-            sync(receiptFile(receipt).parentFile!!)
+            syncDirectory(receiptFile(receipt).parentFile!!)
         }
     }
 
@@ -401,8 +407,16 @@ class ProjectStore(val root: File) {
                     acknowledgeCapture(receipt)
                     continue
                 }
+                val sealed = File(file.path + ".sealed.mp4")
+                if (!file.exists() && sealed.isFile) {
+                    val media = inspect(sealed)
+                    check(media.video && media.audio) { "The finalized recording is missing a track" }
+                    Os.rename(sealed.path, file.path)
+                    syncDirectory(file.parentFile!!)
+                }
                 val source = inspect(file).copy(id = receipt.id, group = receipt.id, occurrence = receipt.id)
-                val recipe = clips(o.optJSONArray("recipe")).singleOrNull()
+                val recipe = try { clips(o.optJSONArray("recipe")).singleOrNull() }
+                catch (_: Exception) { preserve(entry, receipt.project); null }
                 recipe?.let {
                     if (o.optBoolean("complete")) {
                         source.video = it.video; source.audio = it.audio; source.linked = it.linked
@@ -593,9 +607,9 @@ class ProjectStore(val root: File) {
 
     internal fun publishMedia(working: File, destination: File) {
         require(working.parentFile == media && destination.parentFile == media && !destination.exists())
-        for (folder in working.walkBottomUp().filter { it.isDirectory }) sync(folder)
+        for (folder in working.walkBottomUp().filter { it.isDirectory }) syncDirectory(folder)
         Os.rename(working.absolutePath, destination.absolutePath)
-        sync(media)
+        syncDirectory(media)
     }
 
     fun originals(project: Project): List<Clip> {
@@ -637,9 +651,9 @@ class ProjectStore(val root: File) {
                 moved[path] = File(destination, name).absolutePath
                 progress((i + 1f) / paths.size.coerceAtLeast(1))
             }
-            sync(working)
+            syncDirectory(working)
             Os.rename(working.absolutePath, destination.absolutePath)
-            sync(media)
+            syncDirectory(media)
             val copy = ProjectAssets.remap(saved, next, "${project.name} copy") { moved[it] ?: it }
             for ((old, path) in moved) {
                 val expected = trustedHash(project.id, old) ?: registerMedia(project.id, old)
@@ -666,7 +680,7 @@ class ProjectStore(val root: File) {
         check(!target.exists()) { "This project is already in Recently deleted" }
         write(File(deleted, "${project.id}.tombstone"), project.id.toByteArray())
         Os.rename(file.absolutePath, target.absolutePath)
-        sync(root); sync(deleted)
+        syncDirectory(root); syncDirectory(deleted)
     }
 
     fun restore(project: Project) {
@@ -674,12 +688,12 @@ class ProjectStore(val root: File) {
         check(!target.exists()) { "A project with this identity already exists" }
         Os.rename(File(deleted, target.name).absolutePath, target.absolutePath)
         File(deleted, "${project.id}.tombstone").delete()
-        sync(deleted); sync(root)
+        syncDirectory(deleted); syncDirectory(root)
     }
 
     fun erase(project: Project) {
         check(File(deleted, "${id(project.id)}.json").delete()) { "Cannot delete project" }
-        sync(deleted)
+        syncDirectory(deleted)
     }
 
     fun recentlyDeleted(): List<Project> = list(deleted)
@@ -1046,6 +1060,9 @@ class ProjectStore(val root: File) {
     }
 
     companion object {
+        private val publishing = Any()
+        private val abandonedSave = Regex("\\.saving-[a-f0-9-]{36}")
+
         fun shape(path: String): Pair<Int, Int> {
             PhotoSource.shape(path)?.let { return it }
             val r = MediaMetadataRetriever()

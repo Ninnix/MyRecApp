@@ -68,9 +68,9 @@ object RemainingParityTests {
             } finally { Studio.cacheDirectory=originalCache;AudioModels.configure(i.targetContext,originalModels) }
         }
         test("thermal pressure yields or stops cooperatively before discarding completed audio") {
-            AudioThermalGate { 0 }.cooperate()
-            AudioThermalGate { 3 }.cooperate()
-            check(runCatching { AudioThermalGate { 4 }.cooperate() }.exceptionOrNull() is InterruptedIOException)
+            MediaThermalGate { 0 }.cooperate()
+            MediaThermalGate { 3 }.cooperate()
+            check(runCatching { MediaThermalGate { 4 }.cooperate() }.exceptionOrNull() is InterruptedIOException)
         }
         test("long stereo processing keeps bounded memory and the exact source length") {
             val source=File(inputs,"stream-long.f32");val output=File(folder,"stream-long-wet.f32").apply { delete() }

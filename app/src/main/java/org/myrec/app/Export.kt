@@ -11,10 +11,14 @@ import kotlin.math.*
 class Export(private val cache: AudioCache) {
     @Volatile var cancelled = false
     @Volatile var paused = false
+    internal var mediaStorage = MediaStorage()
+    internal var thermalStatus: () -> Int = { MediaThermalGate.currentStatus() }
+    private val thermal = MediaThermalGate("Export") { thermalStatus() }
     private val interrupted get() = cancelled || paused
 
     private fun checkCancelled() {
         if (interrupted) throw InterruptedIOException(if (paused && !cancelled) "Export paused" else "Export cancelled")
+        thermal.cooperate()
     }
 
     fun run(project: Project, target: File, width: Int, height: Int, color: ExportColor = ExportColor.SDR, progress: (Float) -> Unit) {
@@ -24,13 +28,18 @@ class Export(private val cache: AudioCache) {
     internal fun render(project: Project, target: File, width: Int, height: Int, color: ExportColor,
                         fps: Int, checkpoint: MovieCheckpoint?, progress: (Float) -> Unit) {
         require(project.duration > 0) { "The project is empty" }
-        val video = File(target.parentFile, target.name + ".video.mp4")
-        val audio = File(target.parentFile, target.name + ".audio.m4a")
+        val folder = target.parentFile!!
+        val video = File(folder, target.name + ".video.mp4")
+        val audio = File(folder, target.name + ".audio.m4a")
+        fun requireSpace(bytes: Long = 0) = mediaStorage.requireSpace(folder, "Free up storage to finish exporting. Completed work is kept.", bytes)
         try {
+            checkCancelled()
+            requireSpace()
             val count = ceil(project.duration * fps - 1e-7).toInt().coerceAtLeast(1)
             val videos = Frames(cancelled = { interrupted }).use { frames ->
                 if (checkpoint == null) {
                     encodeVideo(project, frames, video, width, height, color, fps, 0 until count, false) {
+                        if (it % fps == 0) requireSpace()
                         progress(it * .8f / count)
                     }
                     listOf(video to 0L)
@@ -38,6 +47,7 @@ class Export(private val cache: AudioCache) {
                     checkCancelled()
                     val end = min(count, start + fps * 3)
                     val file = checkpoint.segment(start, end, ::checkCancelled) { output ->
+                        requireSpace()
                         encodeVideo(project, frames, output, width, height, color, fps, start until end, true) {
                             progress(it * .8f / count)
                         }
@@ -47,10 +57,14 @@ class Export(private val cache: AudioCache) {
                 }
             }
             checkCancelled()
-            val sound = if (checkpoint == null) audio.also { file -> encodeAudio(project, file) { progress(.8f + it * .15f) } }
-                else checkpoint.audio(::checkCancelled) { file -> encodeAudio(project, file) { progress(.8f + it * .15f) } }
+            val encodeSound: (File) -> Unit = { file ->
+                requireSpace()
+                encodeAudio(project, file) { progress(.8f + it * .15f) }
+            }
+            val sound = if (checkpoint == null) audio.also(encodeSound) else checkpoint.audio(::checkCancelled, encodeSound)
             val priming = Mp4Audio.delay(cache.head(sound.path, 12288))
             checkCancelled()
+            requireSpace(sound.length() + videos.sumOf { it.first.length() })
             mux(videos, sound, target)
             Mp4Audio.trim(target, Mp4Audio.PREFIX + priming, project.duration)
             progress(1f)
@@ -88,7 +102,11 @@ class Export(private val cache: AudioCache) {
         if (segmented && android.os.Build.VERSION.SDK_INT >= 29) format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         val input = videoInput(format, hdr, width, height, fps)
         val codec = input.first; val surface = input.second; val egl = input.third
-        val muxer = MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val muxer = try { MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4) }
+        catch (error: Exception) {
+            try { codec.release() } finally { try { egl.close() } finally { surface.release() } }
+            throw error
+        }
         var started = false
         var track = -1
         val info = MediaCodec.BufferInfo()
@@ -178,7 +196,8 @@ class Export(private val cache: AudioCache) {
 
     private fun encodeAudio(project: Project, target: File, progress: (Float) -> Unit) {
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        val muxer = MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val muxer = try { MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4) }
+        catch (error: Exception) { codec.release(); throw error }
         var started = false
         var track = -1
         try {

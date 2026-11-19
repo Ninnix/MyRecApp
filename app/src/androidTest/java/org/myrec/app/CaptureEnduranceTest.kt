@@ -27,25 +27,33 @@ object CaptureEnduranceTest {
         }
         try {
             val readyBy = SystemClock.uptimeMillis()+15000
+            onMain { capture.setHdr(false) }
             while (SystemClock.uptimeMillis() < readyBy) {
-                var ready = false; onMain { ready = capture.readyToRecord }
-                if (ready) break
+                var recording = false
+                onMain {
+                    if (capture.readyToRecord && !capture.recording) capture.start()
+                    recording = capture.recording
+                }
+                if (recording) break
                 Thread.sleep(100)
             }
-            onMain { check(capture.readyToRecord); capture.setHdr(false); capture.start() }
+            onMain { check(capture.recording) { "Capture could not start. ${a.lastMessage}" } }
             Thread.sleep(1000)
             val started = SystemClock.elapsedRealtime(); var pausedFor = 0L
-            test("eleven-minute SDR capture stays awake unlocked and responsive across pause and resume") {
+            test("eleven-minute SDR capture stays awake and responsive across pause and resume") {
                 repeat(22) { index ->
                     Thread.sleep(30000)
                     var seconds = 0.0
+                    var locked = false
                     onMain {
-                        check(capture.recording && !capture.paused)
-                        check(power.isInteractive && !keyguard.isKeyguardLocked)
+                        check(capture.recording && !capture.paused) { "Recording stopped or paused at sample $index. ${a.lastMessage}" }
+                        locked = keyguard.isKeyguardLocked
+                        check(power.isInteractive && (!locked || a.hasWindowFocus())) { "Recording UI was obscured at sample $index" }
                         seconds = capture.elapsedSeconds()
                     }
                     val sample = JSONObject().put("wall_ms",SystemClock.elapsedRealtime()-started).put("recording_seconds",seconds)
-                        .put("pss_kib",Debug.getPss()).put("awake",true).put("locked",false)
+                        .put("pss_kib",Debug.getPss()).put("awake",true).put("locked",locked)
+                        .put("thermal_status",MediaThermalGate.currentStatus())
                     samples.put(sample); publish()
                     if (index == 9) {
                         var held = 0.0
@@ -91,7 +99,11 @@ object CaptureEnduranceTest {
                         ends[if (mime.startsWith("video/")) "video" else "audio"] = ordered.last()
                         tracks.put(JSONObject().put("mime",mime).put("first_pts_us",ordered.first()).put("last_pts_us",ordered.last())
                             .put("samples",times.size).put("maximum_gap_us",maximumGap)
-                            .put("decode_order_pts_monotonic",times.zipWithNext().all { (a,b) -> b>a }))
+                            .put("decode_order_pts_monotonic",times.zipWithNext().all { (a,b) -> b>a }).apply {
+                                if (mime.startsWith("video/")) {
+                                    put("width", format.getInteger(MediaFormat.KEY_WIDTH)); put("height", format.getInteger(MediaFormat.KEY_HEIGHT))
+                                }
+                            })
                     }
                 } finally { extractor.release() }
                 val drift = abs(ends.getValue("video")-ends.getValue("audio"))

@@ -94,7 +94,7 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--playback` | Moving frames in a fifth take after seeking earlier takes |
 | `--camera-preview` | All independent selfie preview/save mirror combinations in portrait/landscape, saved-switch lock during a take and Kaleidoscope framing |
 | `--capture-compatibility` | Unsupported HDR repeated requests and disabled UI touch on each camera, a request during SDR recording, and a decoded playable result |
-| `--capture-endurance` | Eleven-minute SDR take without user input, awake/unlocked checks, pause/resume and marker, bounded memory growth, full track timestamp continuity/AV drift, endpoint decoding and source checksum; removes its own isolated recording after success |
+| `--capture-endurance` | Eleven-minute SDR take without user input, visible and awake recorder, pause/resume and marker, memory and thermal samples, full track timestamp continuity, AV drift, endpoint decoding and source checksum with cleanup of the test take |
 | `--capture-focus` | Reference peaking pixels, per-camera zoom/manual focus recall, actual lens metadata, gestures/hold and preview-only focus aids |
 | `--references` | Project delete/restore, shared-media safety, project controls, mirror geometry, RGB offsets |
 | `--new-ui` | Live effects sheet, Clear all, Widescreen, 4:5 crop, quarter turns |
@@ -143,6 +143,32 @@ their dates and APK hashes to the build being assessed; historical runs do not
 certify a newer build.
 Test-media provenance is beside the [fixtures](../app/src/androidTest/assets/README.md).
 APKs, raw captures, logs, and the iOS checkout stay out of Git.
+
+## Reliability acceptance
+
+Run the capture endurance check on a physical phone with the recorder in the
+foreground and at least 2 GiB free. Leave the phone awake in a lit scene and
+keep USB connected until the endpoint decoding and checksum finish. The report
+is `capture-endurance.json` in the app's external-files directory.
+
+Build and install debug app and instrumentation APKs with a separate
+`applicationIdSuffix`, such as `.reliabilityqa`. Grant Camera and Microphone to
+the isolated package before passing `--device-checks`.
+
+```sh
+python3 scripts/test-reliability.py --serial SERIAL --package org.myrec.app.reliabilityqa --device-checks
+```
+
+The controller stops the test process after the save is on disk and before
+its index rename, while an unverified export section is rendering, and before
+the verified replacement movie is published. After restart it checks the last
+committed edit, the original hashes, single attachment of a finished take,
+and reuse of the verified export sections. The suite also exercises a
+34-minute timeline and a backgrounded capture. It injects `ENOSPC`, free-space
+readings and thermal status into the isolated app. These checks exercise the
+pressure responses without filling the phone or inducing hardware overheating.
+The process stops target the save and export transactions. An active take with
+unfinalized tracks is a separate recovery case.
 
 The audio speed stage uses a stereo waveform-similarity overlap-add implementation
 based on the [WSOLA method](https://www.isca-archive.org/eurospeech_1993/roelands93_eurospeech.html).

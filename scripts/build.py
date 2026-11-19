@@ -82,7 +82,7 @@ def build():
     manifest.write_text(source)
     run(TOOLS / 'aapt2', 'link', '-o', apk, '-I', ANDROID, '--manifest', manifest,
         '-A', ROOT / 'app/src/main/assets',
-        '--min-sdk-version', '28', '--target-sdk-version', '35', '--version-code', '8', '--version-name', '0.1.7', compiled)
+        '--min-sdk-version', '28', '--target-sdk-version', '35', '--version-code', '9', '--version-name', '0.1.8', compiled)
     classes = BUILD / 'classes'
     if classes.exists(): shutil.rmtree(classes)
     kotlin(sorted(ROOT.glob('app/src/main/java/**/*.kt')), classes)

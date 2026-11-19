@@ -259,11 +259,23 @@ class Capture(
                 }
             }
         }
+    internal var mediaStorage = MediaStorage()
+    internal var thermalStatus: () -> Int = { MediaThermalGate.currentStatus() }
+    private var lastPressureCheck = 0L
     private val ticker =
         object : Runnable {
             override fun run() {
                 if (closed) return
                 val now = System.nanoTime()
+                if (recording && !pendingStart && now - lastPressureCheck >= 1_000_000_000L) {
+                    lastPressureCheck = now
+                    val reason = when {
+                        thermalStatus() >= android.os.PowerManager.THERMAL_STATUS_CRITICAL -> "Device too warm. Recording stopped to save the take."
+                        !mediaStorage.fits(store.media, recorder?.storedBytes ?: 0L) -> "Storage is low. Recording stopped to save the take."
+                        else -> null
+                    }
+                    if (reason != null) { stop(); activity.message(reason) }
+                }
                 composition?.previewCovered=liveFrame!=null && liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }
                 val arriving = microphone.readings.arriving(now)
                 amplitude = if (arriving) ((microphone.readings.peakDB + 60) / 60).coerceIn(0f,1f) else 0f
@@ -573,7 +585,12 @@ class Capture(
                         opening = false
                         camera.close()
                         device = null
-                        ui.post { activity.message("Camera unavailable ($error)") }
+                        ui.post {
+                            if (recording && !paused) {
+                                pause()
+                                activity.message("Camera unavailable. Recording paused.")
+                            } else activity.message("Camera unavailable ($error)")
+                        }
                     }
                 },
                 ui,
@@ -1216,6 +1233,14 @@ class Capture(
 
     fun start() {
         if (recording) return
+        if (!mediaStorage.fits(store.media)) {
+            activity.message("Free up storage before recording.")
+            return
+        }
+        if (thermalStatus() >= android.os.PowerManager.THERMAL_STATUS_CRITICAL) {
+            activity.message("Let the device cool before recording.")
+            return
+        }
         if (matchingColor) {
             activity.message("Preparing HDR")
             return
@@ -1282,6 +1307,7 @@ class Capture(
             recordingSurface?.apply { analysisRotation=recordingOrientation;analysisFrame=masks::offer }
             recordingFile=file
             recording=true; paused=false; duration=0
+            lastPressureCheck = System.nanoTime()
             recordingMarks.clear(); effectHistory.clear(); effectSince=0.0
             since=SystemClock.elapsedRealtime()
             recordingRequestedAt=System.nanoTime(); microphoneRecoveryAt=0
@@ -1475,6 +1501,10 @@ class Capture(
         if (!recording) return
         try {
             if (paused) {
+                if (!readyToRecord) {
+                    activity.message("Waiting for camera. Recording remains paused.")
+                    return
+                }
                 val input = selectedMicrophone()
                 if (input == null || !routeMicrophone(input)) {
                     activity.message(
@@ -1520,8 +1550,8 @@ class Capture(
             // Probe any completed media below even when the encoder reports failure.
         } finally {
             recorder = null
-            closeRecordingSurface()
-            r?.close()
+            runCatching { closeRecordingSurface() }.onFailure { android.util.Log.w("MyRec", "Cannot close recording surface", it) }
+            runCatching { r?.close() }.onFailure { android.util.Log.w("MyRec", "Cannot release recorder", it) }
         }
         val file = recordingFile
         recordingFile = null
@@ -1562,7 +1592,8 @@ class Capture(
         else {
             file?.delete()
             completed?.let { runCatching { store.abandonCapture(it) } }
-            activity.message(stopFailure?.message ?: "Recording was too short to save")
+            val kept = r?.storedBytes?.let { it > 0 } == true
+            activity.message(if (kept) "Unfinished recording kept for recovery." else stopFailure?.message ?: "Recording was too short to save")
         }
         activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         if (dualLayout == 4 && dualCamera != null) {

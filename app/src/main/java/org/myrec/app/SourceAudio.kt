@@ -62,7 +62,7 @@ object SourceAudio {
                 val dry=ByteBuffer.allocateDirect(480*8).order(ByteOrder.LITTLE_ENDIAN)
                 val wet=ByteBuffer.allocateDirect(1440*8).order(ByteOrder.LITTLE_ENDIAN)
                 progress(read.toFloat()/total)
-                val thermal=AudioThermalGate()
+                val thermal=MediaThermalGate()
                 var reported=System.nanoTime()
                 try {
                     while (read<total || written<total) {
@@ -167,7 +167,7 @@ object SourceAudio {
         require(input.length() > 0 && input.length() % 8 == 0L && input.canonicalFile != output.canonicalFile)
         require(!output.exists())
         val count = input.length() / 8
-        val thermal=AudioThermalGate()
+        val thermal=MediaThermalGate()
         checkpoints.mkdirs()
         val partial = File(output.parentFile, "${output.name}-${uid()}.partial")
         try {

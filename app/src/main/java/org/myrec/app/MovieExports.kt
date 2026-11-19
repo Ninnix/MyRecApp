@@ -50,7 +50,7 @@ class MovieExports(private val root: File) {
 
     internal fun ticket(store: ProjectStore, project: Project, width: Int, height: Int,
                         color: ExportColor, cancelled: () -> Boolean = { false }, fps: Int = project.fps): Ticket {
-        require(project.id.matches(Regex("[A-Za-z0-9-]{1,100}")) && width > 0 && height > 0)
+        require(project.id.matches(projectId) && width > 0 && height > 0)
         val files = JSONArray()
         for (path in ProjectAssets.paths(EditSession(project)).sorted()) {
             val file = File(path)
@@ -76,7 +76,7 @@ class MovieExports(private val root: File) {
                 StabilizationSettings.level(it) != StabilizationLevel.Off } }) inputs.put("stabilization", StabilizationRenderer.VERSION)
         return Ticket(project.id, hash(canonical(inputs)), inputs)
     }
-    private fun directory(ticket: Ticket) = File(root, ticket.project).apply {
+    private fun directory(project: String) = File(root, project).apply {
         check(isDirectory || mkdirs()) { "Cannot create the movie export directory" }
     }
     private fun retire(folder: File, current: String) {
@@ -111,7 +111,7 @@ class MovieExports(private val root: File) {
         }
     }
     private fun find(ticket: Ticket, project: Project, width: Int, height: Int, fps: Int, cancelled: () -> Boolean): File? {
-        val folder = directory(ticket)
+        val folder = directory(ticket.project)
         val receipt = File(folder, "${ticket.key}.json")
         if (!receipt.isFile || receipt.length() !in 1..1048576) return null
         try {
@@ -138,7 +138,7 @@ class MovieExports(private val root: File) {
         it.isDirectory && it.name.matches(Regex("[a-f0-9]{64}\\.resume"))
     }
 
-    internal fun discard(project: String) {
+    internal fun discard(project: String) = synchronized(publishing) {
         checkpoints(project).forEach { it.deleteRecursively() }
     }
 
@@ -157,27 +157,31 @@ class MovieExports(private val root: File) {
         }
     }
 
-    @Synchronized
     private fun movie(store: ProjectStore, project: Project, width: Int, height: Int, color: ExportColor,
                       fps: Int, resume: Boolean, cancelled: () -> Boolean, progress: (Float) -> Unit,
-                      render: (File, MovieCheckpoint?, (Float) -> Unit) -> Unit): Movie {
+                      render: (File, MovieCheckpoint?, (Float) -> Unit) -> Unit): Movie = synchronized(publishing) {
         checkCancelled(cancelled)
         val ticket = ticket(store, project, width, height, color, cancelled, fps)
+        val folder = directory(ticket.project)
+        for (file in folder.listFiles().orEmpty()) if (file.isFile && abandoned.matches(file.name)) file.delete()
         find(ticket, project, width, height, fps, cancelled)?.let {
             if (resume) discard(project.id)
-            checkCancelled(cancelled); progress(1f); return Movie(it, true)
+            checkCancelled(cancelled); progress(1f); return@synchronized Movie(it, true)
         }
-        val folder = directory(ticket)
+        val file = File(folder, "${ticket.key}.mp4")
+        val published = File(folder, "${ticket.key}.json")
+        if (!published.exists() && file.isFile) file.delete()
         val partial = File(folder, ".${ticket.key}-${uid()}.partial.mp4")
         val receipt = File(folder, ".${ticket.key}-${uid()}.partial.json")
         try {
             val checkpoint = if (resume) {
                 val directory = File(folder, "${ticket.key}.resume")
                 check(directory.isDirectory || directory.mkdir()) { "Cannot save export progress" }
-                File(directory, "settings.json").writeText(JSONObject().put("width", width).put("height", height)
-                    .put("fps", fps).put("color", color.name).put("edit", ticket.inputs.getString("edit")).toString())
+                val saved = MovieCheckpoint(directory)
+                saved.prepare(JSONObject().put("width", width).put("height", height)
+                    .put("fps", fps).put("color", color.name).put("edit", ticket.inputs.getString("edit")))
                 checkpoints(project.id).filter { it != directory }.forEach { it.deleteRecursively() }
-                MovieCheckpoint(directory)
+                saved
             } else null
             render(partial, checkpoint) { progress(it * .9f) }
             verify(partial, project, width, height, fps, cancelled)
@@ -190,12 +194,18 @@ class MovieExports(private val root: File) {
                 .put("bytes", partial.length()).put("sha256", checksum)
             FileOutputStream(receipt).use { out -> out.write(info.toString().toByteArray(Charsets.UTF_8)); out.fd.sync() }
             checkCancelled(cancelled)
-            val file = File(folder, "${ticket.key}.mp4")
-            check(partial.renameTo(file) && receipt.renameTo(File(folder, "${ticket.key}.json"))) { "Cannot publish the completed export" }
+            check(partial.renameTo(file) && receipt.renameTo(published)) { "Cannot publish the completed export" }
+            syncDirectory(folder)
             retire(folder, ticket.key)
             if (resume) discard(project.id)
             progress(1f)
-            return Movie(file, false)
+            Movie(file, false)
         } finally { partial.delete(); receipt.delete() }
+    }
+
+    private companion object {
+        val publishing = Any()
+        val projectId = Regex("[A-Za-z0-9-]{1,100}")
+        val abandoned = Regex("\\.[a-f0-9]{64}-[a-f0-9-]{36}\\.partial\\.(json|mp4(\\.video\\.mp4|\\.audio\\.m4a)?)")
     }
 }
