@@ -154,6 +154,47 @@ object ToolWorkspaceTests {
                 onMain { a.editor.load(before.duplicate()) }
             }
         }
+        test("Crop and Image author independent A and B poses and persist their animation") {
+            val image = File(a.store.media, "motion.png")
+            Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888).apply {
+                eraseColor(Color.RED)
+                image.outputStream().use { compress(Bitmap.CompressFormat.PNG, 100, it) }
+                recycle()
+            }
+            for ((kind, key, control) in listOf(Triple("Crop", "zoom", "Zoom"), Triple("Image", "size", "Size"))) {
+                onMain {
+                    a.editor.load(before.duplicate()); a.editor.cursor = 0.0
+                    a.panels.effect(kind, if (kind == "Image") Effect(kind = kind, values = mutableMapOf("path" to image.path)) else null)
+                }
+                click("Animate")
+                Thread.sleep(200)
+                onMain { drag(slider(control), .63f) }
+                click("Edit A")
+                click("Apply")
+                val effect = a.editor.project.clips.single().effects.single { it.kind == kind }
+                val motion = checkNotNull(effect.motion)
+                check(motion.valid(effect) && motion.a.getValue(key) < motion.b.getValue(key) && motion.clock.isNotEmpty())
+                onMain { a.editor.undo() }
+                check(a.editor.project == before)
+            }
+        }
+        test("Placement saves a different window at B and keeps its overlap clock") {
+            val seed = before.duplicate().apply {
+                clips.add(clips.single().duplicate(true).apply { start = 1.0; track = 1 })
+            }
+            onMain { a.editor.load(seed.duplicate()); a.editor.cursor = 1.5; a.panels.effect("Placement") }
+            click("Animate")
+            click("▥ Layout")
+            onMain { checkNotNull(find(a.choices!!.contentView, "Picture in picture")).performClick() }
+            click("Edit A")
+            click("Apply")
+            val effect = a.editor.project.clips.last().effects.single { it.kind == "Placement" }
+            val motion = checkNotNull(effect.motion)
+            check(motion.valid(effect) && motion.a.getValue("w") == 1.0 && motion.b.getValue("w") < .5)
+            check(abs(motion.duration - 2.5) < .01 && motion.clock.first().elapsed == 0.0)
+            onMain { a.editor.undo() }
+            check(a.editor.project == seed)
+        }
         test("open Tools reflows its grid and keeps Settings visible through rotation without editing") {
             onMain { a.panels.close();a.editor.load(before.duplicate());a.requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
             Thread.sleep(650)

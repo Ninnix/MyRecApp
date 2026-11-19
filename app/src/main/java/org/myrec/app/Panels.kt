@@ -41,6 +41,8 @@ class Panels(private val a: MainActivity) {
     private var progressText: TextView? = null
     private var draft: Effect? = null
     private val geometryValues=java.util.IdentityHashMap<Effect,Map<String,String>>()
+    private var transformEndpoint: Boolean? = null
+    private var refreshTransformControls: (() -> Unit)? = null
     private var draftReplace: String? = null
     private var draftOrigin = 0.0
     private var cropFrame = true
@@ -128,6 +130,9 @@ class Panels(private val a: MainActivity) {
             cornerRadius = px(radius).toFloat()
         }
 
+    private val largeEditorText get() = a.resources.configuration.fontScale > 1.15f &&
+        title in listOf("Crop", "Placement", "Image", "Transition", "Export")
+
     private fun text(
         t: String,
         size: Float = 10f,
@@ -137,7 +142,9 @@ class Panels(private val a: MainActivity) {
         TextView(a).apply {
             text = t
             setTextColor(color)
-            setTextSize(TypedValue.COMPLEX_UNIT_PX, size * factor * 1.25f)
+            val pixels = size * factor * 1.25f
+            if (largeEditorText) setTextSize(TypedValue.COMPLEX_UNIT_SP, pixels / resources.displayMetrics.density)
+            else setTextSize(TypedValue.COMPLEX_UNIT_PX, pixels)
             typeface = Typeface.create("sans-serif", if (bold) Typeface.BOLD else Typeface.NORMAL)
             gravity = Gravity.CENTER_VERTICAL
             includeFontPadding = false
@@ -157,9 +164,11 @@ class Panels(private val a: MainActivity) {
     }
 
     private fun add(parent: LinearLayout, v: View, height: Float = -2f, width: Int = -1) {
+        val flexible = largeEditorText && v is TextView && height > 0
+        if (flexible) v.minimumHeight = px(height)
         parent.addView(
             v,
-            LinearLayout.LayoutParams(width, if (height < 0) height.toInt() else px(height)),
+            LinearLayout.LayoutParams(width, if (flexible) -2 else if (height < 0) height.toInt() else px(height)),
         )
     }
 
@@ -193,7 +202,8 @@ class Panels(private val a: MainActivity) {
         v.setPadding(px(10f), 0, px(10f), 0)
         v.setOnClickListener { fn() }
         v.contentDescription = t
-        val lp = LinearLayout.LayoutParams(-1, px(36f))
+        val lp = LinearLayout.LayoutParams(-1, if (largeEditorText) -2 else px(36f))
+        if (largeEditorText) v.minimumHeight = max(px(36f), (44 * a.resources.displayMetrics.density).toInt())
         lp.bottomMargin = px(5f)
         parent.addView(v, lp)
         return v
@@ -309,6 +319,17 @@ class Panels(private val a: MainActivity) {
         color: Int = RED,
         fn: (Int) -> Unit,
     ) {
+        if (largeEditorText) {
+            val buttons = mutableListOf<TextView>()
+            for ((i, item) in items.withIndex()) buttons += button(parent, item, if (item == current) color else Color.WHITE) {
+                for ((index, view) in buttons.withIndex()) {
+                    view.isSelected = i == index
+                    view.setTextColor(if (view.isSelected) color else Color.WHITE)
+                }
+                fn(i)
+            }.apply { isSelected = item == current }
+            return
+        }
         val r = row()
         for ((i, t) in items.withIndex()) {
             val v = text(t, 8f, if (t == current) color else Color.WHITE)
@@ -516,6 +537,7 @@ class Panels(private val a: MainActivity) {
         captureSheet = false
         panel?.let { a.root.removeView(it) }
         panel = null
+        a.editorView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         if (coveredEditor && a.editorView.visibility == View.INVISIBLE) a.editorView.visibility = View.VISIBLE
         coveredEditor = false
         preview = null
@@ -535,6 +557,9 @@ class Panels(private val a: MainActivity) {
         reflowControls = null
         draft = null
         draftReplace = null
+        transformEndpoint = null
+        refreshTransformControls = null
+        geometryValues.clear()
         placements.clear()
         placementTracks.clear()
         placementId = null
@@ -556,6 +581,7 @@ class Panels(private val a: MainActivity) {
         progressText = null
         a.playback.previewProject = null
         a.playback.originalStabilization = false
+        a.playback.inspect(a.editorView.inspection.zoom)
         if (refresh) a.playback.refresh()
     }
 
@@ -598,6 +624,8 @@ class Panels(private val a: MainActivity) {
                 elevation = px(12f).toFloat()
             }
         panel = root
+        a.editorView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        if (android.os.Build.VERSION.SDK_INT >= 28) root.accessibilityPaneTitle = name
         val height =
             if (captureSheet) captureHeight(h) else if (tools && !landscape) h - px(46f) else h
         if ((tools && !landscape) || captureSheet) {
@@ -898,6 +926,7 @@ class Panels(private val a: MainActivity) {
         play.setOnClickListener {
             if (a.playback.playing) a.playback.pause()
             else {
+                if (transformEndpoint != null) finishTransformPose()
                 val current = previewRegion()
                 if (editor.cursor !in current || editor.cursor >= current.endInclusive - 0.01)
                     editor.cursor = current.start
@@ -1852,9 +1881,168 @@ class Panels(private val a: MainActivity) {
         }
     }
 
+    private fun transformPreview(fx: Effect): Effect =
+        if (transformEndpoint != null && fx.motion != null && fx.kind in listOf("Crop", "Placement", "Image")) fx.copy(motion = null)
+        else fx
+
+    private fun cropZoomBounds(fx: Effect): ClosedFloatingPointRange<Float> {
+        val motion = fx.motion
+        if (fx.kind != "Crop") return 1f..5f
+        if (transformEndpoint != null || motion == null) return 1f..8f
+        val a = motion.a.getValue("zoom").toFloat()
+        val b = motion.b.getValue("zoom").toFloat()
+        val zoom = fx.number("zoom", a)
+        val low = (zoom / min(a, b)).coerceIn(1f, 8f)
+        return low..(8f * zoom / max(a, b)).coerceIn(low, 8f)
+    }
+
+    private fun animationRegion(): ClosedFloatingPointRange<Double> {
+        if (title != "Placement") return previewRegion()
+        editor.range?.let { return it }
+        val clips = editor.project.clips.filter { it.id in placements }
+        val start = clips.maxOfOrNull { it.start } ?: 0.0
+        return start..max(start, clips.minOfOrNull { it.end } ?: start)
+    }
+
+    private fun startTransform(fx: Effect): Boolean {
+        val region = animationRegion()
+        val duration = region.endInclusive - region.start
+        val frame = 1.0 / editor.project.fps
+        if (duration < frame) return false
+        val (w, h) = draftShape ?: (editor.project.width to editor.project.height)
+        when (fx.kind) {
+            "Crop" -> {
+                if (fx.values["geometry"] != "source") {
+                    val clip = editor.targets().firstOrNull { it.video } ?: return false
+                    val (sw, sh) = ProjectStore.shape(clip.path)
+                    val mirror = clip.effects.lastOrNull { it.kind == "Mirror" && it.enabled }
+                    val pose = ArchiveGeometry.legacyCrop(fx, sw.toDouble(), sh.toDouble(), w.toDouble(), h.toDouble(),
+                        mirror?.number("horizontal", if (mirror.number("vertical") == 1f) 0f else 1f) == 1f,
+                        mirror?.number("vertical") == 1f)
+                    TransformMotion.show(fx, pose)
+                    fx.values["geometry"] = "source"
+                } else fx.values["rotation"] = (fx.number("rotation") + fx.number("quarter") * 90f).toString()
+                fx.values.remove("quarter")
+                fx.values["rotation"] = (((fx.number("rotation") + 180f) % 360f + 360f) % 360f - 180f).toString()
+            }
+            "Placement" -> {
+                fx.values["geometry"] = "canvas"
+                fx.values.putIfAbsent("reframe", "0")
+            }
+            "Image" -> if (fx.values["geometry"] != "center") {
+                val path = fx.values["path"] ?: return false
+                val (iw, ih) = PhotoSource.shape(path) ?: return false
+                val size = fx.number("size", .3f)
+                fx.values["x"] = (fx.number("x", .1f) + size / 2).toString()
+                fx.values["y"] = (fx.number("y", .1f) + size * w / h * ih / iw / 2).toString()
+                fx.values["geometry"] = "center"
+            }
+        }
+        val pose = TransformMotion.pose(fx)
+        val motion = EffectMotion(pose, duration = duration, frame = frame)
+        if (!motion.valid(fx)) return false
+        fx.motion = motion
+        return true
+    }
+
+    private fun selectTransformPose(second: Boolean) {
+        val fx = draft ?: return
+        val motion = fx.motion ?: return
+        a.playback.pause()
+        if (title == "Crop") cropFrame = true
+        transformEndpoint = second
+        for (value in if (title == "Placement") placements.values else listOf(fx)) {
+            value.motion?.let { TransformMotion.show(value, if (second) it.b else it.a) }
+        }
+        val region = animationRegion()
+        editor.cursor = (region.start + motion.timing.endpoint(second, motion.duration, motion.frame))
+            .coerceAtMost(region.endInclusive)
+        refreshTransformControls?.invoke()
+        renderDraft()
+    }
+
+    private fun finishTransformPose(refresh: Boolean = true) {
+        val fx = draft ?: return
+        transformEndpoint = null
+        for (value in if (title == "Placement") placements.values else listOf(fx)) {
+            value.motion?.let { TransformMotion.show(value, it.a) }
+            geometryValues[value] = value.values.toMap()
+        }
+        if (refresh) { refreshTransformControls?.invoke(); renderDraft() }
+    }
+
+    private fun transformControls(parent: LinearLayout) {
+        val fx = draft ?: return
+        val motion = fx.motion
+        if (motion == null) {
+            button(parent, "Animate") {
+                val started = runCatching { startTransform(fx) }.getOrDefault(false)
+                if (started) selectTransformPose(true)
+                else a.message("Choose a valid picture and a longer animation range")
+            }
+            return
+        }
+        choices(parent, listOf("Edit A", "Edit B"), when (transformEndpoint) { false -> "Edit A"; true -> "Edit B"; else -> "" }) {
+            selectTransformPose(it == 1)
+        }
+        button(parent, "Animation curve · ${motion.timing.curve.title}") {
+            a.choose("Animation curve", EffectCurve.entries.map { it.title }) {
+                fx.motion = fx.motion?.let { current -> current.copy(timing = current.timing.copy(curve = EffectCurve.entries[it])) }
+                refreshTransformControls?.invoke()
+                renderDraft()
+            }
+        }
+        if (motion.timing.curve.hasRise) {
+            fun seconds(value: Float) = "%.2f s".format(value)
+            val hold = text("", 9f, MUTED)
+            fun updateHold() {
+                val value = fx.motion ?: return
+                val release = if (value.timing.curve == EffectCurve.RiseHoldReturn) value.timing.release else 0.0
+                hold.text = "Hold B for ${seconds(max(0.0, value.duration - value.timing.rise - release).toFloat())}"
+            }
+            slider(parent, "Rise time", motion.timing.rise.toFloat().coerceAtMost(motion.duration.toFloat()),
+                0f, motion.duration.toFloat(), format = ::seconds) { value ->
+                fx.motion = fx.motion?.let { it.copy(timing = it.timing.copy(rise = value.toDouble())) }
+                updateHold()
+                renderDraft()
+            }
+            if (motion.timing.curve == EffectCurve.RiseHoldReturn) {
+                slider(parent, "Return time", motion.timing.release.toFloat().coerceAtMost(motion.duration.toFloat()),
+                    0f, motion.duration.toFloat(), format = ::seconds) { value ->
+                    fx.motion = fx.motion?.let { it.copy(timing = it.timing.copy(release = value.toDouble())) }
+                    updateHold()
+                    renderDraft()
+                }
+            }
+            updateHold()
+            add(parent, hold, 22f)
+            button(parent, "Ramp · ${motion.timing.ramp.title}") {
+                val curves = EffectCurve.entries.filterNot { it.hasRise }
+                a.choose("Ramp", curves.map { it.title }) { i ->
+                    fx.motion = fx.motion?.let { it.copy(timing = it.timing.copy(ramp = curves[i])) }
+                    refreshTransformControls?.invoke()
+                    renderDraft()
+                }
+            }
+        }
+        if (transformEndpoint != null) button(parent, "Done editing poses") { finishTransformPose() }
+        button(parent, "Remove animation") {
+            if (transformEndpoint == null) {
+                val clip = editor.targets().firstOrNull { it.video && it.contains(editor.cursor) }
+                val time = if (motion.clock.isEmpty()) editor.cursor - animationRegion().start
+                    else clip?.sourceTime(editor.cursor) ?: motion.clock.first().source
+                TransformMotion.show(fx, motion.pose(time))
+            }
+            fx.motion = null
+            finishTransformPose()
+        }
+    }
+
     private fun renderDraft() {
         for (fx in listOfNotNull(draft)+placements.values) if (fx.values["geometry"]!=null) {
-            geometryValues[fx]?.let { ArchiveGeometry.editMotion(fx,it) }
+            val endpoint = transformEndpoint
+            if (endpoint != null && fx.motion != null) TransformMotion.capture(fx, endpoint)
+            else geometryValues[fx]?.let { ArchiveGeometry.editMotion(fx,it) }
             if (geometryValues.size>32) geometryValues.clear()
             geometryValues[fx]=fx.values.toMap()
         }
@@ -1883,7 +2071,7 @@ class Panels(private val a: MainActivity) {
                     }
                 val effects =
                     if (title == "Video effects" || title == "Enhance audio") pendingEffects
-                    else draft?.let { listOf(it) } ?: emptyList()
+                    else draft?.let { listOf(transformPreview(it)) } ?: emptyList()
                 draftRate?.let { temporary.setRate(it) }
                 when (title) {
                     "Video effects" -> {
@@ -1895,7 +2083,7 @@ class Panels(private val a: MainActivity) {
                     "Pauses" -> temporary.project = checkNotNull(pausesDraft).snapshot()
                     "Freeze Frame" -> temporary.project = checkNotNull(freezeDraft).duplicate()
                     "Enhance audio" -> temporary.replaceChain(effects, Effects.audio)
-                    "Placement" -> temporary.applyPlacements(placements, placementTracks)
+                    "Placement" -> temporary.applyPlacements(placements.mapValues { transformPreview(it.value) }, placementTracks)
                     "Color LUTs" -> {
                         temporary.targets().forEach { clip -> clip.effects.removeAll { it.kind == "Color LUTs" } }
                         if (previewEffects) draft?.let { temporary.applyEffect(it) }
@@ -1970,6 +2158,7 @@ class Panels(private val a: MainActivity) {
                 kind,
                 {
                     val position = editor.cursor
+                    if (transformEndpoint != null) finishTransformPose(refresh = false)
                     if (
                         replace == null &&
                             kind in listOf("Text", "Image") &&
@@ -2007,7 +2196,9 @@ class Panels(private val a: MainActivity) {
         pendingEffects.clear()
         draftTransition = null
         val controls = contentWithPreview(body)
-        when (kind) {
+        fun buildControls() {
+            controls.removeAllViews()
+            when (kind) {
             "Text" -> {
                 TitleStyle.initialize(fx, existing == null)
                 val targets = editor.targets().filter { it.video }
@@ -2032,6 +2223,7 @@ class Panels(private val a: MainActivity) {
             "Crop",
             "Zoom",
             "Rotation" -> {
+                if (kind == "Crop") transformControls(controls)
                 val shapeRow = row()
                 val shapeLabel = text("Video shape\nWhole project", 9f, RED)
                 shapeRow.addView(shapeLabel, LinearLayout.LayoutParams(0, px(40f), 1f))
@@ -2075,8 +2267,11 @@ class Panels(private val a: MainActivity) {
                     Glyph(a, "Rotate", RED).apply {
                         contentDescription = "Rotate 90 degrees"
                         setOnClickListener {
-                            fx.values["quarter"] =
-                                ((fx.number("quarter").toInt() + 1) % 4).toString()
+                            if (fx.motion != null) {
+                                val next = (fx.number("rotation") + 270f) % 360f - 180f
+                                fx.values["rotation"] = next.toString()
+                                refreshTransformControls?.invoke()
+                            } else fx.values["quarter"] = ((fx.number("quarter").toInt() + 1) % 4).toString()
                             renderDraft()
                         }
                     },
@@ -2088,8 +2283,8 @@ class Panels(private val a: MainActivity) {
                         controls,
                         "",
                         fx.number("rotation"),
-                        -45f,
-                        45f,
+                        if (fx.motion != null) -180f else -45f,
+                        if (fx.motion != null) 180f else 45f,
                         format = { "%.0f°".format(it) },
                         showValue = false,
                     ) {
@@ -2105,25 +2300,27 @@ class Panels(private val a: MainActivity) {
                     angle.text = "0°"
                     renderDraft()
                 }
+                val zoomBounds = cropZoomBounds(fx)
                 val zoom =
                     slider(
                         controls,
                         "Zoom",
                         fx.number("zoom", 1f),
-                        1f,
-                        5f,
+                        zoomBounds.start,
+                        max(zoomBounds.start + .0001f, zoomBounds.endInclusive),
                         format = { "%.1f×".format(it) },
                         inline = true,
                     ) {
-                        fx.values["zoom"] = it.toString()
+                        fx.values["zoom"] = it.coerceIn(zoomBounds).toString()
                         renderDraft()
-                    }
+                    }.apply { isEnabled = zoomBounds.endInclusive > zoomBounds.start + .0001f }
                 val reset = row()
                 reset.addView(
                     text("Reset framing", 10f, RED).apply {
                         setOnClickListener {
-                            fx.values.clear()
-                            fx.motion=null
+                            if (transformEndpoint != null) TransformMotion.show(fx,
+                                mapOf("x" to .5, "y" to .5, "zoom" to 1.0, "rotation" to 0.0))
+                            else { fx.values.clear(); fx.motion=null }
                             rotation.progress = 500
                             zoom.progress = 0
                             angle.text = "0°"
@@ -2242,13 +2439,21 @@ class Panels(private val a: MainActivity) {
                     renderDraft()
                 }
                 duration(controls, fx)
+                transformControls(controls)
+                slider(controls, "Opacity", fx.number("opacity", 1f), 0f, 1f) {
+                    fx.values["opacity"] = it.toString()
+                    renderDraft()
+                }
                 if (existing != null)
                     button(controls, "Remove image") {
                         editor.removeEffect(existing.id)
                         close()
                     }
             }
+            }
         }
+        if (kind in listOf("Crop", "Image")) refreshTransformControls = { buildControls() }
+        buildControls()
         renderDraft()
     }
 
@@ -2257,6 +2462,7 @@ class Panels(private val a: MainActivity) {
             parent.removeAllViews()
             val id = placementId ?: return
             val fx = placements[id] ?: return
+            transformControls(parent)
             hint(parent, "Drag to move · pinch to resize\nDrag edge circles to crop")
             val line = row()
             val number = editor.project.clips.indexOfFirst { it.id == id } + 1
@@ -2347,6 +2553,7 @@ class Panels(private val a: MainActivity) {
             add(parent, order, 34f)
         }
         placementEditor = { build() }
+        refreshTransformControls = placementEditor
         build()
     }
 
@@ -4448,38 +4655,58 @@ class Panels(private val a: MainActivity) {
             a.message("Add a video or record first")
             return
         }
-        var size = 1080
-        var color = ExportColor.SDR
-        val body =
-            setup(
-                "Export",
-                {
-                    close()
-                    val p = editor.project
-                    val ratio = p.width.toDouble() / p.height
-                    var w = if (ratio >= 1) (size * ratio).roundToInt() else size
-                    var h = if (ratio >= 1) size else (size / ratio).roundToInt()
-                    w = w / 2 * 2
-                    h = h / 2 * 2
-                    a.export(w, h, color)
-                },
-            )
+        val body = setup("Export", tools = true)
         val controls = contentWithPreview(body)
-        label(controls, "Video quality")
-        choices(controls, listOf("720p", "1080p", "4K"), "1080p") {
-            size = listOf(720, 1080, 2160)[it]
+        val project = editor.project
+        fun build() {
+            controls.removeAllViews()
+            val settings = project.movieSettings
+            val (width, height) = settings.resolution.size(project.width, project.height)
+            val fps = settings.fps ?: project.fps
+            val paused = a.pendingMovie(width, height, settings.color, fps)
+            fun chooseSetting(title: String, value: String, choices: List<String>, update: (Int) -> MovieSettings) {
+                val control = button(controls, "$title\n$value") {
+                    a.choose(title, choices) {
+                        project.movieSettings = update(it)
+                        if (!a.saveProject()) project.movieSettings = settings
+                        build()
+                    }
+                }
+                control.textSize = 14f
+                control.layoutParams.height = -2
+                control.minimumHeight = (48 * a.resources.displayMetrics.density).roundToInt()
+                control.contentDescription = "$title, $value"
+            }
+            add(controls, text("$width × $height · $fps fps · ${settings.color.label}", 10f, Color.WHITE, true).apply {
+                textSize = 14f
+                setPadding(0, px(4f), 0, px(9f))
+            })
+            chooseSetting("Resolution", settings.resolution.label, ExportResolution.entries.map { it.label }) {
+                settings.copy(resolution = ExportResolution.entries[it])
+            }
+            chooseSetting("Frame rate", "$fps fps", MovieSettings.frameRates.map { "$it fps" }) {
+                settings.copy(fps = MovieSettings.frameRates[it])
+            }
+            val formats = listOf(ExportColor.SDR, ExportColor.SDR_HEVC, ExportColor.HLG)
+            chooseSetting("Codec and color", settings.color.label, formats.map { it.label }) { settings.copy(color = formats[it]) }
+            if (width > project.width || height > project.height) hint(controls, "Upscaled from ${project.width} × ${project.height}")
+            if (paused) hint(controls, "Completed sections are ready to resume")
+            button(controls, if (paused) "Resume export" else "Export video") {
+                close()
+                a.export(width, height, settings.color, fps)
+            }
+            if (paused) button(controls, "Discard paused export") {
+                a.discardMovie()
+                build()
+            }
         }
-        label(controls, "Color")
-        choices(controls, listOf("SDR · H.264", "HDR · HEVC 10-bit HLG"), "SDR · H.264") {
-            color = if (it == 1) ExportColor.HLG else ExportColor.SDR
-        }
-        hint(controls, "HDR requires a Main10 encoder, an HLG recording surface and 10-bit source decoding. Unsupported hardware reports the unavailable path.")
-        label(controls, "${editor.project.fps} fps · AAC 48 kHz", MUTED)
-        label(controls, "Duration · ${timeLabel(editor.project.duration)}", MUTED)
-        hint(controls, "Save the edited video to Movies/MyRec, then play or share it.")
+        reflowControls = { build() }
+        build()
     }
 
-    fun progress(name: String, value: Float, cancel: (() -> Unit)?) {
+    fun progress(name: String, value: Float, cancel: (() -> Unit)?) = progress(name, value, cancel, null)
+
+    fun progress(name: String, value: Float, cancel: (() -> Unit)?, pause: (() -> Unit)?) {
         val body =
             setup(
                 name,
@@ -4501,6 +4728,10 @@ class Panels(private val a: MainActivity) {
                 progressTintList = android.content.res.ColorStateList.valueOf(RED)
             }
         add(content, progressBar!!, 8f)
+        if (pause != null) button(content, "Pause export") {
+            pause()
+            progressText?.text = "Pausing export…"
+        }
         if (cancel != null)
             button(content, "Cancel") {
                 cancel()
@@ -4562,18 +4793,23 @@ class Panels(private val a: MainActivity) {
         private var cropSource: Pair<String,Pair<Int,Int>>?=null
         private val inspectionPinch = InspectionGesture { factor, x, y, oldX, oldY ->
             inspection.scale(factor, x - inset, y, oldX - inset, oldY)
+            a.playback.inspect(inspection.zoom)
             panAnchored = false
             invalidate()
         }
         private fun editsContent() = draft?.kind in listOf("Crop", "Zoom", "Placement", "Text", "Image", "Kaleidoscope")
         private fun inspecting() = if (draft?.kind == "Crop") !cropFrame else inspectMode || !editsContent()
 
-        init { contentDescription = "Tool preview"; importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
+        init {
+            contentDescription = "Tool preview"
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+            a.playback.inspect(1f)
+        }
 
-        fun resetInspection() { inspection.reset(); invalidate() }
+        fun resetInspection() { inspection.reset(); a.playback.inspect(1f); invalidate() }
 
         private fun toggleInspection() {
-            inspection.reset()
+            resetInspection()
             if (draft?.kind == "Crop") { cropFrame = !cropFrame; renderDraft() }
             else inspectMode = !inspectMode
             invalidate()
@@ -4614,13 +4850,8 @@ class Panels(private val a: MainActivity) {
                         val initial =
                             if (key == "zoom") 1f
                             else if (fx.kind == "Text") 0.07f else 0.3f
-                        fx.values[key] =
-                            (fx.number(key, initial) * d.scaleFactor)
-                                .coerceIn(
-                                    if (key == "zoom") 1f else 0.01f,
-                                    if (key == "zoom") 5f else 1f,
-                                )
-                                .toString()
+                        val limits = if (key == "zoom") cropZoomBounds(fx) else .01f..1f
+                        fx.values[key] = (fx.number(key, initial) * d.scaleFactor).coerceIn(limits).toString()
                         renderDraft()
                         return true
                     }
@@ -4642,7 +4873,10 @@ class Panels(private val a: MainActivity) {
                     (height + b.height * ratio) / 2,
                 )
             val fx = draft
-            inspection.configure(width - inset * 2, height.toFloat(), b.width.toFloat(), b.height.toFloat())
+            val project = a.playback.previewProject ?: editor.project
+            val zoom = inspection.zoom
+            inspection.configure(width - inset * 2, height.toFloat(), project.width.toFloat(), project.height.toFloat())
+            if (inspection.zoom != zoom) a.playback.inspect(inspection.zoom)
             c.save()
             c.clipRect(inset, 0f, width - inset, height.toFloat())
             c.translate(inspection.x, inspection.y)
@@ -4941,10 +5175,16 @@ class Panels(private val a: MainActivity) {
                                     .coerceIn(lower, upper)
                                     .toString()
                         } else if (fx.kind == "Placement" && fx.number("reframe") == 1f) {
+                            if (fx.motion != null) {
+                                val zoom = fx.number("contentZoom", 1f)
+                                fx.values["frameX"] = (fx.number("frameX", .5f) - dx / fx.number("w", 1f) / zoom).coerceIn(0f, 1f).toString()
+                                fx.values["frameY"] = (fx.number("frameY", .5f) - dy / fx.number("h", 1f) / zoom).coerceIn(0f, 1f).toString()
+                            } else {
                             fx.values["panX"] =
                                 (fx.number("panX") + dx / fx.number("w", 1f))
                                     .coerceIn(-2f, 2f)
                                     .toString()
+                            }
                             fx.values["panY"] =
                                 (fx.number("panY") + dy / fx.number("h", 1f))
                                     .coerceIn(-2f, 2f)
@@ -5021,6 +5261,7 @@ class Panels(private val a: MainActivity) {
                 0x02000104 -> toggleInspection()
                 else -> return super.performAccessibilityAction(action, arguments)
             }
+            a.playback.inspect(inspection.zoom)
             invalidate()
             return true
         }

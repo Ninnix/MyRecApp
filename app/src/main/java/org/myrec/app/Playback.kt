@@ -63,8 +63,15 @@ class Playback(
                 )
         }
 
-    var frameWidth = 768
-    var frameHeight = 432
+    private var inspectionZoom = 1f
+    private val refreshInspection = Runnable { if (!playing && !closed) refresh() }
+
+    fun inspect(zoom: Float) {
+        if (inspectionZoom == zoom) return
+        inspectionZoom = zoom
+        ui.removeCallbacks(refreshInspection)
+        ui.postDelayed(refreshInspection, 85)
+    }
     private val tick =
         object : Runnable {
             override fun run() {
@@ -98,8 +105,10 @@ class Playback(
             return
         }
         val ratio = snapshot.width.toDouble() / snapshot.height
-        val w = if (ratio >= 1) 768 else (768 * ratio).toInt().coerceAtLeast(2)
-        val h = if (ratio >= 1) (768 / ratio).toInt().coerceAtLeast(2) else 768
+        val edge = if (inspectionZoom <= 1f) 768 else
+            (768 * inspectionZoom).roundToInt().coerceAtMost(min(4096, max(snapshot.width, snapshot.height)))
+        val w = if (ratio >= 1) edge else (edge * ratio).toInt().coerceAtLeast(2)
+        val h = if (ratio >= 1) (edge / ratio).toInt().coerceAtLeast(2) else edge
         val preparation = preparationEpoch
         val original = originalStabilization
         video.execute {
@@ -245,6 +254,7 @@ class Playback(
 
     fun close() {
         closed = true
+        ui.removeCallbacks(refreshInspection)
         pendingRender = null
         pause()
         video.execute { frames.close() }

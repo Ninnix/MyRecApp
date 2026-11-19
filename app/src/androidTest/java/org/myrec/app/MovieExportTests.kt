@@ -55,6 +55,43 @@ object MovieExportTests {
         fun copy(target: File, progress: (Float) -> Unit) {
             renders++; good.copyTo(target); progress(1f)
         }
+        test("a reopened export resumes verified HEVC sections at the selected frame rate") {
+            val edited = Project(name = "Resumable export", width = 320, height = 180,
+                clips = MutableList(9) { index -> Clip(path = source.path, sourceOut = .4, start = index * .4) },
+                movieSettings = MovieSettings(ExportResolution.Project, 24, ExportColor.SDR_HEVC))
+            check(a.store.decode(a.store.encode(edited)).movieSettings == edited.movieSettings)
+            val settings = edited.movieSettings
+            val ticket = exports.ticket(a.store, edited, 320, 180, settings.color, fps = 24)
+            val section = File(directory, "${edited.id}/${ticket.key}.resume/frames-0-72.mp4")
+            val job = Export(a.audioCache)
+            fun run(owner: MovieExports, export: Export, report: (Float) -> Unit) = owner.resumable(
+                a.store, edited, 320, 180, settings.color, 24, { export.paused }, report,
+            ) { file, checkpoint, progress -> export.render(edited, file, 320, 180, settings.color, 24, checkpoint, progress) }
+            val interrupted = runCatching { run(exports, job) { if (section.isFile) job.paused = true } }
+            check(interrupted.exceptionOrNull() is java.io.InterruptedIOException && section.length() > 0) {
+                "Missing paused HEVC section: ${interrupted.exceptionOrNull()}"
+            }
+            val saved = section.lastModified()
+            check(MovieExports(directory).hasCheckpoint(a.store, edited, 320, 180, settings.color, 24))
+            var reusedSection = false
+            val completed = run(MovieExports(directory), Export(a.audioCache)) { fraction ->
+                if (fraction > .5f && section.lastModified() == saved) reusedSection = true
+            }
+            check(reusedSection && !section.exists())
+            val extractor = android.media.MediaExtractor()
+            try {
+                extractor.setDataSource(completed.file.path)
+                val index = (0 until extractor.trackCount).first {
+                    extractor.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME) == "video/hevc"
+                }
+                extractor.selectTrack(index)
+                val times = mutableListOf<Long>()
+                do { if (extractor.sampleTime >= 0) times.add(extractor.sampleTime) } while (extractor.advance())
+                check(times.size == 87 && times.zipWithNext().all { (left, right) -> right - left in 41663L..41670L }) {
+                    "HEVC segment clock is discontinuous: ${times.size} frames, $times"
+                }
+            } finally { extractor.release() }
+        }
         test("completed movie receipts reuse verified picture and sound across reopening without encoding") {
             completed = exports.movie(a.store, project, 160, 90, ExportColor.SDR) { target, progress ->
                 renders++; Export(a.audioCache).run(project, target, 160, 90, ExportColor.SDR, progress)
@@ -232,8 +269,34 @@ object MovieExportTests {
                 check(options.performClick())
                 check(find(a.choices!!.contentView,"Export video")!!.performClick())
                 check(a.editor.project.id == project.id) { "Project-card export opened ${a.editor.project.id}, expected ${project.id}; ${a.store.problems}" }
-                check(find(a.root,"Video quality") != null) { "Project-card export did not open movie settings" }
+                check(find(a.root,"Resolution, Project size") != null) { "Project-card export did not open movie settings" }
                 a.panels.close()
+            }
+        }
+        test("export settings keep readable labels and values at large text size") {
+            onMain {
+                val resources = a.resources
+                val original = android.content.res.Configuration(resources.configuration)
+                @Suppress("DEPRECATION")
+                fun font(configuration: android.content.res.Configuration) {
+                    resources.updateConfiguration(configuration, resources.displayMetrics)
+                }
+                try {
+                    a.editor.load(project.duplicate().apply {
+                        movieSettings = MovieSettings(ExportResolution.FullHD, 50, ExportColor.SDR_HEVC)
+                    })
+                    font(android.content.res.Configuration(original).apply { fontScale = 2f })
+                    a.panels.export()
+                    for (label in listOf("Resolution, 1080p", "Frame rate, 50 fps", "Codec and color, SDR · HEVC")) {
+                        val control = checkNotNull(find(a.root, label)) as android.widget.TextView
+                        control.measure(View.MeasureSpec.makeMeasureSpec((220 * resources.displayMetrics.density).toInt(), View.MeasureSpec.EXACTLY),
+                            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+                        check(control.isClickable && control.lineCount >= 2 && control.measuredHeight >= control.layout.height) { label }
+                    }
+                } finally {
+                    a.panels.close()
+                    font(original)
+                }
             }
         }
     }

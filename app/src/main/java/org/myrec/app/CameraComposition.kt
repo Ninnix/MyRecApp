@@ -14,6 +14,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.*
 
+// Half a 30 fps frame plus a few milliseconds for capture jitter.
+private const val MAX_PAIR_SKEW_NS=20_000_000L
+
 class CameraComposition(
     private val preview: Surface,
     private var width: Int,
@@ -49,8 +52,8 @@ class CameraComposition(
             override fun run() {
                 if (closed || encoder == EGL14.EGL_NO_SURFACE) return
                 try {
-                    val stamp=if (inputs.isNotEmpty() && inputs.all { it.ready }) (inputs.maxOf { it.time }*1e9).toLong() else Long.MIN_VALUE
-                    if (stamp>=encoderStartedAt && stamp>encoderTimestamp) {
+                    val stamp=inputs.maxOfOrNull { it.frame.time } ?: Long.MIN_VALUE
+                    if (stamp>encoderTimestamp && inputs.all { it.frame.time>=encoderStartedAt }) {
                         encoderFrameTime=stamp
                         draw(encoder, encoderWidth, encoderHeight, orientation)
                         encoderTimestamp=stamp
@@ -66,6 +69,8 @@ class CameraComposition(
             }
         }
     private var program = 0
+    private var retainedProgram = 0
+    private var frameCopy: CameraFrameCopy? = null
     private var closed = false
     private val inputs = mutableListOf<Input>()
     private val vertices =
@@ -91,6 +96,14 @@ class CameraComposition(
 
     private data class Faces(val time: Double,val boxes: List<CameraRect>,val zoom: Double)
 
+    private class Frame(val slot: Int) {
+        val transform=FloatArray(16)
+        var time=Long.MIN_VALUE
+        var dataSpace=0
+        var reverseX=false
+        val texture=CameraFrameCopy.Texture()
+    }
+
     private class Input(
         val texture: Int,
         val image: SurfaceTexture?,
@@ -105,10 +118,12 @@ class CameraComposition(
         var hardwareZoom: Double,
         val pixels: P010Texture?=null,
     ) {
-        val transform = FloatArray(16)
-        var ready = false
-        var dataSpace = 0
-        var timestamp=0L
+        // Two pending frames can absorb delivery jitter while the displayed frame stays intact.
+        val frames=Array(3,::Frame)
+        val pending=java.util.ArrayDeque<Frame>(frames.size-1)
+        var frame=frames[0]
+        var receivedTimestamp=0L
+        var receivedTime=Long.MIN_VALUE
         val faces=java.util.ArrayDeque<Faces>()
         var target=CameraFaceTarget()
         var horizon=HorizonEstimate()
@@ -198,15 +213,6 @@ class CameraComposition(
         window =
             EGL14.eglCreateWindowSurface(display, config, preview, intArrayOf(EGL14.EGL_NONE), 0)
         check(EGL14.eglMakeCurrent(display, window, window, context))
-        fun shader(type: Int, source: String): Int {
-            val id = GLES20.glCreateShader(type)
-            GLES20.glShaderSource(id, source)
-            GLES20.glCompileShader(id)
-            val status = IntArray(1)
-            GLES20.glGetShaderiv(id, GLES20.GL_COMPILE_STATUS, status, 0)
-            check(status[0] != 0) { GLES20.glGetShaderInfoLog(id) }
-            return id
-        }
         if (hdr) {
             val support = HdrGraphics.evaluate(
                 EGL14.eglQueryString(display,EGL14.EGL_EXTENSIONS).orEmpty(),
@@ -214,6 +220,10 @@ class CameraComposition(
                 GLES20.glGetString(GLES20.GL_RENDERER).orEmpty(),allowPlanar=planar)
             check(support.reason == null) { "${support.reason} (${support.missing})" }
         }
+        program=compositionProgram()
+    }
+
+    private fun compositionProgram(retained: Boolean=false): Int {
         val vertex =
             if (hdr)
                 """
@@ -236,10 +246,14 @@ class CameraComposition(
             if (hdr)
                 """
             #version 300 es
-            ${if (planar) "" else "#extension GL_OES_EGL_image_external_essl3 : require\n#extension GL_EXT_YUV_target : require"}
+            ${if (planar || retained) "" else "#extension GL_OES_EGL_image_external_essl3 : require\n#extension GL_EXT_YUV_target : require"}
             precision highp float;
             in vec2 v; in vec2 world; out vec4 color; uniform float side; uniform vec4 circle; uniform float diagonalFlip; uniform vec4 separator;
-            ${if (planar) P010Texture.shader else "uniform __samplerExternal2DY2YEXT image;"} uniform float tone; uniform float fullRange; uniform float primaries;
+            ${when {
+                planar -> P010Texture.shader
+                retained -> "uniform highp sampler2D image;"
+                else -> "uniform __samplerExternal2DY2YEXT image;"
+            }} uniform float tone; uniform float fullRange; uniform float primaries;
             vec3 linearHLG(vec3 x){return mix(x*x/3.,(exp((x-.55991073)/.17883277)+.28466892)/12.,step(vec3(.5),x));}
             vec3 encodeHLG(vec3 x){return mix(sqrt(3.*max(x,vec3(0.))),.17883277*log(max(12.*x-.28466892,vec3(.000001)))+.55991073,step(vec3(1./12.),x));}
             vec3 srgb(vec3 x){return mix(12.92*x,1.055*pow(max(x,vec3(0.)),vec3(1./2.4))-.055,step(vec3(.0031308),x));}
@@ -280,8 +294,8 @@ class CameraComposition(
                     .trimIndent()
             else
                 """
-            #extension GL_OES_EGL_image_external : require
-            precision highp float; varying vec2 v; varying vec2 world; uniform samplerExternalOES image; uniform float side; uniform vec4 circle; uniform float diagonalFlip; uniform vec4 separator;
+            ${if (retained) "" else "#extension GL_OES_EGL_image_external : require"}
+            precision highp float; varying vec2 v; varying vec2 world; uniform ${if (retained) "sampler2D" else "samplerExternalOES"} image; uniform float side; uniform vec4 circle; uniform float diagonalFlip; uniform vec4 separator;
             void main(){if(circle.z>0. && length((world-circle.xy)/circle.zw)>1.)discard;
                 float distance=diagonalFlip>.5?world.y-world.x:world.x+world.y-1.;
                 if(side<-.5 && distance>0.)discard;
@@ -293,17 +307,7 @@ class CameraComposition(
                 gl_FragColor=pixel;}
         """
                     .trimIndent()
-        val v = shader(GLES20.GL_VERTEX_SHADER, vertex)
-        val f = shader(GLES20.GL_FRAGMENT_SHADER, fragment)
-        program = GLES20.glCreateProgram()
-        GLES20.glAttachShader(program, v)
-        GLES20.glAttachShader(program, f)
-        GLES20.glLinkProgram(program)
-        GLES20.glDeleteShader(v)
-        GLES20.glDeleteShader(f)
-        val status = IntArray(1)
-        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0)
-        check(status[0] != 0) { GLES20.glGetProgramInfoLog(program) }
+        return cameraProgram(vertex,fragment)
     }
 
     fun input(width: Int, height: Int, sensor: Int, front: Boolean, primaries: Int = 0,
@@ -315,10 +319,11 @@ class CameraComposition(
                 val source=Input(0,null,pixels.reader.surface,width,height,sensor,front,primaries,id,realtime,zoom,pixels)
                 inputs.add(source)
                 pixels.reader.setOnImageAvailableListener({ reader ->
-                    if (!closed && source in inputs) try { reader.acquireLatestImage()?.use { frame ->
-                        pixels.upload(frame,source.transform);source.timestamp=frame.timestamp
-                        if (android.os.Build.VERSION.SDK_INT>=33) source.dataSpace=frame.dataSpace
-                        source.ready=true;updateAssistance(source);render()
+                    if (!closed && source in inputs) try { reader.acquireLatestImage()?.use { image ->
+                        val dataSpace=if (android.os.Build.VERSION.SDK_INT>=33) image.dataSpace else 0
+                        receive(source,image.timestamp,dataSpace) { frame ->
+                            pixels.upload(image,frame.transform,frame.slot)
+                        }
                     } } catch (e: Throwable) { failure(e) }
                 },handler)
                 return@call source.surface
@@ -336,16 +341,17 @@ class CameraComposition(
             inputs.add(source)
             image.setOnFrameAvailableListener(
                 {
-                    if (!closed)
+                    if (!closed && source in inputs)
                         try {
                             image.updateTexImage()
-                            if (android.os.Build.VERSION.SDK_INT >= 33)
-                                source.dataSpace = image.dataSpace
-                            source.timestamp=image.timestamp
-                            image.getTransformMatrix(source.transform)
-                            source.ready = true
-                            updateAssistance(source)
-                            render()
+                            val dataSpace=if (android.os.Build.VERSION.SDK_INT>=33) image.dataSpace else 0
+                            receive(source,image.timestamp,dataSpace) { frame ->
+                                image.getTransformMatrix(frame.transform)
+                                if (inputs.size==2) {
+                                    val copy=frameCopy ?: CameraFrameCopy(hdr).also { frameCopy=it }
+                                    copy.store(source.texture,frame.texture,width,height,frame.transform)
+                                }
+                            }
                         } catch (e: Throwable) {
                             failure(e)
                         }
@@ -354,6 +360,53 @@ class CameraComposition(
             )
             source.surface
         }
+
+    private inline fun receive(source: Input, timestamp: Long, dataSpace: Int, fill: (Frame)->Unit) {
+        val paired=inputs.size==2
+        if (paired && timestamp<=source.receivedTimestamp) return
+        val now=System.nanoTime()
+        val time=when {
+            timestamp<=0 -> now
+            source.realtime -> timestamp-(android.os.SystemClock.elapsedRealtimeNanos()-now)
+            else -> timestamp
+        }
+        if (paired && time<=source.receivedTime) return
+        source.receivedTimestamp=timestamp.coerceAtLeast(0L)
+        source.receivedTime=time
+        val frame=if (paired) {
+            if (source.pending.size==source.frames.size-1) source.pending.removeFirst()
+            source.frames.first { it!==source.frame && it !in source.pending }
+        } else source.frame
+        fill(frame)
+        frame.time=time
+        frame.dataSpace=dataSpace
+        val m=frame.transform
+        frame.reverseX=source.front && m[0]*m[5]-m[1]*m[4]>0
+        if (frame.texture.name!=0) Matrix.setIdentityM(m,0)
+        if (paired) {
+            source.pending.addLast(frame)
+            if (!pairFrames()) return
+        } else updateAssistance(source)
+        render()
+    }
+
+    private fun pairFrames(): Boolean {
+        val left=inputs[0]
+        val right=inputs[1]
+        while (left.pending.isNotEmpty() && right.pending.isNotEmpty()) {
+            val skew=left.pending.first.time-right.pending.first.time
+            if (abs(skew)<=MAX_PAIR_SKEW_NS) {
+                left.frame=left.pending.removeFirst()
+                right.frame=right.pending.removeFirst()
+                updateAssistance(left)
+                updateAssistance(right)
+                return true
+            }
+            // With ordered timestamps, the earlier head cannot match a later frame.
+            (if (skew<0) left else right).pending.removeFirst()
+        }
+        return false
+    }
 
     fun configure(mode: Int, flip: Boolean, rotation: Int, w: Int, h: Int) = call {
         layout = mode
@@ -401,8 +454,7 @@ class CameraComposition(
     } }
     private fun updateAssistance(source: Input) {
         val index=inputs.indexOf(source)
-        val time=if (source.timestamp<=0) System.nanoTime()/1e9
-            else (source.timestamp-(if (source.realtime) android.os.SystemClock.elapsedRealtimeNanos()-System.nanoTime() else 0))/1e9
+        val time=source.frame.time/1e9
         val rotation=CameraOrientation.recording(source.sensor,displayRotation,source.front)
         val previous=source.time
         if (source.rotation!=rotation || time-previous !in 0.0..0.5) {
@@ -483,7 +535,7 @@ class CameraComposition(
     fun snapshot(index: Int,w: Int,h: Int)=readFrame(index,w,h)
     fun previewFrame(w: Int,h: Int)=readFrame(-1,w,h)
     private fun readFrame(index: Int,w: Int,h: Int): Bitmap?=call {
-        if (inputs.isEmpty() || if (index>=0) inputs.getOrNull(index)?.ready!=true else !inputs.all { it.ready }) return@call null
+        if (!hasFrame() || index>=inputs.size) return@call null
         if (frameSurface==EGL14.EGL_NO_SURFACE || frameWidth!=w || frameHeight!=h) {
             if (frameSurface!=EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display,frameSurface)
             frameSurface=EGL14.EGL_NO_SURFACE
@@ -618,9 +670,11 @@ class CameraComposition(
     }
 
     @Volatile var previewCovered=false
+    private fun hasFrame()=inputs.isNotEmpty() && inputs.all { it.frame.time!=Long.MIN_VALUE }
+
     private fun render() {
         // The effect frame covers this surface; camera inputs and encoder draws still advance.
-        if (previewCovered || inputs.isEmpty() || !inputs.all { it.ready }) return
+        if (previewCovered || !hasFrame()) return
         draw(window, width, height, 0)
     }
 
@@ -631,6 +685,10 @@ class CameraComposition(
         GLES20.glViewport(0, 0, w, h)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        val program=if (inputs.size==2 && !planar) {
+            if (retainedProgram==0) retainedProgram=compositionProgram(retained=true)
+            retainedProgram
+        } else program
         GLES20.glUseProgram(program)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"diagonalFlip"),if (geometry.diagonalFlipped) 1f else 0f)
         GLES20.glUniform1f(
@@ -696,8 +754,9 @@ class CameraComposition(
             vertices.position(2)
             GLES20.glVertexAttribPointer(uv, 2, GLES20.GL_FLOAT, false, 16, vertices)
             GLES20.glEnableVertexAttribArray(uv)
-            val base = source.transform.copyOf()
-            if (source.front && base[0] * base[5] - base[1] * base[4] > 0) {
+            val frame=source.frame
+            val base = frame.transform.copyOf()
+            if (frame.reverseX) {
                 Matrix.translateM(base, 0, 1f, 0f, 0f)
                 Matrix.scaleM(base, 0, -1f, 1f, 1f)
             }
@@ -719,15 +778,16 @@ class CameraComposition(
                 GLES20.glGetUniformLocation(program, "fullRange"),
                 if (
                     android.os.Build.VERSION.SDK_INT >= 33 &&
-                        android.hardware.DataSpace.getRange(source.dataSpace) ==
+                        android.hardware.DataSpace.getRange(frame.dataSpace) ==
                             android.hardware.DataSpace.RANGE_FULL
                 )
                     1f
                 else 0f,
             )
-            if (source.pixels!=null) source.pixels.bind(program) else {
+            if (source.pixels!=null) source.pixels.bind(program,frame.slot) else {
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, source.texture)
+                if (frame.texture.name!=0) GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,frame.texture.name)
+                else GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, source.texture)
                 GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"image"),0)
             }
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -744,13 +804,15 @@ class CameraComposition(
 
     internal val inputFormat get()=if (planar && android.os.Build.VERSION.SDK_INT>=33) android.graphics.ImageFormat.YCBCR_P010 else android.graphics.ImageFormat.PRIVATE
 
-    internal fun inputDataSpaces(): List<Int> = call { inputs.map { it.dataSpace } }
+    internal fun inputDataSpaces(): List<Int> = call { inputs.map { it.frame.dataSpace } }
 
     fun clearInputs() = call {
+        frameCopy?.close();frameCopy=null
         inputs.forEach {
             it.image?.setOnFrameAvailableListener(null)
             it.surface.release()
             it.image?.release();it.pixels?.close()
+            it.frames.forEach { frame -> frame.texture.close() }
             GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
         }
         inputs.clear(); reserve=1.0; singleFraming=CameraFraming(); manualFraming=false
@@ -762,13 +824,8 @@ class CameraComposition(
         call {
             EGL14.eglMakeCurrent(display, window, window, context)
             readback.close()
-            inputs.forEach {
-                it.image?.setOnFrameAvailableListener(null)
-                it.surface.release()
-                it.image?.release();it.pixels?.close()
-                GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
-            }
-            inputs.clear()
+            clearInputs()
+            GLES20.glDeleteProgram(retainedProgram)
             GLES20.glDeleteProgram(program)
             EGL14.eglMakeCurrent(
                 display,

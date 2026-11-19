@@ -247,6 +247,7 @@ data class Project(
     var fps: Int = 30,
     var captureCount: Int = 0,
     val bookmarks: MutableList<SourceBookmark> = mutableListOf(),
+    var movieSettings: MovieSettings = MovieSettings(),
 ) {
     val duration
         get() = clips.maxOfOrNull { it.end } ?: 0.0
@@ -379,6 +380,7 @@ class Editor(var project: Project = Project()) {
 
     private fun materialize(saved: Project): Project = saved.duplicate().also { value ->
         value.name = project.name
+        value.movieSettings = project.movieSettings
         for (capture in captures.drop(value.captureCount)) {
             val clip = capture.duplicate()
             clip.start = value.duration
@@ -761,6 +763,10 @@ class Editor(var project: Project = Project()) {
                             val base = r?.start ?: targets().minOfOrNull { it.start } ?: 0.0
                             motion = motion!!.anchored(c, c.start - base)
                         }
+                        if (kind in listOf("Crop", "Image") && motion?.clock?.isEmpty() == true) {
+                            val start = if (kind == "Image") origin + effect.from else r?.start ?: base
+                            motion = motion!!.anchored(c, c.start - start)
+                        }
                         if (title) {
                             from = max(0.0, origin + effect.from - c.start)
                             to = min(c.duration, origin + effect.to - c.start)
@@ -858,6 +864,7 @@ class Editor(var project: Project = Project()) {
         change {
             val effects = placements.toMutableMap()
             val order = tracks.toMutableMap()
+            val start = range?.start ?: project.clips.filter { it.id in effects }.maxOfOrNull { it.start } ?: 0.0
             range?.let { r ->
                 for (time in listOf(r.endInclusive, r.start)) {
                     for ((left, right) in splitAt(time, effects.keys.toSet())) {
@@ -877,6 +884,7 @@ class Editor(var project: Project = Project()) {
                     placement.copyEffect(true).apply {
                         if (range != null) from = 0.0
                         to = if (range != null) clip.duration else min(to, clip.duration)
+                        if (motion?.clock?.isEmpty() == true) motion = motion!!.anchored(clip, clip.start - start)
                     }
                 )
                 order[clip.id]?.let { clip.track = max(0, it) }
@@ -910,9 +918,8 @@ class Editor(var project: Project = Project()) {
         return project.clips.firstOrNull { it.id == value.leftId }?.end ?: right?.start ?: value.at
     }
 
-    private fun shiftFrom(root: Clip, delta: Double, excluded: Clip?, ignored: Transition?) {
-        val from = root.start
-        val following = mutableSetOf(root.id)
+    private fun transitionTail(first: String, ignored: Transition? = null): Set<String> {
+        val following = mutableSetOf(first)
         var added: Boolean
         do {
             added = false
@@ -921,18 +928,27 @@ class Editor(var project: Project = Project()) {
             )
                 if (following.add(tr.rightId!!)) added = true
         } while (added)
-        // A short clip can temporarily move its outgoing overlap before its own start.
-        val parts = project.clips.filter { it.id in following }
-        val moving =
-            project.clips.filter { clip ->
-                (excluded == null || !samePart(clip, excluded)) &&
-                    (clip.start >= from - .001 || parts.any { samePart(it, clip) })
+        return following
+    }
+
+    private fun productionAfter(from: Double): Set<String> =
+        TimelineRules.groups(project).filter { group ->
+            TimelineRules.productionGroup(project, group) && project.clips.any {
+                it.video && it.id in group && it.start >= from - .000001
             }
+        }.flatten().toSet()
+
+    private fun shiftFrom(root: Clip, delta: Double, excluded: Clip?, ignored: Transition?) {
+        val following = transitionTail(root.id, ignored)
+        val excludedIds = project.clips.filter { excluded != null && (it.id == excluded.id || samePart(it, excluded)) }.map { it.id }
+        val movingIds = (TimelineMove.linked(project, following) + productionAfter(root.start)).filter { id ->
+            id !in excludedIds && project.clips.any { it.id == id && (it.start >= root.start - .000001 || id in following || !it.video) }
+        }.toSet()
+        val moving = project.clips.filter { it.id in movingIds }
         moving.forEach { it.start += delta }
         project.transitions
             .filter {
-                it !== ignored &&
-                    (it.at >= from || it.leftId in following || it.rightId in following)
+                it !== ignored && setOfNotNull(it.leftId, it.rightId).all(movingIds::contains)
             }
             .forEach { it.at += delta }
     }
@@ -969,16 +985,18 @@ class Editor(var project: Project = Project()) {
     }
 
     private fun placeTransition(value: Transition) {
+        val identified = value.leftId != null || value.rightId != null
+        val outgoing = project.clips.firstOrNull { it.id == value.leftId }
+        val incoming = project.clips.firstOrNull { it.id == value.rightId }
+        if ((value.leftId != null && outgoing == null) || (value.rightId != null && incoming == null)) return
         val existing = project.transitions.firstOrNull { it.id == value.id }
         val boundary = if (existing != null) detachTransition(existing) else value.at
         val left =
-            project.clips.firstOrNull { it.id == value.leftId }
-                ?: project.clips
+            if (identified) outgoing else project.clips
                     .filter { it.video && abs(it.end - boundary) < .02 }
                     .maxByOrNull { it.track }
         val right =
-            project.clips.firstOrNull { it.id == value.rightId }
-                ?: project.clips
+            if (identified) incoming else project.clips
                     .filter { it.video && abs(it.start - boundary) < .02 }
                     .maxByOrNull { it.track }
         if (left == null && right == null) return
@@ -988,6 +1006,15 @@ class Editor(var project: Project = Project()) {
             .forEach { it.group = source.group }
         val maximum = transitionMaximum(left, right)
         if (maximum <= 0) return
+        project.transitions.removeAll {
+            (left != null && it.leftId == left.id) || (right != null && it.rightId == right.id)
+        }
+        if (left != null && right != null) {
+            val members = setOf(ArchiveGeometry.owner(left), ArchiveGeometry.owner(right))
+            for (clip in project.clips) clip.effects.removeAll {
+                it.kind == "Placement" && it.values["members"]?.split(',')?.toSet() == members
+            }
+        }
         val duration = value.duration.coerceIn(min(.01, maximum), maximum)
         val result =
             value.copy(
@@ -1037,15 +1064,24 @@ class Editor(var project: Project = Project()) {
             it.from *= ratio
             it.to = min(clip.duration, it.to * ratio)
         }
-        if (!ripple) return
+        if (!ripple || abs(delta) < .000001) return
+        val linked = TimelineMove.linked(project, setOf(clip.id))
+        val retimingPictureAndSound = targets().any { it.video != clip.video && it.audio != clip.audio && samePart(it, clip) }
+        if (!TimelineRules.productionGroup(project, linked) &&
+            (clip.link == null || !clip.video) && !retimingPictureAndSound) return
         val overlap =
             project.transitions.filter { it.leftId == clip.id }.maxOfOrNull { it.overlap } ?: 0.0
         val from = oldEnd - overlap
-        project.clips
-            .filter { it !== clip && it.start >= from - .001 }
-            .forEach { it.start += delta }
-        project.transitions.filter { it.at >= from }.forEach { it.at += delta }
-        project.shiftBookmarks(from,delta)
+        val incoming = project.transitions.firstOrNull { it.rightId == clip.id }?.leftId
+        val overlay = clip.video && project.clips.any {
+            it.video && it.track < clip.track && it.id != incoming && it.contains(clip.start)
+        }
+        val chain = TimelineMove.linked(project, transitionTail(clip.id))
+        val tail = if (overlay) emptySet() else productionAfter(from)
+        val moving = (chain + tail).filter { id -> project.clips.any { it.id == id && !samePart(it, clip) } }.toSet()
+        shiftParts(moving, delta)
+        project.transitions.filter { it.leftId == clip.id }.forEach { it.at += delta }
+        if (!overlay) project.shiftBookmarks(from, delta)
     }
 
     private var clipboardBookmarks=emptyList<SourceBookmark>()
@@ -1211,14 +1247,7 @@ class Editor(var project: Project = Project()) {
 
     private fun openPictureTime(at: Double, length: Double, rightId: String? = null): Double {
         if (length <= .000001) return at
-        for (transition in project.transitions.filter { at > it.begin && at < it.end }.toList()) {
-            val right = transition.rightId
-            project.transitions.remove(transition)
-            if (right != null && (transition.overlap > 0 || transition.controls!=null && transition.overlap!=0.0)) {
-                val tail = TimelineMove.companions(project, setOf(right)).getValue(MoveScope.RIGHT)
-                shiftParts(tail, transition.overlap)
-            }
-        }
+        project.transitions.filter { at > it.begin && at < it.end }.toList().forEach(::detachTransition)
         val position = rightId?.let { id -> project.clips.firstOrNull { it.id == id }?.start } ?: at
         val pictures = project.clips.filter { it.video }.map { it.id }.toSet()
         val production = TimelineMove.linked(project, pictures)

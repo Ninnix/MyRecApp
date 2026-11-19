@@ -85,7 +85,9 @@ class MainActivity : Activity() {
     }
     private var importAsProject = false
     private var exporting: Export? = null
-    private var moviePermission: Triple<Int, Int, ExportColor>? = null
+    private var exportCanPause = false
+    private data class MovieRequest(val width: Int, val height: Int, val color: ExportColor, val fps: Int?)
+    private var moviePermission: MovieRequest? = null
     internal var choices: PopupWindow? = null
         private set
     internal var linkDialog: AlertDialog? = null
@@ -165,6 +167,7 @@ class MainActivity : Activity() {
                 },
             )
         panels = Panels(this)
+        editorView.onInspection = { if (!panels.isOpen) playback.inspect(it) }
         root.addView(editorView, FrameLayout.LayoutParams(-1, -1))
         editor.onChange = {
             saveProject()
@@ -190,6 +193,10 @@ class MainActivity : Activity() {
 
     private fun action(id: String) {
         if (id.startsWith("censor:")) { panels.censor(id.substringAfter(':')); return }
+        if (id.startsWith("transition:")) {
+            editor.project.transitions.firstOrNull { it.id == id.substringAfter(':') }?.let { panels.transition(it.copy()) }
+            return
+        }
         if (id.startsWith("effect:")) {
             panels.editExisting(id.substringAfter(':'))
             return
@@ -451,7 +458,7 @@ class MainActivity : Activity() {
         else if (code == 11) message("Microphone permission is needed for voiceover")
         if (code == 12) {
             val request = moviePermission; moviePermission = null
-            if (granted && request != null) export(request.first, request.second, request.third)
+            if (granted && request != null) export(request.width, request.height, request.color, request.fps)
             else message("Storage permission is needed to save a movie on Android 9")
         }
     }
@@ -1340,8 +1347,6 @@ class MainActivity : Activity() {
         val (w, h) = ProjectStore.shape(clip.path)
         editor.project.width = w
         editor.project.height = h
-        playback.frameWidth = if (w >= h) 768 else 432
-        playback.frameHeight = (playback.frameWidth.toFloat() * h / w).toInt()
     }
 
     internal var movieWriter: (File, () -> Boolean) -> Uri = ::writeMovie
@@ -1396,28 +1401,39 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun exportJob(title: String, prepare: (Export) -> MovieExports.Movie) {
+    private fun exportJob(title: String, resumable: Boolean = false, prepare: (Export) -> MovieExports.Movie) {
         if (exporting != null) return
         playback.pause()
         val job = Export(audioCache)
+        val project = editor.project.id
         exporting = job
-        panels.progress(title,0f) { job.cancelled = true }
+        exportCanPause = resumable
+        panels.progress(title, 0f, { job.cancelled = true }, if (resumable) ({ job.paused = true }) else null)
         worker.execute {
             var movie: MovieExports.Movie? = null
             try {
                 val ready = prepare(job); movie = ready
-                if (job.cancelled) throw java.io.InterruptedIOException("Export cancelled")
-                val uri = movieWriter(ready.file) { job.cancelled }
+                if (job.cancelled || job.paused) throw java.io.InterruptedIOException("Export interrupted")
+                val uri = movieWriter(ready.file) { job.cancelled || job.paused }
                 ui.post {
                     exporting = null
+                    exportCanPause = false
                     if (!isFinishing && !isDestroyed) movieFinished(uri,ready.file,!ready.reused)
                 }
             } catch (e: Exception) {
                 val completed = movie
+                if (resumable && job.cancelled) movieExports.discard(project)
                 ui.post {
                     exporting = null
+                    exportCanPause = false
                     if (isFinishing || isDestroyed) return@post
-                    panels.close(); message(e.message ?: "Export failed")
+                    panels.close()
+                    if (job.paused && !job.cancelled) {
+                        if (editor.project.id == project) panels.export()
+                        message(if (completed == null) "Export paused" else "Movie ready to save")
+                        return@post
+                    }
+                    message(e.message ?: "Export failed")
                     if (completed != null && completed.file.isFile && !job.cancelled) {
                         choose("Save completed movie",listOf("Retry saving","Save to file","Keep for later")) { action ->
                             when (action) {
@@ -1431,18 +1447,27 @@ class MainActivity : Activity() {
         }
     }
 
-    fun export(width: Int, height: Int, color: ExportColor = ExportColor.SDR) {
+    fun pendingMovie(width: Int, height: Int, color: ExportColor, fps: Int): Boolean =
+        movieExports.hasCheckpoint(store, editor.project, width, height, color, fps)
+
+    fun discardMovie() { if (exporting == null) movieExports.discard(editor.project.id) }
+
+    fun export(width: Int, height: Int, color: ExportColor = ExportColor.SDR, fps: Int? = null) {
         if (exporting != null || editor.project.duration <= 0) return
         if (Build.VERSION.SDK_INT <= 28 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            moviePermission = Triple(width,height,color)
+            moviePermission = MovieRequest(width, height, color, fps)
             requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),12)
             return
         }
         val snapshot = editor.project.duplicate()
-        exportJob("Exporting") { job ->
-            movieExports.movie(store,snapshot,width,height,color,cancelled = { job.cancelled },
+        exportJob("Exporting", resumable = fps != null) { job ->
+            if (fps == null) movieExports.movie(store,snapshot,width,height,color,cancelled = { job.cancelled },
                 progress = { progress -> ui.post { panels.updateProgress(progress) } }) { target,progress ->
                 job.run(snapshot,target,width,height,color,progress)
+            } else movieExports.resumable(store, snapshot, width, height, color, fps,
+                cancelled = { job.cancelled || job.paused }, progress = { value -> ui.post { panels.updateProgress(value) } }
+            ) { target, checkpoint, progress ->
+                job.render(snapshot, target, width, height, color, fps, checkpoint, progress)
             }
         }
     }
@@ -1561,6 +1586,11 @@ class MainActivity : Activity() {
         if (::editor.isInitialized) saveProject()
     }
 
+    override fun onStop() {
+        if (exportCanPause) exporting?.paused = true
+        super.onStop()
+    }
+
     @Deprecated("Platform back support")
     override fun onBackPressed() {
         when {
@@ -1589,7 +1619,7 @@ class MainActivity : Activity() {
         playback.close()
         mediaIndex.close()
         capture?.destroy()
-        exporting?.cancelled = true
+        exporting?.let { if (!it.paused) it.cancelled = true }
         worker.shutdown()
         super.onDestroy()
     }

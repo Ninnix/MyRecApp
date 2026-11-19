@@ -794,6 +794,11 @@ class ProjectStore(val root: File) {
             put("width", p.width)
             put("height", p.height)
             put("fps", p.fps)
+            if (p.movieSettings != MovieSettings()) put("movieSettings", JSONObject().apply {
+                put("resolution", p.movieSettings.resolution.name)
+                put("color", p.movieSettings.color.name)
+                p.movieSettings.fps?.let { put("fps", it) }
+            })
             put(
                 "clips",
                 JSONArray().apply {
@@ -898,6 +903,13 @@ class ProjectStore(val root: File) {
                 height = o.optInt("height", 1080),
                 fps = o.optInt("fps", 30),
                 captureCount = o.optInt("captureCount", 0),
+                movieSettings = o.optJSONObject("movieSettings")?.let { settings ->
+                    MovieSettings(
+                        ExportResolution.entries.firstOrNull { it.name == settings.optString("resolution") } ?: ExportResolution.Project,
+                        settings.optInt("fps").takeIf { it in MovieSettings.frameRates },
+                        ExportColor.entries.firstOrNull { it.name == settings.optString("color") } ?: ExportColor.SDR,
+                    )
+                } ?: MovieSettings(),
             )
         o.optJSONArray("bookmarks")?.let { marks ->
             require(marks.length()<=100000)

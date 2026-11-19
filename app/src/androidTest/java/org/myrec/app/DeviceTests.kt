@@ -2674,6 +2674,9 @@ class DeviceTests : Instrumentation() {
 
     private fun composition() {
         try {
+            test("dual compositor pairs timestamped pixels within 20 ms and resumes with fresh inputs") {
+                CameraPairingTest.run()
+            }
             for (hint in listOf(0, 90, 180, 270)) test(
                 "composition pixels match every layout, flip and selfie mirror at $hint degrees"
             ) {
@@ -2999,13 +3002,13 @@ class DeviceTests : Instrumentation() {
                     onMain { capture.setDualLayout(3) }
                     tap("dual")
                     snapshot("dual-diagonal-toolbar")
-                    tap("dualReset")
-                    check(capture.concurrentInputSizes().isEmpty()) {
-                        "Circular arrow did not return to normal capture"
-                    }
-                    snapshot("dual-normal-toolbar")
+                    tap("diagonalFlip")
                     tap("dualDone")
                     onMain { capture.setDualLayout(4) }
+                    check(capture.concurrentInputSizes().isEmpty()) {
+                        "Switching to normal capture left concurrent cameras open"
+                    }
+                    snapshot("dual-normal-toolbar")
                     Thread.sleep(1600)
                 }
             val id =

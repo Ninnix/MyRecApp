@@ -10,22 +10,48 @@ import kotlin.math.*
 
 class Export(private val cache: AudioCache) {
     @Volatile var cancelled = false
+    @Volatile var paused = false
+    private val interrupted get() = cancelled || paused
 
     private fun checkCancelled() {
-        if (cancelled) throw InterruptedIOException("Export cancelled")
+        if (interrupted) throw InterruptedIOException(if (paused && !cancelled) "Export paused" else "Export cancelled")
     }
 
     fun run(project: Project, target: File, width: Int, height: Int, color: ExportColor = ExportColor.SDR, progress: (Float) -> Unit) {
+        render(project, target, width, height, color, project.fps, null, progress)
+    }
+
+    internal fun render(project: Project, target: File, width: Int, height: Int, color: ExportColor,
+                        fps: Int, checkpoint: MovieCheckpoint?, progress: (Float) -> Unit) {
         require(project.duration > 0) { "The project is empty" }
         val video = File(target.parentFile, target.name + ".video.mp4")
         val audio = File(target.parentFile, target.name + ".audio.m4a")
         try {
-            encodeVideo(project, video, width, height, color) { progress(it * 0.8f) }
+            val count = ceil(project.duration * fps - 1e-7).toInt().coerceAtLeast(1)
+            val videos = Frames(cancelled = { interrupted }).use { frames ->
+                if (checkpoint == null) {
+                    encodeVideo(project, frames, video, width, height, color, fps, 0 until count, false) {
+                        progress(it * .8f / count)
+                    }
+                    listOf(video to 0L)
+                } else (0 until count step fps * 3).map { start ->
+                    checkCancelled()
+                    val end = min(count, start + fps * 3)
+                    val file = checkpoint.segment(start, end, ::checkCancelled) { output ->
+                        encodeVideo(project, frames, output, width, height, color, fps, start until end, true) {
+                            progress(it * .8f / count)
+                        }
+                    }
+                    progress(end * .8f / count)
+                    file to start * 1_000_000L / fps
+                }
+            }
             checkCancelled()
-            encodeAudio(project, audio) { progress(0.8f + it * 0.15f) }
-            val priming = Mp4Audio.delay(cache.head(audio.path, 12288))
+            val sound = if (checkpoint == null) audio.also { file -> encodeAudio(project, file) { progress(.8f + it * .15f) } }
+                else checkpoint.audio(::checkCancelled) { file -> encodeAudio(project, file) { progress(.8f + it * .15f) } }
+            val priming = Mp4Audio.delay(cache.head(sound.path, 12288))
             checkCancelled()
-            mux(video, audio, target)
+            mux(videos, sound, target)
             Mp4Audio.trim(target, Mp4Audio.PREFIX + priming, project.duration)
             progress(1f)
         } catch (e: Exception) {
@@ -39,23 +65,28 @@ class Export(private val cache: AudioCache) {
 
     private fun encodeVideo(
         project: Project,
+        frames: Frames,
         target: File,
         width: Int,
         height: Int,
         color: ExportColor,
-        progress: (Float) -> Unit,
+        fps: Int,
+        range: IntRange,
+        segmented: Boolean,
+        progress: (Int) -> Unit,
     ) {
         val hdr = color == ExportColor.HLG
-        val format = MediaFormat.createVideoFormat(if (hdr) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+        val format = MediaFormat.createVideoFormat(color.mime, width, height)
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
         format.setInteger(MediaFormat.KEY_COLOR_STANDARD, if (hdr) MediaFormat.COLOR_STANDARD_BT2020 else MediaFormat.COLOR_STANDARD_BT709)
         format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, if (hdr) MediaFormat.COLOR_TRANSFER_HLG else MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
         format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
         if (hdr) format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
         format.setInteger(MediaFormat.KEY_BIT_RATE, max(2_000_000, width * height * 6))
-        format.setInteger(MediaFormat.KEY_FRAME_RATE, project.fps)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-        val input = videoInput(format, hdr, width, height, project.fps)
+        if (segmented && android.os.Build.VERSION.SDK_INT >= 29) format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+        val input = videoInput(format, hdr, width, height, fps)
         val codec = input.first; val surface = input.second; val egl = input.third
         val muxer = MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var started = false
@@ -92,16 +123,13 @@ class Export(private val cache: AudioCache) {
             }
         }
         try {
-            Frames(cancelled = { cancelled }).use { frames ->
-                val count = ceil(project.duration * project.fps - 1e-7).toInt().coerceAtLeast(1)
-                for (i in 0 until count) {
-                    checkCancelled()
-                    drain(false)
-                    val bitmap = frames.render(project, i.toDouble() / project.fps, width, height, keepLinear = hdr)
-                    try { egl.draw(bitmap, i * 1_000_000_000L / project.fps) }
-                    finally { bitmap.recycle() }
-                    progress((i + 1f) / count)
-                }
+            for (i in range) {
+                checkCancelled()
+                drain(false)
+                val bitmap = frames.render(project, i.toDouble() / fps, width, height, keepLinear = hdr)
+                try { egl.draw(bitmap, (i - range.first) * 1_000_000_000L / fps) }
+                finally { bitmap.recycle() }
+                progress(i + 1)
             }
             codec.signalEndOfInputStream()
             drain(true)
@@ -163,7 +191,7 @@ class Export(private val cache: AudioCache) {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
             AudioMixer(project, cache).use { mixer ->
-                mixer.prepare({ cancelled })
+                mixer.prepare({ interrupted })
                 mixer.seek(0.0)
                 val content = (project.duration * 48000).roundToLong()
                 val count = content + Mp4Audio.PREFIX + Mp4Audio.TAIL
@@ -253,39 +281,45 @@ class Export(private val cache: AudioCache) {
         }
     }
 
-    private fun mux(video: File, audio: File, target: File) {
-        val extractors = listOf(MediaExtractor(), MediaExtractor())
+    private fun mux(videos: List<Pair<File, Long>>, audio: File, target: File) {
         val output = MediaMuxer(target.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var started = false
+        fun <T> read(file: File, block: (MediaExtractor) -> T): T {
+            val ex = MediaExtractor()
+            try { ex.setDataSource(file.path); ex.selectTrack(0); return block(ex) }
+            finally { ex.release() }
+        }
         try {
-            extractors[0].setDataSource(video.absolutePath)
-            extractors[1].setDataSource(audio.absolutePath)
-            val tracks = extractors.map { ex ->
-                ex.selectTrack(0)
-                output.addTrack(ex.getTrackFormat(0))
-            }
+            val pictureFormat = read(videos.first().first) { it.getTrackFormat(0) }
+            val picture = output.addTrack(pictureFormat)
+            val sound = read(audio) { output.addTrack(it.getTrackFormat(0)) }
             output.start()
             started = true
             val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
-            for ((i, ex) in extractors.withIndex()) while (true) {
-                checkCancelled()
-                buffer.clear()
-                val size = ex.readSampleData(buffer, 0)
-                if (size < 0) break
-                info.set(
-                    0,
-                    size,
-                    ex.sampleTime,
-                    if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0)
-                        MediaCodec.BUFFER_FLAG_KEY_FRAME
-                    else 0,
-                )
-                output.writeSampleData(tracks[i], buffer, info)
-                ex.advance()
+            fun append(ex: MediaExtractor, track: Int, offset: Long) {
+                while (true) {
+                    checkCancelled()
+                    buffer.clear()
+                    val size = ex.readSampleData(buffer, 0)
+                    if (size < 0) break
+                    val flag = if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                    info.set(0, size, offset + ex.sampleTime, flag)
+                    output.writeSampleData(track, buffer, info)
+                    ex.advance()
+                }
             }
+            for ((file, offset) in videos) read(file) { ex ->
+                if (offset > 0) {
+                    val format = ex.getTrackFormat(0)
+                    check((0..2).all { format.getByteBuffer("csd-$it") == pictureFormat.getByteBuffer("csd-$it") }) {
+                        "The encoder changed configuration between export sections"
+                    }
+                }
+                append(ex, picture, offset)
+            }
+            read(audio) { append(it, sound, 0L) }
         } finally {
-            extractors.forEach { it.release() }
             try {
                 if (started) output.stop()
             } finally {

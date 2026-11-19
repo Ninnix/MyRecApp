@@ -14,6 +14,8 @@ class EditorView(
 ) : View(context) {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val hits = mutableListOf<Pair<RectF, String>>()
+    private val hitLabels = mutableMapOf<String, String>()
+    private val accessible = EditorAccessibility(this, ::accessibilityItems)
     private var unit = 1f
     private var ox = 0f
     private var oy = 0f
@@ -32,6 +34,7 @@ class EditorView(
     var playing = false
     var fullscreen = false
     val inspection = PreviewViewport()
+    var onInspection: (Float) -> Unit = {}
     private var previewGesture = false
     private var panAnchored = false
     private var panX = 0f
@@ -39,6 +42,7 @@ class EditorView(
     private val previewPinch = InspectionGesture { factor, x, y, oldX, oldY ->
         inspection.scale(factor, x / unit - ox - previewBounds.left, y / unit - oy - previewBounds.top,
             oldX / unit - ox - previewBounds.left, oldY / unit - oy - previewBounds.top)
+        onInspection(inspection.zoom)
         moved = true
         invalidate()
     }
@@ -112,6 +116,7 @@ class EditorView(
 
     init {
         isFocusable = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
         contentDescription = "Video editor. Scroll timeline to scrub; pinch to zoom."
     }
 
@@ -141,6 +146,17 @@ class EditorView(
 
     private fun hit(r: RectF, id: String) {
         hits.add(r to id)
+    }
+
+    private fun activate(id: String) {
+        when {
+            id == "resetPreviewZoom" -> { inspection.reset(); onInspection(1f) }
+            id == "preview" -> action("play")
+            id == "moveChoose" -> pickingMoveBoundary = true
+            id == "moveBack" -> pickingMoveBoundary = false
+            else -> action(id)
+        }
+        invalidate()
     }
 
     internal fun controlBounds(id: String): RectF? = hits.lastOrNull { it.second == id }?.first?.let {
@@ -215,7 +231,7 @@ class EditorView(
             if (enabled) Color.WHITE else Color.rgb(65, 65, 68),
             Paint.Align.CENTER,
         )
-        if (enabled) hit(r, id)
+        if (enabled) { hit(r, id); hitLabels[id] = title }
     }
 
     fun icon(
@@ -435,6 +451,7 @@ class EditorView(
         canvas.scale(unit, unit)
         canvas.translate(ox, oy)
         hits.clear()
+        hitLabels.clear()
         if (fullscreen) {
             previewBounds = RectF(0f, 0f, bw, bh - 38)
             drawPreview(canvas, previewBounds)
@@ -520,7 +537,9 @@ class EditorView(
         rect(c, r, Color.BLACK)
         hit(RectF(r), "preview")
         bitmap?.let { b ->
-            inspection.configure(r.width(), r.height(), b.width.toFloat(), b.height.toFloat())
+            val before = inspection.zoom
+            inspection.configure(r.width(), r.height(), editor.project.width.toFloat(), editor.project.height.toFloat())
+            if (inspection.zoom != before) onInspection(inspection.zoom)
             val ratio = min(r.width() / b.width, r.height() / b.height) * inspection.zoom
             val dest =
                 RectF(
@@ -1026,7 +1045,7 @@ class EditorView(
                 if (symbol != null) icon(c, symbol, x + 13, y, 7f, color)
                 text(c, title, x + if (symbol == null) 12 else 27, y + 4, 11f, color)
                 val touch = RectF(bounds)
-                if (touch.intersect(left, y - 17, right, y + 17)) hit(touch, id)
+                if (touch.intersect(left, y - 17, right, y + 17)) { hit(touch, id); hitLabels[id] = title }
                 x += width + 5
             }
             val tr =
@@ -1201,9 +1220,7 @@ class EditorView(
                 if (moved) return true
                 val hit = hits.lastOrNull { it.first.contains(x, y) }?.second
                 if (hit != null) {
-                    if (hit == "resetPreviewZoom") { inspection.reset(); invalidate() }
-                    else if (hit == "preview") action("play")
-                    else if (hit == "play") {
+                    if (hit == "play") {
                         if (event.eventTime - lastPlayTap < 300) {
                             action("audition")
                             lastPlayTap = 0
@@ -1211,9 +1228,7 @@ class EditorView(
                             action("play")
                             lastPlayTap = event.eventTime
                         }
-                    } else if (hit == "moveChoose") { pickingMoveBoundary = true; invalidate() }
-                    else if (hit == "moveBack") { pickingMoveBoundary = false; invalidate() }
-                    else action(hit)
+                    } else activate(hit)
                 } else if (timeline.contains(x, y)) {
                     if (pickingMoveBoundary) {
                         boundaryChoices = editor.move?.boundaries?.filter { abs(xFor(it) - x) <= 14 } ?: emptyList()
@@ -1279,6 +1294,103 @@ class EditorView(
         return true
     }
 
+    private fun accessibilityItems(): List<EditorAccessibility.Item> = buildList {
+        fun bounds(rect: RectF): Rect? {
+            val result = Rect()
+            val pixels = RectF((rect.left + ox) * unit, (rect.top + oy) * unit,
+                (rect.right + ox) * unit, (rect.bottom + oy) * unit)
+            pixels.roundOut(result)
+            return result.takeIf { it.intersect(0, 0, width, height) }
+        }
+        fun label(id: String) = hitLabels[id] ?: when (id) {
+            "preview" -> if (playing) "Pause video preview" else "Play video preview"
+            "play" -> if (playing) "Pause playback" else "Play"
+            "previous" -> "Previous edit"
+            "next" -> "Next edit"
+            "previousMark" -> "Previous bookmark"
+            "forwardPoint" -> "Next bookmark"
+            "addMedia" -> "Add media at the playhead"
+            "fullscreen" -> if (fullscreen) "Exit full preview" else "Full preview"
+            "playbackSpeed" -> "Review speed"
+            "resetPreviewZoom" -> "Reset preview zoom"
+            "snap" -> "Snap to cuts"
+            "scale" -> "Timeline view span"
+            "clear" -> "Clear selection"
+            "empty" -> "Record or add a video"
+            else -> id.replace(Regex("([a-z])([A-Z])"), "\$1 \$2").replaceFirstChar { it.uppercase() }
+        }
+        for ((rect, id) in hits.asReversed().distinctBy { it.second }.asReversed()) {
+            val box = bounds(rect) ?: continue
+            val value = when (id) {
+                "snap" -> if (editor.snap) "On" else "Off"
+                "playbackSpeed" -> "${editor.playbackRate}×"
+                "preview" -> "${inspection.zoom}×"
+                else -> null
+            }
+            add(EditorAccessibility.Item("control:$id", label(id), box, value, click = { activate(id) }))
+        }
+        if (fullscreen || timeline.isEmpty) return@buildList
+        val duration = editor.project.duration
+        bounds(timeline)?.let { box ->
+            add(EditorAccessibility.Item("timeline", "Video and audio timeline", box, timeLabel(editor.cursor),
+                range = 0f..duration.toFloat(), progress = editor.cursor.toFloat(), adjust = { seek(it.toDouble()); invalidate() }))
+        }
+        if (moving) {
+            if (pickingMoveBoundary) for (time in editor.move?.boundaries.orEmpty()) {
+                val x = xFor(time)
+                if (x !in timeline.left..timeline.right) continue
+                bounds(RectF(x - 14, timeline.top + 18, x + 14, timeline.top + 52))?.let { box ->
+                    add(EditorAccessibility.Item("boundary:$time", "Place at ${timeLabel(time)}", box, click = {
+                        editor.placeMove(time); pickingMoveBoundary = false; invalidate()
+                    }))
+                }
+            }
+            return@buildList
+        }
+        var videoNumber = 0
+        var audioNumber = 0
+        for (clip in editor.project.clips) {
+            for (audio in listOf(false, true)) {
+                if (if (audio) !clip.audio else !clip.video) continue
+                val number = if (audio) ++audioNumber else ++videoNumber
+                if (clip.end <= start || clip.start >= start + span) continue
+                val rect = clipBounds(clip.id, audio) ?: continue
+                val box = Rect().also(rect::roundOut)
+                val interval = "${timeLabel(clip.start)} to ${timeLabel(clip.end)}"
+                val gain = if (audio) ", %+.1f dB".format(clip.gainDb) else ""
+                add(EditorAccessibility.Item("clip:$audio:${clip.id}", "${if (audio) "Audio" else "Video"} $number", box,
+                    interval + gain, clip.id in editor.selected,
+                    click = { editor.select(clip); invalidate() }, longClick = { editor.toggleSelection(clip); invalidate() },
+                    range = if (audio) -60f..24f else null, progress = clip.gainDb.coerceIn(-60f, 24f),
+                    adjust = if (audio) ({ value -> editor.change { clip.gainDb = value } }) else null, increment = .5f))
+            }
+        }
+        for (transition in editor.project.transitions) {
+            val x = xFor(transition.cut)
+            if (x !in timeline.left..timeline.right) continue
+            bounds(RectF(x - 12, timeline.top + 35, x + 12, timeline.top + 63))?.let { box ->
+                add(EditorAccessibility.Item("transition:${transition.id}", "${transition.kind} transition", box,
+                    timeLabel(transition.cut), abs(transition.cut - editor.cursor) < .001,
+                    click = { editor.clearSelection(); seek(transition.cut); action("transition:${transition.id}") }))
+            }
+        }
+        val picture = TimelineRules.union(editor.project.clips.filter { it.video }.map { TimelineSpan(it.start, it.end) })
+        val sites = listOf(0.0) + picture.zipWithNext().map { (left, _) -> left.end } + (picture.lastOrNull()?.end ?: duration)
+        for (time in sites.distinct()) {
+            val x = xFor(time)
+            if (x !in timeline.left..timeline.right) continue
+            bounds(RectF(x - 10, timeline.top, x + 10, timeline.top + 16))?.let { box ->
+                add(EditorAccessibility.Item("insert:$time", "Insert video at ${timeLabel(time)}", box, click = {
+                    editor.clearSelection(); seek(time); action("addVideo")
+                }))
+            }
+        }
+    }
+
+    override fun getAccessibilityNodeProvider(): android.view.accessibility.AccessibilityNodeProvider = accessible
+
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean = accessible.hover(event) || super.dispatchHoverEvent(event)
+
     override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
         super.onInitializeAccessibilityNodeInfo(info)
         for ((i, label) in listOf("Zoom in preview", "Zoom out preview", "Reset preview zoom").withIndex())
@@ -1294,6 +1406,7 @@ class EditorView(
             0x02000103 -> inspection.reset()
             else -> return super.performAccessibilityAction(action, arguments)
         }
+        onInspection(inspection.zoom)
         invalidate()
         return true
     }

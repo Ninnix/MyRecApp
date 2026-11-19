@@ -54,8 +54,14 @@ data class EffectMotion(
     val clock: List<EffectTimePoint> = emptyList(),
 ) {
     fun duplicate() = copy(a = a.toMap(), b = b.toMap(), clock = clock.toList())
-    fun anchored(clip: Clip, offset: Double) = copy(clock = listOf(
-        EffectTimePoint(clip.sourceIn, offset), EffectTimePoint(clip.sourceOut, offset + clip.duration)))
+    fun anchored(clip: Clip, offset: Double): EffectMotion {
+        val hold = clip.frozen
+        val points = if (hold != null) {
+            val start = hold.sourceTime + hold.offset
+            listOf(EffectTimePoint(start, 0.0), EffectTimePoint(start + clip.duration, clip.duration))
+        } else EffectPhase.anchor(clip, 0.0).clock
+        return copy(clock = points.map { it.copy(elapsed = it.elapsed + offset) })
+    }
 
     fun elapsed(source: Double): Double {
         if (clock.isEmpty()) return source
@@ -109,4 +115,29 @@ data class EffectMotion(
     }
 
     private fun wrap(value: Double) = value - 360 * floor((value + 180) / 360)
+}
+
+internal object TransformMotion {
+    fun pose(effect: Effect): Map<String, Double> {
+        val defaults = when (effect.kind) {
+            "Crop" -> mapOf("x" to .5, "y" to .5, "zoom" to 1.0, "rotation" to 0.0)
+            "Image" -> mapOf("x" to .5, "y" to .5, "size" to .3, "opacity" to 1.0)
+            else -> mapOf("x" to 0.0, "y" to 0.0, "w" to 1.0, "h" to 1.0,
+                "frameX" to .5, "frameY" to .5, "contentZoom" to 1.0,
+                "left" to 0.0, "right" to 1.0, "top" to 0.0, "bottom" to 1.0)
+        }
+        return defaults.mapValues { (key, value) -> effect.values[key]?.toDoubleOrNull() ?: value }
+    }
+
+    fun show(effect: Effect, pose: Map<String, Double>) {
+        for ((key, value) in pose) effect.values[key] = value.toString()
+    }
+
+    fun capture(effect: Effect, second: Boolean) {
+        val motion = effect.motion ?: return
+        val pose = pose(effect)
+        val updated = if (second) motion.copy(b = pose) else motion.copy(a = pose)
+        if (updated.valid(effect)) effect.motion = updated
+        else show(effect, if (second) motion.b else motion.a)
+    }
 }

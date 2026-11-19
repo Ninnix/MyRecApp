@@ -471,6 +471,47 @@ fun main() {
             near(e.project.duration, 5.0)
         }
     }
+    test("transition ripple carries production joins but leaves independent music and overlays") {
+        val a = Clip(path = "a.mp4", sourceOut = 3.0)
+        val b = Clip(path = "b.mp4", sourceOut = 3.0, start = 3.0)
+        val c = Clip(path = "c.mp4", sourceOut = 3.0, start = 6.0)
+        val score = Clip(path = "score.m4a", sourceOut = 5.0, start = 4.0, track = 1, video = false, linked = false)
+        val overlay = Clip(path = "overlay.mp4", sourceOut = 1.0, start = 5.0, track = 2, audio = false, linked = false)
+        val e = Editor(Project(clips = mutableListOf(a, b, c, score, overlay)))
+        e.putTransition(Transition(at = 6.0, duration = .4, leftId = b.id, rightId = c.id))
+        e.putTransition(Transition(at = 3.0, duration = .5, leftId = a.id, rightId = b.id))
+        near(b.start, 2.5); near(c.start, 5.1)
+        near(score.start, 4.0); near(overlay.start, 5.0)
+        near(e.project.transitions.first { it.leftId == b.id }.at, 5.3)
+        e.select(score); e.setRate(2.0)
+        near(c.start, 5.1); near(score.start, 4.0)
+        e.undo()
+        fun current(clip: Clip) = e.project.clips.single { it.id == clip.id }
+        e.select(current(a)); e.setRate(2.0)
+        near(current(b).start, 1.0); near(current(c).start, 3.6)
+        near(current(score).start, 4.0); near(current(overlay).start, 5.0)
+        e.undo()
+        e.select(current(b)); e.deleteSelection()
+        check(e.project.transitions.isEmpty())
+        near(current(c).start, 3.0)
+        near(current(score).start, 4.0)
+        near(current(overlay).start, 5.0)
+        e.undo()
+        check(e.project.transitions.size == 2)
+    }
+    test("a new dissolve replaces an opening fade on the same incoming edge") {
+        val a = Clip(path = "a.mp4", sourceOut = 3.0)
+        val b = Clip(path = "b.mp4", sourceOut = 3.0)
+        val e = Editor(Project(clips = mutableListOf(a, b)))
+        e.putTransition(Transition(at = 0.0, duration = .4, rightId = b.id))
+        e.select(b); e.moveSelection(3.0)
+        check(e.project.transitions.single().leftId == null)
+        e.putTransition(Transition(at = 3.0, duration = .5, leftId = a.id, rightId = b.id))
+        check(e.project.transitions.single().leftId == a.id)
+        near(b.start, 2.5)
+        e.undo()
+        check(e.project.transitions.single().leftId == null)
+    }
     test("copy and paste retain a transition and remap its clip references") {
         val e = fixture()
         e.cursor = 5.0

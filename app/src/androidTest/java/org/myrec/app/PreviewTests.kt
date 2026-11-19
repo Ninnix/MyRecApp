@@ -43,6 +43,28 @@ object PreviewTests {
             image.recycle()
         }
         fun unchanged() = check(a.store.encode(a.editor.project).toString() == original)
+        test("editor exposes timeline items and inspection requests a sharper frame") {
+            onMain {
+                val view = a.editorView
+                val canvas = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                view.draw(Canvas(canvas)); canvas.recycle()
+                val provider = view.accessibilityNodeProvider
+                val items = provider.findAccessibilityNodeInfosByText("Video 1", -1).orEmpty()
+                check(items.single().actionList.any { it.id == android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK })
+                check(provider.findAccessibilityNodeInfosByText("Insert video", -1).orEmpty().isNotEmpty())
+                check(provider.findAccessibilityNodeInfosByText("Video and audio timeline", -1).orEmpty().single().rangeInfo != null)
+                repeat(3) { check(view.performAccessibilityAction(0x02000101, null)) }
+            }
+            val deadline = SystemClock.uptimeMillis() + 5000
+            var edge = 0
+            while (edge <= 768 && SystemClock.uptimeMillis() < deadline) {
+                Thread.sleep(40)
+                onMain { a.editorView.bitmap?.let { edge = maxOf(it.width, it.height) } }
+            }
+            check(edge > 768) { "Inspection still uses a $edge pixel preview" }
+            onMain { a.editorView.performAccessibilityAction(0x02000103, null) }
+            unchanged()
+        }
         fun touch(view: View, action: Int, x: Float, y: Float) {
             val t = SystemClock.uptimeMillis()
             val e = MotionEvent.obtain(t, t, action, x, y, 0)
