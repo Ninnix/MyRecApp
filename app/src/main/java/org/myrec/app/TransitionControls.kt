@@ -33,7 +33,7 @@ fun Transition.audioGain(time: Double,outgoing: Boolean): Double {
     return if (outgoing) 1-position else position
 }
 
-class TransitionClock(t: Transition) {
+class TransitionClock(t: Transition, factor: Double = t.timingScale) {
     private val still=t.kind=="Still"
     val motion: Double
     val hold: Double
@@ -50,16 +50,26 @@ class TransitionClock(t: Transition) {
     val rightCost get()=upper-rightStart
     init {
         val c=t.controls ?: TransitionControls()
-        val still=t.kind=="Still";val solid=t.kind=="Fade through color"
+        val solid=t.kind=="Fade through color"
         val edge=if (t.leftId==null && t.rightId!=null) -1 else if (t.rightId==null && t.leftId!=null) 1 else 0
-        motion=if (still) c.stillDissolve else t.duration
-        hold=if (still) t.duration else if (t.kind=="Flash Cut") 0.0 else t.hold
+        val custom=c.audioOffset!=null || c.audioBlend!=null
+        motion=(if (still) c.stillDissolve else t.duration)*factor
+        hold=when {
+            still -> t.duration * if (custom && edge!=1) factor else 1.0
+            t.kind=="Flash Cut" -> 0.0
+            solid && edge==0 && !custom -> t.hold
+            else -> t.hold*factor
+        }
         videoDuration=motion+hold
         val aNeed=if (still) 0.0 else if (solid && edge==0) motion/2 else videoDuration
         val bNeed=if (still) hold else if (solid && edge==0) motion/2+hold else 0.0
-        var offset=c.audioOffset ?: 0.0
-        var blend=c.audioBlend ?: if (still) 0.0 else t.duration+if (solid && edge==0) 0.0 else hold
-        val custom=c.audioOffset!=null || c.audioBlend!=null
+        var offset=(c.audioOffset ?: 0.0)*factor
+        val defaultBlend=when {
+            still -> 0.0
+            solid && edge==0 || t.kind=="Flash Cut" -> t.duration
+            else -> t.duration+t.hold
+        }
+        var blend=(c.audioBlend ?: defaultBlend)*factor
         if (t.kind=="Split screen" && !custom) {
             if (c.audio=="First clip") { offset=max(0.0,videoDuration-.008);blend=min(.008,videoDuration) }
             if (c.audio=="Second clip") blend=min(.008,videoDuration)

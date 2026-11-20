@@ -96,6 +96,23 @@ object ArchiveInterchangeTests {
                 val sound=loaded.clips.single { it.audio && it.path=="left.mp4" }
                 check(sound.fadeIn==first.fadeIn && sound.censors==first.censors && sound.effects.single().number("gain")==3f)
             }
+            test("YouRec transitions retain highlight order and fitted timing at the opening edge") {
+                val clip=Clip(path="opening.mp4",sourceOut=2.0)
+                val edit=Editor(Project(clips=mutableListOf(clip)))
+                edit.putTransition(Transition(at=0.0,kind="Hitchcock",duration=1.0,amount=0f,
+                    controls=TransitionControls(audioOffset=-1.0,audioBlend=4.0)))
+                val source=uid();val project=edit.project
+                val header=JSONObject().put("id",project.id).put("title",project.name).put("sources",
+                    JSONArray().put(JSONObject().put("id",source).put("filename",clip.path).put("duration",2.0)))
+                val snapshot=YouRecDocument.snapshot(project,mapOf(clip.path to source),0)
+                val loaded=YouRecDocument.project(snapshot,header,mapOf(clip.path to clip.path))
+                val expected=project.transitions.single();val actual=loaded.transitions.single()
+                check(actual.kind=="Hitchcock" && actual.amount==0f && actual.controls==expected.controls)
+                check(actual.timingScale<1 && actual.timingScale==expected.timingScale && actual.overlap==0.0)
+                val reopened=Editor(loaded)
+                reopened.removeTransition(actual.id)
+                check(reopened.project.clips.all { it.start==0.0 } && reopened.project.duration==2.0)
+            }
             test("YouRec schema-12 archives retain independent originals captures history titles and redo") {
                 YouRecArchive.export(store,editor.project,archive,{ false },{})
                 ZipFile(archive).use { zip ->

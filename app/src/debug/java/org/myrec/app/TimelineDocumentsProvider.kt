@@ -11,8 +11,11 @@ import java.io.File
 class TimelineDocumentsProvider : DocumentsProvider() {
     override fun onCreate()=true
     @Synchronized private fun fixture(): File {
-        val file=File(context!!.cacheDir,"timeline-provider-fixture.mp4")
-        if (!file.isFile) context!!.createPackageContext("org.myrec.app.test",0).assets.open("fixture.mp4").use { input -> file.outputStream().use { input.copyTo(it) } }
+        val app=checkNotNull(context)
+        val file=File(app.cacheDir,"timeline-provider-fixture.mp4")
+        if (!file.isFile) app.createPackageContext("${app.packageName}.test",0).assets.open("fixture.mp4").use { input ->
+            file.outputStream().use { input.copyTo(it) }
+        }
         return file
     }
     private fun document(id: String,projection: Array<out String>?): Cursor {

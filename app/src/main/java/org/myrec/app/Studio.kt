@@ -138,6 +138,7 @@ object Studio {
             } +
             project.transitions.joinToString { transition ->
                 "${transition.at}:${transition.duration}:${transition.hold}:${transition.overlap}:${transition.phaseFrom}:${transition.phaseTo}:" +
+                    "${transition.kind}:${transition.timingScale}:${transition.windowFrom}:${transition.windowTo}:${transition.controls}:" +
                     "${part(transition.leftId)}:${part(transition.rightId)}"
             }
     }

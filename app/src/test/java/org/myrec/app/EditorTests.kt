@@ -132,6 +132,18 @@ fun main() {
         check(!CameraFocus.canLock(0) && !CameraFocus.canLock(5))
         check(CameraFocus.canLock(3) && CameraFocus.canLock(1))
     }
+    test("tap focus fits its sensor region to the cropped stream") {
+        val sensor = CameraRect(100.0, 200.0, 4100.0, 3200.0)
+        val center = CameraFocus.meteringArea(CameraPoint(.5,.5), sensor, 16.0/9)
+        near(center.center.x,2100.0)
+        near(center.center.y,1700.0)
+        val top = CameraFocus.meteringArea(CameraPoint(0.0,0.0), sensor, 16.0/9)
+        val bottom = CameraFocus.meteringArea(CameraPoint(1.0,1.0), sensor, 16.0/9)
+        near(top.left,100.0)
+        near(top.top,575.0)
+        near(bottom.right,4100.0)
+        near(bottom.bottom,2825.0)
+    }
     test("split effects own independent state") {
         val e = fixture()
         e.applyEffect(Effect(kind = "Color LUTs", values = mutableMapOf("lut" to "Mono")))

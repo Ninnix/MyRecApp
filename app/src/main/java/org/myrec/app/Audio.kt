@@ -357,22 +357,23 @@ class AudioMixer(
             val clock=transition.controls?.let { TransitionClock(transition) }
             val sound=clock?.let { if (outgoing) it.audioOut else it.audioIn }
             val origin=if (clock!=null) transition.pictureOrigin else 0.0
+            val soundBegin=transition.begin
+            val soundEnd=transition.end
             for (i in 0 until pcm.size / 2) {
                 val at = time + (first + i) / 48000.0
-                val controls=transition.controls
-                val soundBegin=transition.begin
-                val soundEnd=transition.end
                 if (at < soundBegin || at > soundEnd) continue
-                val position = transition.progress(at).toDouble()
                 val fade =
                     if (sound!=null) {
                         val length=sound.endInclusive-sound.start
                         val position=if (length<=0) (if (at-origin>=sound.start) 1.0 else 0.0) else ((at-origin-sound.start)/length).coerceIn(0.0,1.0)
                         (if (outgoing) 1-position else position).toFloat()
                     }
-                    else if (linear) (if (outgoing) 1-position else position).toFloat()
-                    else if (outgoing) cos(position * Math.PI / 2).toFloat()
-                    else sin(position * Math.PI / 2).toFloat()
+                    else {
+                        val position = transition.progress(at).toDouble()
+                        if (linear) (if (outgoing) 1-position else position).toFloat()
+                        else if (outgoing) cos(position * Math.PI / 2).toFloat()
+                        else sin(position * Math.PI / 2).toFloat()
+                    }
                 pcm[i * 2] *= fade
                 pcm[i * 2 + 1] *= fade
             }

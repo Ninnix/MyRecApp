@@ -556,25 +556,34 @@ object YouRecDocument {
             .put("flashCount",c.flashCount).put("flashAcceleration",c.flashAcceleration).put("stillDissolve",c.stillDissolve).put("blurAmount",t.amount)
             .put("fadeColor",JSONObject().put("red",((c.color shr 16) and 255)/255.0).put("green",((c.color shr 8) and 255)/255.0).put("blue",(c.color and 255)/255.0))
         c.audioOffset?.let { settings.put("audioOffset",it) };c.audioBlend?.let { settings.put("audioBlend",it) }
-        return JSONObject().put("settings",settings).put("factor",1).put("origin",time(t.pictureOrigin)).apply {
+        if (t.kind=="Hitchcock") settings.put("highlightsFirst",t.amount<.5f)
+        return JSONObject().put("settings",settings).put("factor",t.timingScale).put("origin",time(t.pictureOrigin)).apply {
             t.leftId?.let { put("outgoing",uuid(it)) };t.rightId?.let { put("incoming",uuid(it)) }
         }
     }
     private fun transition(o: JSONObject,p: Project): Transition {
-        val s=o.getJSONObject("settings");val factor=o.optDouble("factor",1.0);require(factor.isFinite() && factor>0)
+        val s=o.getJSONObject("settings");val factor=o.optDouble("factor",1.0);require(factor in 0.0..1.0)
         fun framing(key: String)=s.getJSONObject(key).let { TransitionFraming(it.getDouble("x"),it.getDouble("y"),it.getDouble("zoom")) }
         val color=s.optJSONObject("fadeColor");val argb=if (color==null) 0xff000000 else 0xff000000L or ((color.getDouble("red")*255).roundToLong() shl 16) or ((color.getDouble("green")*255).roundToLong() shl 8) or (color.getDouble("blue")*255).roundToLong()
         val c=TransitionControls(s.getString("axis")=="vertical",s.getDouble("divider"),s.getBoolean("reverse"),when (s.getString("audio")) { "first" -> "First clip";"second" -> "Second clip";else -> "Crossfade" },
-            framing("first"),framing("second"),argb,if (s.has("audioOffset")) s.getDouble("audioOffset")*factor else null,if (s.has("audioBlend")) s.getDouble("audioBlend")*factor else null,
-            s.optInt("flashCount",3),s.optDouble("flashAcceleration",2.0),s.optDouble("stillDissolve",0.0)*factor)
-        require(c.valid());if (s.optBoolean("highlightsFirst",false)) unsupported("highlight-ordered transition")
+            framing("first"),framing("second"),argb,if (s.has("audioOffset")) s.getDouble("audioOffset") else null,if (s.has("audioBlend")) s.getDouble("audioBlend") else null,
+            s.optInt("flashCount",3),s.optDouble("flashAcceleration",2.0),s.optDouble("stillDissolve",0.0))
+        require(c.valid())
         fun owner(key: String,last: Boolean)=o.optString(key).takeIf { it.isNotEmpty() }?.let { id ->
             val clips=p.clips.filter { it.video && it.group==id };(if (last) clips.maxByOrNull { it.end } else clips.minByOrNull { it.start })?.id ?: unsupported("transition owner")
         }
-        val t=Transition(id=s.getString("id"),at=0.0,kind=joins.entries.firstOrNull { it.value==s.getString("style") }?.key ?: unsupported("transition style"),
-            duration=s.getDouble("duration")*factor,hold=s.optDouble("hold",0.0)*factor,amount=s.optDouble("blurAmount",.75).toFloat(),angle=s.optDouble("wipeAngle",if (c.vertical) 90.0 else 0.0).toFloat(),soft=!s.optBoolean("hardEdge",false),controls=c,leftId=owner("outgoing",true),rightId=owner("incoming",false))
-        val clock=TransitionClock(t);t.at=seconds(o.getJSONObject("origin"))+(clock.lower+clock.upper)/2
-        t.overlap=clock.overlap;return t
+        val kind=joins.entries.firstOrNull { it.value==s.getString("style") }?.key ?: unsupported("transition style")
+        val amount=if (kind=="Hitchcock") if (s.optBoolean("highlightsFirst",false)) 0f else 1f else s.optDouble("blurAmount",.75).toFloat()
+        val t=Transition(id=s.getString("id"),at=0.0,kind=kind,
+            duration=s.getDouble("duration"),hold=s.optDouble("hold",0.0),amount=amount,angle=s.optDouble("wipeAngle",if (c.vertical) 90.0 else 0.0).toFloat(),soft=!s.optBoolean("hardEdge",false),controls=c,leftId=owner("outgoing",true),rightId=owner("incoming",false),timingScale=factor)
+        val clock=TransitionClock(t)
+        t.at=seconds(o.getJSONObject("origin"))+(clock.lower+clock.upper)/2
+        t.overlap=when {
+            t.rightId==null -> 0.0
+            t.leftId==null -> -max(0.0,clock.rightStart)
+            else -> clock.overlap
+        }
+        return t
     }
     fun capture(clip: Clip,source: String,canvas: Pair<Int,Int> = 1920 to 1080,shape: (String)->Pair<Int,Int> = ProjectStore::shape)=content(clip,source,canvas,shape)
     fun originals(header: JSONObject,paths: Map<String,String>): List<Clip> = objects(header.getJSONArray("sources")).map {

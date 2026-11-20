@@ -144,7 +144,7 @@ class Export(private val cache: AudioCache) {
             for (i in range) {
                 checkCancelled()
                 drain(false)
-                val bitmap = frames.render(project, i.toDouble() / fps, width, height, keepLinear = hdr)
+                val bitmap = frames.render(project, i.toDouble() / fps, width, height, keepLinear = hdr, frameRate = fps)
                 try { egl.draw(bitmap, (i - range.first) * 1_000_000_000L / fps) }
                 finally { bitmap.recycle() }
                 progress(i + 1)

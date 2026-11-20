@@ -87,6 +87,8 @@ class Panels(private val a: MainActivity) {
     private var captureSheet = false
     private var captureExpanded = false
     private var reflowControls: (() -> Unit)? = null
+    private var transitionSummary: ((Project, Transition) -> Unit)? = null
+    private var refreshTransitionControls: (() -> Unit)? = null
     private var panelClosed: (() -> Unit)? = null
     private var cancelPanel: (() -> Unit)? = null
     private var headerDone: TextView? = null
@@ -555,6 +557,8 @@ class Panels(private val a: MainActivity) {
         body = null
         applyPanel = null
         reflowControls = null
+        transitionSummary = null
+        refreshTransitionControls = null
         draft = null
         draftReplace = null
         transformEndpoint = null
@@ -1115,11 +1119,7 @@ class Panels(private val a: MainActivity) {
         draftTransition?.let { value ->
             val current =
                 a.playback.previewProject?.transitions?.firstOrNull { it.id == value.id } ?: value
-            val length = current.duration + current.hold
-            return max(0.0, current.at - length / 2)..min(
-                    a.playback.previewProject?.duration ?: editor.project.duration,
-                    current.at + length / 2,
-                )
+            return current.begin.coerceIn(0.0, duration)..current.end.coerceIn(0.0, duration)
         }
         editor.range?.let {
             return it.start.coerceAtMost(duration)..it.endInclusive.coerceAtMost(duration)
@@ -1458,7 +1458,7 @@ class Panels(private val a: MainActivity) {
                                 if (it == 0) {
                                     a.store.delete(project)
                                     if (editor.project.id == project.id) {
-                                        val saved = a.store.currentSession()
+                                        val saved = a.currentProjectSession()
                                         editor.load(saved.project, saved)
                                     }
                                     projects()
@@ -2120,21 +2120,16 @@ class Panels(private val a: MainActivity) {
                         .firstOrNull { it.id == t.id }
                         ?.let { current ->
                             val old = previewTransition
-                            if (
-                                old == null ||
-                                    old.at != current.at ||
-                                    old.duration != current.duration ||
-                                    old.hold != current.hold
-                            ) {
-                                val position =
-                                    if (old == null) .5
-                                    else
-                                        ((editor.cursor - old.at) / (old.duration + old.hold) + .5)
-                                            .coerceIn(0.0, 1.0)
-                                editor.cursor =
-                                    current.at + (position - .5) * (current.duration + current.hold)
+                            val picture = current.pictureOrigin
+                            val length = current.controls?.let { TransitionClock(current).videoDuration } ?: current.duration + current.hold
+                            val previousLength = old?.let { it.controls?.let { _ -> TransitionClock(it).videoDuration } ?: it.duration + it.hold }
+                            if (old == null || old.pictureOrigin != picture || previousLength != length) {
+                                val position = if (old == null || previousLength == null || previousLength <= 0) .5
+                                    else ((editor.cursor - old.pictureOrigin) / previousLength).coerceIn(0.0, 1.0)
+                                editor.cursor = (picture + position * length).coerceIn(0.0, p.duration)
                             }
                             previewTransition = current.copy()
+                            transitionSummary?.invoke(p, current)
                         }
                 }
                 a.playback.originalStabilization = title == "Stabilize" && !previewEffects
@@ -3906,7 +3901,7 @@ class Panels(private val a: MainActivity) {
         renderDraft()
     }
 
-    fun transition(value: Transition? = null) {
+    fun transition(value: Transition? = null, visited: MutableSet<String>? = null) {
         val at =
             value?.at
                 ?: editor.project.clips
@@ -3918,15 +3913,13 @@ class Panels(private val a: MainActivity) {
                 it.id == value?.id || abs(it.cut - at) <= max(.05, it.duration / 2) + .001
             }
         val t = value ?: current?.copy() ?: Transition(at = at,controls=TransitionControls())
+        val styles = visited ?: mutableSetOf(t.kind)
         val left =
             editor.project.clips.firstOrNull { it.id == t.leftId }
                 ?: editor.project.clips.firstOrNull { it.video && abs(it.end - at) < .02 }
         val right =
             editor.project.clips.firstOrNull { it.id == t.rightId }
                 ?: editor.project.clips.firstOrNull { it.video && abs(it.start - at) < .02 }
-        val maximum = max(.001, editor.transitionMaximum(left, right, current?.id))
-        val minimum = min(.05, maximum)
-        t.duration = t.duration.coerceIn(minimum, maximum)
         val body =
             setup(
                 "Transition",
@@ -3942,6 +3935,8 @@ class Panels(private val a: MainActivity) {
         fun parameters() {
             controls.removeAllViews()
             val color = Effects.color("Transition")
+            val maximum = max(.001, editor.transitionMaximum(t, left, right, current?.id))
+            val minimum = min(1.0 / editor.project.fps, maximum)
             val style = row()
             style.addView(Glyph(a, t.kind, color), LinearLayout.LayoutParams(px(17f), px(20f)))
             style.addView(
@@ -3949,32 +3944,33 @@ class Panels(private val a: MainActivity) {
                 LinearLayout.LayoutParams(0, px(40f), 1f),
             )
             style.addView(text("⌃", 10f, color), LinearLayout.LayoutParams(px(15f), px(40f)))
-            style.setOnClickListener { transitionStyles(t) }
+            style.setOnClickListener { transitionStyles(t, styles) }
             add(controls, style, 40f)
             val length = text("", 6f, MUTED)
-            fun updateLength() {
-                val delta = (if (t.controls!=null) TransitionClock(t).overlap else t.duration) - (current?.overlap ?: 0.0)
+            transitionSummary = { project, placed ->
+                val delta = project.duration - editor.project.duration
                 val change =
                     if (abs(delta) < .005) "Project length unchanged"
                     else
-                        "Project %.2f s ${if (delta > 0) "shorter" else "longer"}"
+                        "Project %.2f s ${if (delta < 0) "shorter" else "longer"}"
                             .format(java.util.Locale.US, abs(delta))
-                length.text =
-                    "%.2f s total · %s".format(java.util.Locale.US, if (t.controls!=null) TransitionClock(t).videoDuration else t.duration + t.hold, change)
+                val seconds = if (placed.controls != null) TransitionClock(placed).videoDuration else placed.duration + placed.hold
+                length.text = "%.2f s total · %s".format(java.util.Locale.US, seconds, change)
+                if (placed.timingScale < .999) length.append(" · ${(placed.timingScale * 100).roundToInt()}% timing")
             }
             slider(
                 controls,
-                "Blend duration",
-                t.duration.toFloat(),
+                if (t.kind == "Still" && t.controls != null) "Freeze duration" else "Blend duration",
+                t.duration.coerceIn(minimum, maximum).toFloat(),
                 minimum.toFloat(),
-                maximum.toFloat(),
+                max(maximum, minimum + 1.0 / editor.project.fps).toFloat(),
                 format = { "%.2f s".format(it) },
                 color = Effects.color("Transition"),
+                logarithmic = t.kind == "Still" && t.controls != null,
             ) {
-                t.duration = it.toDouble()
-                updateLength()
+                t.duration = min(it.toDouble(), maximum)
                 renderDraft()
-            }
+            }.isEnabled = maximum > minimum
             val presets = row()
             for ((index, duration) in listOf(.5, 1.0, 2.0, 3.0, 5.0).withIndex()) {
                 val label = listOf("0.5 s", "1 s", "2 s", "3 s", "5 s")[index]
@@ -4000,8 +3996,7 @@ class Panels(private val a: MainActivity) {
                 )
             }
             add(controls, presets, 30f)
-            updateLength()
-            add(controls, length, 20f)
+            add(controls, length)
             if (t.controls==null) button(controls,"Use full transition controls") { t.controls=TransitionControls();parameters();renderDraft() }
             t.controls?.let { settings ->
                 fun update(next: TransitionControls) { t.controls=next;renderDraft() }
@@ -4015,8 +4010,12 @@ class Panels(private val a: MainActivity) {
                     }
                 }
                 if (t.kind=="Split screen") {
+                    label(controls,"Drag to frame each clip, pinch to zoom, or drag the divider.")
                     slider(controls,"Divider",settings.divider.toFloat(),.15f,.85f,color=color) { update(t.controls!!.copy(divider=it.toDouble())) }
-                    choices(controls,listOf("Crossfade","First clip","Second clip"),settings.audio) { update(t.controls!!.copy(audio=listOf("Crossfade","First clip","Second clip")[it])) }
+                    choices(controls,listOf("Crossfade","First clip","Second clip"),settings.audio) {
+                        update(t.controls!!.copy(audio=listOf("Crossfade","First clip","Second clip")[it],audioOffset=null,audioBlend=null))
+                        parameters()
+                    }
                     for (index in 0..1) {
                         val framing=if (index==0) settings.first else settings.second
                         label(controls,if (index==0) "First clip framing" else "Second clip framing")
@@ -4029,6 +4028,10 @@ class Panels(private val a: MainActivity) {
                         slider(controls,"Vertical position",framing.y.toFloat(),0f,1f,color=color) { frame("y",it) }
                         slider(controls,"Zoom",framing.zoom.toFloat(),1f,4f,format={ "%.2f×".format(it) },color=color) { frame("zoom",it) }
                     }
+                    button(controls, "Reset framing") {
+                        update(t.controls!!.copy(divider=.5,first=TransitionFraming(),second=TransitionFraming()))
+                        parameters()
+                    }
                 }
                 if (t.kind=="Fade through color") button(controls,"Fade color") {
                     FrontLightColorPicker(a,settings.color.toInt(),px(1f).toFloat(),title="Fade color") { update(t.controls!!.copy(color=it.toLong() and 0xffffffffL)) }.show()
@@ -4037,14 +4040,25 @@ class Panels(private val a: MainActivity) {
                     slider(controls,"Flash count",settings.flashCount.toFloat(),1f,20f,format={ it.roundToInt().toString() },color=color) { update(t.controls!!.copy(flashCount=it.roundToInt())) }
                     slider(controls,"Acceleration",settings.flashAcceleration.toFloat(),.25f,4f,color=color) { update(t.controls!!.copy(flashAcceleration=it.toDouble())) }
                 }
-                if (t.kind=="Still") slider(controls,"Dissolve after hold",settings.stillDissolve.toFloat(),0f,min(3f,t.duration.toFloat()),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(stillDissolve=it.toDouble())) }
+                if (t.kind=="Still") {
+                    choices(controls,listOf("Cut","Dissolve"),if (settings.stillDissolve>0) "Dissolve" else "Cut",color) {
+                        update(t.controls!!.copy(stillDissolve=if (it==1) .3 else 0.0))
+                        parameters()
+                    }
+                    if (settings.stillDissolve>0) slider(controls,"Dissolve after hold",settings.stillDissolve.toFloat(),(1.0/editor.project.fps).toFloat(),5f,format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(stillDissolve=it.toDouble())) }
+                }
                 label(controls,"Audio timing")
                 choices(controls,listOf("Automatic","Custom"),if (settings.audioOffset==null && settings.audioBlend==null) "Automatic" else "Custom") {
-                    update(t.controls!!.copy(audioOffset=if (it==0) null else 0.0,audioBlend=if (it==0) null else t.duration+t.hold));parameters()
+                    val clock = TransitionClock(t.copy(leftId=left?.id,rightId=right?.id),1.0)
+                    val from = if (left == null) clock.audioIn.start else clock.audioOut.start
+                    val to = if (right == null) clock.audioOut.endInclusive else clock.audioIn.endInclusive
+                    update(t.controls!!.copy(audioOffset=if (it==0) null else from,audioBlend=if (it==0) null else max(0.0,to-from)))
+                    parameters()
                 }
                 if (settings.audioOffset!=null || settings.audioBlend!=null) {
-                    slider(controls,"Audio offset",(settings.audioOffset ?: 0.0).toFloat(),-t.duration.toFloat(),t.duration.toFloat(),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioOffset=it.toDouble())) }
-                    slider(controls,"Audio blend",(settings.audioBlend ?: t.duration).toFloat(),0f,max(3f,t.duration.toFloat()),format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioBlend=it.toDouble())) }
+                    val limit = min(60.0,maxOf(5.0,left?.duration ?: 0.0,right?.duration ?: 0.0)).toFloat()
+                    slider(controls,"Audio offset",(settings.audioOffset ?: 0.0).toFloat(),-limit,limit,format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioOffset=it.toDouble())) }
+                    slider(controls,"Audio blend",(settings.audioBlend ?: t.duration).toFloat(),0f,limit,format={ "%.2f s".format(it) },color=color) { update(t.controls!!.copy(audioBlend=it.toDouble())) }
                 }
             }
             if (t.kind == "Wipe") {
@@ -4094,15 +4108,14 @@ class Panels(private val a: MainActivity) {
                 }
             if (t.kind !in setOf("Flash Cut","Still")) slider(
                 controls,
-                "Hold at halfway",
+                if (t.kind == "Fade through color" && left != null && right != null) "Hold on color" else "Hold at halfway",
                 t.hold.toFloat(),
                 0f,
-                3f,
+                max(10.0,min(60.0,maximum)).toFloat(),
                 format = { "%.2f s".format(it) },
                 color = Effects.color("Transition"),
             ) {
                 t.hold = it.toDouble()
-                updateLength()
                 renderDraft()
             }
             if (current != null)
@@ -4111,53 +4124,78 @@ class Panels(private val a: MainActivity) {
                     close()
                 }
         }
+        refreshTransitionControls = ::parameters
+        reflowControls = ::parameters
         parameters()
         renderDraft()
     }
 
-    private fun transitionStyles(value: Transition) {
-        val body = setup("Transition style", { transition(value) }, tools = true)
+    private fun transitionStyles(value: Transition, visited: MutableSet<String>) {
+        val back = { transition(value, visited) }
+        val body = setup("Transition style", back, tools = true)
         panel?.setBackgroundColor(Color.BLACK)
-        val scroll = ScrollView(a)
+        cancelPanel = back
+        val scroll = ScrollView(a).apply {
+            isFillViewport = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            isFocusable = true
+            descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        }
         val content = column()
-        pad(content, if (landscape) 12f else 8f)
-        if (landscape) content.setPadding(px(57f), px(5f), px(57f), 0)
-        scroll.addView(content)
-        add(body, scroll)
-        for (pair in Effects.transitions.chunked(2)) {
-            val line = row()
-            for (kind in pair) {
-                val color = Effects.color("Transition")
-                val selected = kind == value.kind
-                val item =
-                    row().apply {
-                        gravity = Gravity.CENTER
-                        background =
-                            shape(if (selected) tint(color) else Color.rgb(18, 18, 19), 6f).apply {
-                                if (selected) setStroke(px(1f), color)
-                            }
+        scroll.addView(content, FrameLayout.LayoutParams(-1, -2))
+        body.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        fun populate() {
+            content.removeAllViews()
+            val sides = px(if (landscape) 57f else 12f)
+            val gap = px(8f)
+            val color = Effects.color("Transition")
+            val count = when {
+                a.resources.configuration.fontScale > 1.15f -> 1
+                landscape -> 3
+                else -> 2
+            }
+            content.setPadding(sides, gap, sides, gap)
+            for (styles in Effects.transitions.chunked(count)) {
+                val line = row()
+                for ((index, kind) in styles.withIndex()) {
+                    val selected = kind == value.kind
+                    val item = row().apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                        minimumHeight = max(px(42f), (48 * resources.displayMetrics.density).roundToInt())
+                        setPadding(px(9f), px(5f), px(9f), px(5f))
+                        background = shape(if (selected) tint(color) else Color.rgb(18, 18, 19), 6f).apply {
+                            if (selected) setStroke(px(1f), color)
+                        }
+                        isSelected = selected
+                        isFocusable = true
+                        contentDescription = kind
                         setOnClickListener {
-                            value.kind = kind
-                            transition(value)
+                            if (value.kind != kind) {
+                                value.kind = kind
+                                if (visited.add(kind)) when (kind) {
+                                    "Whip pan" -> value.duration = 8.0 / 30
+                                    "Still" -> value.duration = 1.0
+                                }
+                            }
+                            back()
                         }
                     }
-                item.addView(
-                    Glyph(a, kind, Color.WHITE),
-                    LinearLayout.LayoutParams(px(17f), px(20f)),
-                )
-                item.addView(
-                    text(kind, 9f).apply { setPadding(px(5f), 0, 0, 0) },
-                    LinearLayout.LayoutParams(-2, -1),
-                )
-                line.addView(
-                    item,
-                    LinearLayout.LayoutParams(0, px(39f), 1f).apply {
-                        setMargins(0, 0, px(5f), px(6f))
-                    },
-                )
+                    item.addView(Glyph(a, kind, color), LinearLayout.LayoutParams(px(18f), px(22f)))
+                    item.addView(text(kind, 9f).apply {
+                        includeFontPadding = true
+                        setPadding(px(6f), 0, 0, 0)
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    line.addView(item, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        if (index < count - 1) marginEnd = gap
+                    })
+                }
+                repeat(count - styles.size) { line.addView(View(a), LinearLayout.LayoutParams(0, 0, 1f)) }
+                content.addView(line, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = gap })
             }
-            add(content, line)
         }
+        reflowControls = { populate(); scroll.post { scroll.scrollTo(0, 0) } }
+        populate()
     }
 
     fun volume() {
@@ -4784,6 +4822,7 @@ class Panels(private val a: MainActivity) {
         private var lastX = 0f
         private var lastY = 0f
         private var placementEdge = 0
+        private var splitTarget = -1
         private val inspection = PreviewViewport()
         private var inspectMode = false
         private var panAnchored = true
@@ -4797,7 +4836,8 @@ class Panels(private val a: MainActivity) {
             panAnchored = false
             invalidate()
         }
-        private fun editsContent() = draft?.kind in listOf("Crop", "Zoom", "Placement", "Text", "Image", "Kaleidoscope")
+        private fun splitSettings() = draftTransition?.takeIf { it.kind == "Split screen" }?.controls
+        private fun editsContent() = splitSettings() != null || draft?.kind in listOf("Crop", "Zoom", "Placement", "Text", "Image", "Kaleidoscope")
         private fun inspecting() = if (draft?.kind == "Crop") !cropFrame else inspectMode || !editsContent()
 
         init {
@@ -4820,9 +4860,14 @@ class Panels(private val a: MainActivity) {
                 object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
                         panAnchored = false
+                        splitSettings()?.let { splitTarget = splitSide(it, d.focusX, d.focusY) }
                         return true
                     }
                     override fun onScale(d: ScaleGestureDetector): Boolean {
+                        splitSettings()?.let {
+                            frameSplit(it) { frame -> frame.copy(zoom = (frame.zoom * d.scaleFactor).coerceIn(1.0, 4.0)) }
+                            return true
+                        }
                         val fx = draft ?: return false
                         if (fx.kind == "Placement") {
                             if (fx.number("reframe") == 1f)
@@ -4919,6 +4964,16 @@ class Panels(private val a: MainActivity) {
                 }
             } else c.drawBitmap(b, null, bounds, paint)
             if (fx?.kind == "Kaleidoscope" && fx.enabled && previewEffects && !inspecting()) splitGuide.draw(c, bounds, factor, opticalEffect(fx))
+            splitSettings()?.takeIf { !inspecting() && !a.playback.playing }?.let {
+                val x = if (it.vertical) bounds.centerX() else bounds.left + bounds.width() * it.divider.toFloat()
+                val y = if (it.vertical) bounds.top + bounds.height() * it.divider.toFloat() else bounds.centerY()
+                paint.color = Color.argb(190, 12, 12, 12)
+                c.drawCircle(x, y, px(13f).toFloat(), paint)
+                paint.color = Color.WHITE
+                paint.textSize = px(15f).toFloat()
+                paint.textAlign = Paint.Align.CENTER
+                c.drawText(if (it.vertical) "↕" else "↔", x, y - (paint.ascent() + paint.descent()) / 2, paint)
+            }
             c.restore()
             inspectButton.setEmpty()
             resetButton.setEmpty()
@@ -5052,6 +5107,66 @@ class Panels(private val a: MainActivity) {
             )
         }
 
+        private fun splitPosition(settings: TransitionControls, x: Float, y: Float) =
+            if (settings.vertical) (y - bounds.top) / bounds.height() else (x - bounds.left) / bounds.width()
+
+        private fun splitSide(settings: TransitionControls, x: Float, y: Float): Int {
+            val first = (splitPosition(settings, x, y) < settings.divider) != settings.reverse
+            return if (first) 0 else 1
+        }
+
+        private fun setSplit(settings: TransitionControls) {
+            draftTransition?.controls = settings
+            invalidate()
+            renderDraft()
+        }
+
+        private fun frameSplit(settings: TransitionControls, change: (TransitionFraming) -> TransitionFraming) {
+            val placed = previewTransition ?: return
+            when (splitTarget) {
+                0 -> if (placed.leftId != null) setSplit(settings.copy(first = change(settings.first)))
+                1 -> if (placed.rightId != null) setSplit(settings.copy(second = change(settings.second)))
+            }
+        }
+
+        private fun editSplit(e: MotionEvent, settings: TransitionControls): Boolean {
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                if (!bounds.contains(e.x, e.y)) return false
+                a.playback.pause()
+                previewTransition?.let { editor.cursor = it.pictureOrigin + TransitionClock(it).videoDuration / 2 }
+                val span = if (settings.vertical) bounds.height() else bounds.width()
+                val distance = abs(splitPosition(settings, e.x, e.y) - settings.divider) * span
+                splitTarget = if (distance <= px(13f)) -1 else splitSide(settings, e.x, e.y)
+                lastX = e.x; lastY = e.y; panAnchored = true
+                parent.requestDisallowInterceptTouchEvent(true)
+                renderDraft()
+            }
+            scale.onTouchEvent(e)
+            when (e.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> panAnchored = false
+                MotionEvent.ACTION_MOVE -> {
+                    if (e.pointerCount == 1 && panAnchored && !scale.isInProgress) {
+                        val dx = (e.x - lastX) / bounds.width()
+                        val dy = (e.y - lastY) / bounds.height()
+                        if (splitTarget == -1) {
+                            val delta = if (settings.vertical) dy else dx
+                            setSplit(settings.copy(divider = (settings.divider + delta).coerceIn(.15, .85)))
+                        } else frameSplit(settings) {
+                            it.copy(x = (it.x - dx / it.zoom).coerceIn(0.0, 1.0),
+                                y = (it.y - dy / it.zoom).coerceIn(0.0, 1.0))
+                        }
+                    }
+                    panAnchored = e.pointerCount == 1
+                    lastX = e.x; lastY = e.y
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent.requestDisallowInterceptTouchEvent(false)
+                    refreshTransitionControls?.invoke()
+                }
+            }
+            return true
+        }
+
         override fun onTouchEvent(e: MotionEvent): Boolean {
             backgroundSample?.let {
                 if (e.actionMasked==MotionEvent.ACTION_UP && bounds.contains(e.x,e.y) && frameRevision>sampleRevision) bitmap?.let { image ->
@@ -5081,6 +5196,7 @@ class Panels(private val a: MainActivity) {
                 invalidate()
                 return true
             }
+            splitSettings()?.takeIf { !inspecting() }?.let { return editSplit(e, it) }
             val optical = draft?.takeIf { it.kind == "Kaleidoscope" && it.enabled && previewEffects && !inspecting() }
             if (optical != null) {
                 if (e.actionMasked == MotionEvent.ACTION_DOWN) parent.requestDisallowInterceptTouchEvent(true)

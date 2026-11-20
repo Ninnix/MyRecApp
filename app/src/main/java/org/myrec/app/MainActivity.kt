@@ -126,7 +126,7 @@ class MainActivity : Activity() {
         store.cleanInterruptedSaves()
         store.cleanTransfers()
         store.recoverCaptures()
-        val saved = store.currentSession()
+        val saved = currentProjectSession()
         editor = Editor(saved.project).apply { load(saved.project, saved) }
         val editorSettings = getSharedPreferences(if (testSession) "editor-test-$testSessionId" else "editor", MODE_PRIVATE)
         editor.snap = editorSettings.getBoolean("snapToCuts", true)
@@ -523,7 +523,7 @@ class MainActivity : Activity() {
 
     fun retryProjects() {
         store.problems.clear()
-        val saved = store.currentSession()
+        val saved = currentProjectSession()
         if (store.problems.isEmpty()) editor.load(saved.project, saved)
         panels.projects()
     }
@@ -541,11 +541,22 @@ class MainActivity : Activity() {
         }
     }
 
+    internal fun currentProjectSession() = store.currentSession(::datedProject)
+
+    private fun datedProject(): Project {
+        val now = Date()
+        val locale = resources.configuration.locales[0]
+        val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "MMMd")
+        val date = SimpleDateFormat(pattern, locale).format(now)
+        val time = android.text.format.DateFormat.getTimeFormat(this).format(now)
+        return Project(name = "$date · $time")
+    }
+
     fun newProject() {
         playback.pause()
         if (capture?.recording == true) capture?.stop()
         if (!saveProject()) return
-        editor.load(Project(name = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date())))
+        editor.load(datedProject())
         editorView.bitmap = null
         editorView.invalidate()
     }

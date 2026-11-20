@@ -96,7 +96,8 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--capture-compatibility` | Unsupported HDR repeated requests and disabled UI touch on each camera, a request during SDR recording, and a decoded playable result |
 | `--capture-endurance` | Eleven-minute SDR take without user input, visible and awake recorder, pause/resume and marker, memory and thermal samples, full track timestamp continuity, AV drift, endpoint decoding and source checksum with cleanup of the test take |
 | `--zoom-cadence` | Recorded H.264 timestamps and Camera2 sensor timestamps through repeated rear-camera zoom presets, with a cadence report in `zoom-cadence.json` |
-| `--capture-focus` | Reference peaking pixels, per-camera zoom/manual focus recall, actual lens metadata, gestures/hold and preview-only focus aids |
+| `--capture-focus` | Tap-to-focus regions and focus boxes in both orientations, tap-to-focus during a take, reference peaking pixels, and per-camera manual-focus recall |
+| `--transition-parity` | Style picker layout and accessibility, split framing, nine transition renders, picture and audio fitting, and Flash Cut at the chosen export frame rate |
 | `--references` | Project delete/restore, shared-media safety, project controls, mirror geometry, RGB offsets |
 | `--new-ui` | Live effects sheet, Clear all, Widescreen, 4:5 crop, quarter turns |
 | `--hdr-color` | Full/limited P010 patches through GL, C11, decoder, and Main10 encoder; primaries detection and sidecars |

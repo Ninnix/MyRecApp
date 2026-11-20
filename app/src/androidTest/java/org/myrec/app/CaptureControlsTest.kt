@@ -12,6 +12,7 @@ import android.media.MediaRecorder
 import android.os.*
 import android.view.MotionEvent
 import android.view.TextureView
+import android.view.View
 import java.io.File
 import kotlin.math.*
 
@@ -75,7 +76,7 @@ object CaptureControlsTest {
             }
             error("Could not click $title")
         }
-        fun tap(id: String) {
+        fun tap(id: String, vertical: Float = .5f) {
             if (id == "torch") {
                 onMain { check(capture.controlBounds("torch") == null) }
                 tap("settings")
@@ -93,7 +94,7 @@ object CaptureControlsTest {
                 val r = bounds ?: error("Missing $id control")
                 val now = SystemClock.uptimeMillis()
                 for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-                    val e = MotionEvent.obtain(now, now + 30, action, r.centerX(), r.centerY(), 0)
+                    val e = MotionEvent.obtain(now, now + 30, action, r.centerX(), r.top + r.height() * vertical, 0)
                     capture.dispatchTouchEvent(e)
                     e.recycle()
                 }
@@ -178,6 +179,46 @@ object CaptureControlsTest {
                         image.recycle()
                     }
                     click("Camera settings done")
+                }
+                test("$name recorder labels sit below the icons and the clock shows the dated project title") {
+                    onMain {
+                        a.newProject()
+                        val parts = a.editor.project.name.split(" · ")
+                        check(parts.size == 2)
+                        val timeFormat = android.text.format.DateFormat.getTimeFormat(a)
+                        check(timeFormat.parse(parts[1]) != null)
+                    }
+                    val image = render("$name-recorder-destinations", true)
+                    try {
+                        onMain {
+                            val shutter = checkNotNull(capture.controlBounds("record"))
+                            for (id in listOf("projects", "edit", "time")) {
+                                val area = checkNotNull(capture.controlBounds(id))
+                                check(!RectF.intersects(shutter, area))
+                                val below = (area.top + area.height() * .62f).roundToInt()
+                                val lit = (below until area.bottom.toInt()).sumOf { y ->
+                                    (area.left.toInt() until area.right.toInt()).count { x ->
+                                        val color = image.getPixel(x, y)
+                                        Color.alpha(color) > 150 && Color.green(color) > 175
+                                    }
+                                }
+                                check(lit > 30) { "Missing lower caption for $id" }
+                            }
+                        }
+                    } finally { image.recycle() }
+                    control("Projects")
+                    control("Edit video")
+                    tap("projects", .82f)
+                    onMain {
+                        check(a.panels.isOpen && a.editorView.visibility == View.INVISIBLE)
+                        a.showCapture()
+                    }
+                    tap("edit", .82f)
+                    onMain {
+                        check(!a.panels.isOpen && a.editorView.visibility == View.VISIBLE)
+                        a.showCapture()
+                    }
+                    Thread.sleep(850)
                 }
                 test("$name recording marks remain opposite pause and survive saving") {
                     onMain { a.editor.load(Project(name = "Recording marks check")) }

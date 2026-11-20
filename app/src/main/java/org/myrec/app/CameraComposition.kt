@@ -575,6 +575,13 @@ class CameraComposition(
         val output=projection(index,rect,source.front && recordedMirror).screen(oriented)
         CameraPoint((rect.left+output.x*rect.width()).coerceIn(0.0,1.0),(rect.top+output.y*rect.height()).coerceIn(0.0,1.0))
     }
+    fun previewSourcePoint(x: Double, y: Double): CameraPoint? = call {
+        val source = inputs.singleOrNull() ?: return@call null
+        if (source.frame.time == Long.MIN_VALUE || x !in 0.0..1.0 || y !in 0.0..1.0) return@call null
+        val rotation = CameraOrientation.recording(source.sensor, displayRotation, source.front)
+        val point = projection(0, RectF(0f, 0f, 1f, 1f), source.front && mirrorPreview).source(x, y)
+        CameraFraming.oriented(point, -rotation)
+    }
     fun slotAt(x: Float,y: Float): Int?=call {
         if (x !in 0f..1f || y !in 0f..1f || inputs.isEmpty()) null
         else if (inputs.size==1) 0 else geometry.slot(layout,x*width.toDouble(),y*height.toDouble(),width.toDouble(),height.toDouble())

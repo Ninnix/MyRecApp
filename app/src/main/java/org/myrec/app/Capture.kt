@@ -9,6 +9,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.*
 import android.hardware.camera2.*
+import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.display.DisplayManager
@@ -156,6 +157,13 @@ class Capture(
         private set
 
     private var focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+    private var meteringSupported = false
+    private var tapFocusMode = CaptureRequest.CONTROL_AF_MODE_OFF
+    private class PreviewFocus(val session: CameraCaptureSession, val point: CameraPoint, val marker: PointF,
+        val rotation: Int, val zoom: Float, val until: Long) {
+        var scanning = true
+    }
+    @Volatile private var previewFocus: PreviewFocus? = null
     private var torch = false
     private var screenLight = false
     private var lightWidth = prefs.getFloat("lightWidth", .085f).coerceIn(.015f, .35f)
@@ -385,11 +393,11 @@ class Capture(
     }
 
     private fun lensState(chars: CameraCharacteristics) {
-        focusMode =
-            CameraFocus.mode(
-                chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
-                    ?: intArrayOf(CaptureRequest.CONTROL_AF_MODE_OFF)
-            )
+        val modes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
+        focusMode = CameraFocus.mode(modes)
+        tapFocusMode = if (CaptureRequest.CONTROL_AF_MODE_AUTO in modes) CaptureRequest.CONTROL_AF_MODE_AUTO else focusMode
+        meteringSupported = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0
+        previewFocus = null
         maximumFocusDistance = (chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f).coerceAtLeast(0f)
         focusLocked = prefs.getBoolean("camera.$cameraId.locked", false) && CameraFocus.canLock(focusMode)
         focusDistance = prefs.getFloat("camera.$cameraId.focus", 0f).let { if (it.isFinite()) it.coerceIn(0f, maximumFocusDistance) else 0f }
@@ -505,6 +513,7 @@ class Capture(
 
     internal fun setFocusPosition(position: Float, persist: Boolean = true) {
         if (!focusAdjustable || !position.isFinite()) return
+        previewFocus = null
         focusLocked = true
         manualFocus = true
         focusDistance = (1f - position.coerceIn(0f, 1f)) * maximumFocusDistance
@@ -512,6 +521,58 @@ class Capture(
         updateRequest()
         if (persist) rememberLens()
         overlay.invalidate()
+    }
+
+    private fun tapPreview(x: Float, y: Float) {
+        if (closed || paused || pendingStart || matchingColor ||
+            x < texture.left || x >= texture.right || y < texture.top || y >= texture.bottom) return
+        val px = (x - texture.left).toDouble() / texture.width
+        val py = (y - texture.top).toDouble() / texture.height
+        val effects = liveEffects.filter { it.enabled && it.kind in setOf("Dolly Zoom", "Crash Zoom") }
+        if (effects.isNotEmpty()) {
+            val target = if (front && mirrorPreview != mirrorRecording) 1 - px else px
+            for (effect in effects) {
+                effect.setNumber("targetX", target.toFloat())
+                effect.setNumber("targetY", py.toFloat())
+                effect.parameter("trackFace")?.value = EffectValue.Toggle(false)
+            }
+            selectedEffectTarget = CameraPoint(target, py)
+            targetGeneration++
+            dollyFollower = null
+            effectGeneration++
+            return
+        }
+        if (focusLocked || dualLayout != 4 || dualCamera != null) return
+        val target = session ?: return
+        if (!CameraFocus.canLock(focusMode)) {
+            activity.message("This camera has fixed focus")
+            return
+        }
+        if (!meteringSupported) {
+            activity.message("This lens chooses its own focus point")
+            return
+        }
+        val point = composition?.previewSourcePoint(px, py) ?: return
+        val timeout = 1500L
+        val focus = PreviewFocus(target, point, PointF(x, y), displayRotation,
+            assistInputZoom ?: zoom, SystemClock.uptimeMillis() + timeout)
+        cameraHandler.post {
+            if (session !== target || closed || paused || focusLocked) return@post
+            previewFocus = focus
+            focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
+            updateRequest()
+            cameraHandler.postDelayed({ finishPreviewFocus(focus) }, timeout)
+            ui.post { overlay.invalidate() }
+        }
+    }
+
+    private fun finishPreviewFocus(focus: PreviewFocus) {
+        if (previewFocus !== focus || !focus.scanning || session !== focus.session || closed) return
+        focus.scanning = false
+        if (focusMode == CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO ||
+            focusMode == CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_CANCEL
+        updateRequest()
     }
 
     internal fun toggleFocusPeaking() {
@@ -605,6 +666,7 @@ class Capture(
         val camera = device ?: return
         val st = texture.surfaceTexture ?: return
         try {
+            previewFocus = null
             session?.close()
             previewSurface?.release()
             if (composition==null) composition=newComposition()
@@ -753,12 +815,25 @@ class Capture(
             r.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             val characteristics=manager.getCameraCharacteristics(cameraId)
             cameraFrameRate(characteristics)?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-            r.set(CaptureRequest.CONTROL_AF_MODE, if (manualFocus) CaptureRequest.CONTROL_AF_MODE_OFF else focusMode)
+            val inputZoom=assistInputZoom ?: zoom
+            val previous = previewFocus
+            val focus = previous?.takeIf { it.session === session && !focusLocked && abs(it.zoom - inputZoom) < .005f }
+            if (focus == null && previous != null && previewFocus === previous) {
+                previewFocus = null
+                if (previous.scanning && !focusLocked && focusTrigger == CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                    focusTrigger = CaptureRequest.CONTROL_AF_TRIGGER_CANCEL
+            }
+            val scan = focus?.takeIf { it.scanning }
+            r.setTag(scan)
+            r.set(CaptureRequest.CONTROL_AF_MODE, when {
+                manualFocus -> CaptureRequest.CONTROL_AF_MODE_OFF
+                scan != null -> tapFocusMode
+                else -> focusMode
+            })
             if (manualFocus) r.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
             r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             r.set(CaptureRequest.CONTROL_AE_LOCK, false)
             r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (faceFollowEnabled || cameraTracking()) CameraFaces.mode(characteristics) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
-            val inputZoom=assistInputZoom ?: zoom
             r.set(
                 CaptureRequest.FLASH_MODE,
                 if (
@@ -795,7 +870,25 @@ class Capture(
                             ),
                         )
                     }
+            if (meteringSupported) {
+                val corrected = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                val active = if (r.get(CaptureRequest.DISTORTION_CORRECTION_MODE) == CaptureRequest.DISTORTION_CORRECTION_MODE_OFF)
+                    characteristics.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE) ?: corrected else corrected
+                val crop = r.get(CaptureRequest.SCALER_CROP_REGION) ?: active
+                val region = if (focus != null && crop != null && !crop.isEmpty) {
+                    val rect = CameraRect(crop.left.toDouble(), crop.top.toDouble(), crop.right.toDouble(), crop.bottom.toDouble())
+                    val area = CameraFocus.meteringArea(focus.point, rect, captureSize.width.toDouble() / captureSize.height)
+                    MeteringRectangle(Rect(area.left.roundToInt(), area.top.roundToInt(),
+                        area.right.roundToInt(), area.bottom.roundToInt()), MeteringRectangle.METERING_WEIGHT_MAX)
+                } else MeteringRectangle(0, 0, 0, 0, 0)
+                r.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+            }
             if (focusTrigger != CaptureRequest.CONTROL_AF_TRIGGER_IDLE) {
+                if (scan != null && focusTrigger == CaptureRequest.CONTROL_AF_TRIGGER_START) {
+                    // A new tap can arrive before the last scan finishes.
+                    r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+                    session?.capture(r.build(), null, cameraHandler)
+                }
                 r.set(CaptureRequest.CONTROL_AF_TRIGGER, focusTrigger)
                 session?.capture(r.build(), null, cameraHandler)
                 r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
@@ -812,6 +905,9 @@ class Capture(
                         if (session !== this@Capture.session) return
                         latestResult = result
                         focusState = result.get(CaptureResult.CONTROL_AF_STATE)
+                        val tap = request.tag as? PreviewFocus
+                        if (tap != null && (focusState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+                                focusState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED)) finishPreviewFocus(tap)
                         if (cameraTracking()) {
                             val faces=CameraFaces.boxes(characteristics,result,captureSize.width,captureSize.height)
                             val time=CameraFaces.time(characteristics,result);val applied=CameraFaces.zoom(characteristics,result)
@@ -2491,6 +2587,7 @@ class Capture(
     }
 
     private fun closeCamera() {
+        previewFocus = null
         ui.removeCallbacks(nextBackgroundFrame)
         pendingBackground?.first?.invoke();pendingBackground=null;nextBackgroundRead=0
         if (!segmentationWorker.isShutdown) segmentationWorker.execute { segmentationWork.close();personGpu.close();backgroundSource.close() }
@@ -2559,12 +2656,41 @@ class Capture(
 
     private inner class CaptureOverlay : View(activity) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        private val captions = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            textAlign = Paint.Align.CENTER
+            textSize = 8.5f
+            setShadowLayer(1.5f, 0f, .5f, Color.BLACK)
+        }
+        private val destinations = mapOf("projects" to "Projects", "edit" to "Edit video")
         private val lightPath = Path()
         private val hits = mutableListOf<Pair<RectF, String>>()
         private var s = 1f
         private var w = 640f
         private var h = 294f
         private val glyphs = mutableMapOf<Pair<String, Int>, Glyph>()
+        private val accessible = EditorAccessibility(this) {
+            if (recording || closed) emptyList() else destinations.mapNotNull { (id, label) ->
+                bounds(id)?.let { area ->
+                    val rect = Rect().also(area::roundOut)
+                    EditorAccessibility.Item(id, label, rect, click = { openDestination(id) })
+                }
+            }
+        }
+
+        init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES }
+
+        override fun getAccessibilityNodeProvider() = accessible
+
+        override fun dispatchHoverEvent(event: MotionEvent) = accessible.hover(event) || super.dispatchHoverEvent(event)
+
+        private fun openDestination(id: String) {
+            if (recording) return
+            suspendCamera()
+            onEdit()
+            if (id == "projects") activity.panels.projects()
+        }
 
         fun bounds(id: String) =
             hits
@@ -2610,7 +2736,7 @@ class Capture(
                     "light" -> "Light"
                     "flip" -> "Camera flip"
                     "pipSwap" -> "Camera flip"
-                    "projects" -> "Stack"
+                    "projects" -> "Folder"
                     "pause" -> if (paused) "Play" else "Pause"
                     "edit" -> "Scissors"
                     "mark" -> "Bookmark"
@@ -2657,7 +2783,10 @@ class Capture(
                 paint.typeface = Typeface.create("monospace", Typeface.BOLD)
                 paint.textSize = 11f
                 paint.textAlign = Paint.Align.CENTER
-                c.drawText(title, r.centerX(), r.centerY() + 4, paint)
+                c.drawText(title, r.centerX(), r.top + 13, paint)
+                val name = android.text.TextUtils.ellipsize(activity.editor.project.name, captions,
+                    r.width() - 12, android.text.TextUtils.TruncateAt.MIDDLE)
+                c.drawText(name, 0, name.length, r.centerX(), r.bottom - 5, captions)
             } else if (id == "camera") {
                 paint.textSize = 9f
                 paint.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
@@ -2685,14 +2814,17 @@ class Capture(
             } else if (kind == null)
                 text(c, title, r.centerX(), r.centerY() + 3, 9f, color, Paint.Align.CENTER)
             else {
+                val destination = destinations[id]
                 val glyph =
                     glyphs.getOrPut(kind to color) {
                         Glyph(activity, kind, color).apply { layout(0, 0, 18, 18) }
                     }
                 c.save()
-                c.translate(r.centerX() - 9, r.centerY() - if (id == "mark") 14 else 9)
+                val y = if (destination != null) r.top + 6 else r.centerY() - if (id == "mark") 14 else 9
+                c.translate(r.centerX() - 9, y)
                 glyph.draw(c)
                 c.restore()
+                if (destination != null) c.drawText(destination, r.centerX(), r.bottom - 6, captions)
                 if (id == "mark") text(c,
                     if (SystemClock.elapsedRealtime() < markedUntil) "Marked" else "Mark",
                     r.centerX(), r.bottom - 2, 7f, color, Paint.Align.CENTER)
@@ -2744,6 +2876,21 @@ class Capture(
             c.save()
             c.scale(s, s)
             hits.clear()
+            previewFocus?.takeIf { it.session === session && it.rotation == displayRotation &&
+                SystemClock.uptimeMillis() < it.until }?.let {
+                c.save()
+                c.clipRect(texture.left / s, texture.top / s, texture.right / s, texture.bottom / s)
+                val x = it.marker.x / s
+                val y = it.marker.y / s
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.3f
+                paint.color = Color.rgb(255, 205, 67)
+                paint.setShadowLayer(1.5f, 0f, .5f, Color.BLACK)
+                c.drawRoundRect(x - 13, y - 13, x + 13, y + 13, 2f, 2f, paint)
+                paint.clearShadowLayer()
+                paint.style = Paint.Style.FILL
+                c.restore()
+            }
             val portrait = h > w
             if (screenLight) {
                 val x = if (portrait) w - 25f else 25f
@@ -2761,17 +2908,14 @@ class Capture(
                 if (portrait) micName().take(15) else micName(),
                 "mic",
             )
-            val elapsed =
-                (duration +
-                    if (recording && !paused) SystemClock.elapsedRealtime() - since else 0) / 1000.0
-            val timer = activity.editor.project.duration + if (recording) elapsed else 0.0
+            val timer = activity.editor.project.duration + if (recording) elapsedSeconds() else 0.0
             pill(
                 c,
                 RectF(
-                    if (portrait) w / 2 - 32 else 252f,
+                    if (portrait) w / 2 - 61 else 220f,
                     top,
-                    if (portrait) w / 2 + 32 else 328f,
-                    top + if (portrait) 34 else 22,
+                    if (portrait) w / 2 + 61 else 360f,
+                    top + if (portrait) 34 else 31,
                 ),
                 "%02d:%02d".format(java.util.Locale.US, (timer / 60).toInt(), (timer % 60).toInt()),
                 "time",
@@ -2848,28 +2992,22 @@ class Capture(
             if (recording) c.drawRoundRect(cx - 13, cy - 13, cx + 13, cy + 13, 4f, 4f, paint)
             else c.drawCircle(cx, cy, 24f, paint)
             hits.add(RectF(cx - 34, cy - 34, cx + 34, cy + 34) to "record")
-            pill(
-                c,
-                RectF(
-                    if (portrait) cx - 100 else cx - 14,
-                    if (portrait) cy - 16 else cy + 52,
-                    if (portrait) cx - 64 else cx + 14,
-                    if (portrait) cy + 16 else cy + 88,
-                ),
-                if (recording) if (paused) "▶" else "Ⅱ" else "",
-                if (recording) "pause" else "projects",
-            )
-            pill(
-                c,
-                RectF(
-                    if (portrait) cx + 64 else cx - 18,
-                    if (portrait) cy - 16 else cy - 83,
-                    if (portrait) cx + 100 else cx + 18,
-                    if (portrait) cy + 16 else cy - 53,
-                ),
-                if (recording) "Mark" else "✂",
-                if (recording) "mark" else "edit",
-            )
+            if (recording) {
+                val pause = if (portrait) RectF(cx - 100, cy - 16, cx - 64, cy + 16)
+                    else RectF(cx - 14, cy + 52, cx + 14, cy + 88)
+                val mark = if (portrait) RectF(cx + 64, cy - 16, cx + 100, cy + 16)
+                    else RectF(cx - 18, cy - 83, cx + 18, cy - 53)
+                pill(c, pause, "", "pause")
+                pill(c, mark, "", "mark")
+            } else {
+                val y = min(cy, h - 24)
+                val projects = if (portrait) RectF(cx - 110, y - 22, cx - 54, y + 22)
+                    else RectF(cx - 28, cy + 48, cx + 28, cy + 92)
+                val edit = if (portrait) RectF(cx + 54, y - 22, cx + 110, y + 22)
+                    else RectF(cx - 28, cy - 90, cx + 28, cy - 46)
+                pill(c, projects, "", "projects")
+                pill(c, edit, "", "edit")
+            }
             if (portrait) {
                 paint.color = Color.argb(105, 60, 59, 55)
                 c.drawRoundRect(if (twoCameras) 78f else 30f, bottom, if (twoCameras) 216f else 264f, bottom + 33, 18f, 18f, paint)
@@ -3164,17 +3302,6 @@ class Capture(
                 if (e.actionMasked == MotionEvent.ACTION_UP) {
                     focusTouch = false
                     if (moved) { rememberLens(); return true }
-                    if (liveEffects.any { it.enabled && it.kind in setOf("Dolly Zoom","Crash Zoom") }) {
-                        val x=((e.x-texture.left)/texture.width).coerceIn(0f,1f)
-                        val y=((e.y-texture.top)/texture.height).coerceIn(0f,1f)
-                        for (fx in liveEffects.filter { it.kind in setOf("Dolly Zoom","Crash Zoom") }) {
-                            fx.setNumber("targetX",if (front && mirrorPreview!=mirrorRecording) 1-x else x);fx.setNumber("targetY",y)
-                            fx.parameter("trackFace")?.value=EffectValue.Toggle(false)
-                        }
-                        selectedEffectTarget=CameraPoint((if (front && mirrorPreview!=mirrorRecording) 1-x else x).toDouble(),y.toDouble())
-                        targetGeneration++;dollyFollower=null
-                        effectGeneration++;return true
-                    }
                     if (e.eventTime - e.downTime >= 450) { toggleFocusPeaking(); return true }
                 }
             }
@@ -3222,7 +3349,11 @@ class Capture(
             val x = e.x / s
             val y = e.y / s
             val id = hits.lastOrNull { it.first.contains(x, y) }?.second
-            if (id==null) return true
+            if (id == null) {
+                if (e.eventTime - e.downTime < 450 && hits.none { it.first.contains(downX / s, downY / s) })
+                    tapPreview(e.x, e.y)
+                return true
+            }
             when {
                 id.startsWith("z:") -> {
                     val z = id.substringAfter(':').toFloat()
@@ -3236,11 +3367,7 @@ class Capture(
                         "record" -> if (recording) stop() else start()
                         "pause" -> pause()
                         "mark" -> addMark()
-                        "edit" -> {
-                            if (recording) stop()
-                            suspendCamera()
-                            onEdit()
-                        }
+                        "edit", "projects" -> openDestination(id)
                         "mic" -> recordingAudioControls()
                         "camera" -> cameras()
                         "flip" -> {
@@ -3270,6 +3397,7 @@ class Capture(
                                 activity.message("This camera has fixed focus")
                                 return true
                             }
+                            previewFocus = null
                             focusLocked = !focusLocked
                             manualFocus = false
                             rememberLens()
@@ -3279,11 +3407,6 @@ class Capture(
                                     else CaptureRequest.CONTROL_AF_TRIGGER_CANCEL
                                 updateRequest()
                             }
-                        }
-                        "projects" -> {
-                            suspendCamera()
-                            onEdit()
-                            activity.panels.projects()
                         }
                         "pipSwap" -> swapCameras()
                         "settings" -> settings()

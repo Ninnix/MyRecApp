@@ -93,10 +93,10 @@ reference; see the editing guide for current limits.
 Read the [recording guide](docs/RECORDING.md) and
 [editing guide](docs/EDITING.md) for the controls and their limits.
 
-Release 0.1.8 pairs dual-camera frames by capture time, adds editable transform
-animation and persistent export settings, and improves stabilization and LavaSR
-speech detail. Recording reserves space for finalization, and interrupted exports
-resume from verified sections while retaining the previous completed movie.
+Release 0.1.9 adds tap-to-focus in Single camera mode and keeps recording cadence
+steadier through zoom changes. The recorder labels Projects and Edit video and
+shows the project title under the timer. The transition picker fits portrait and
+landscape screens, and transition rendering and timing are closer to YouRec.
 
 The offline caption download is 636 MB, including the
 tokenizer, while retaining Qwen3-ASR-0.6B. Its C11 GGUF backend keeps the decoder
@@ -107,7 +107,7 @@ the phone and audio. Existing projects and subtitles remain usable.
 ## Try it
 
 You need Android 9 or later and an ARM64 device. Download the APK from
-[release 0.1.8](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.8), install it, and
+[release 0.1.9](https://github.com/Ninnix/MyRecApp/releases/tag/v0.1.9), install it, and
 allow camera and microphone access when you start recording. Open Projects to
 start a project, import video, or continue an existing recording.
 

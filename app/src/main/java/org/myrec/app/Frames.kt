@@ -290,7 +290,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         }
 
     fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false,
-        originalStabilization: Boolean = false): Bitmap {
+        originalStabilization: Boolean = false, frameRate: Int = project.fps): Bitmap {
         this.originalStabilization = originalStabilization
         fps = project.fps.coerceAtLeast(1)
         tenBit = keepLinear
@@ -350,7 +350,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         } ?: layer.track }) {
             val clip = layer.clip
             if (clip != null) drawClip(canvas, clip, t, width, height)
-            else drawTransition(output, layer.transition!!, layer.before, layer.after, t)
+            else drawTransition(output, layer.transition!!, layer.before, layer.after, t, frameRate.coerceAtLeast(1))
         }
         for (cue in project.subtitleCues(t))
             TitleStyle.draw(canvas,cue.effect.copyEffect().apply { values["text"]=cue.text },width,height,t-cue.start,cue.end-cue.start)
@@ -364,17 +364,31 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         before: Clip?,
         after: Clip?,
         t: Double,
+        frameRate: Int,
     ) {
-        val a = output.copy(output.config!!, true)
-        val b = output.copy(output.config!!, true)
+        val settings=transition.controls
+        val split=settings!=null && transition.kind=="Split screen"
+        val overlays=if (split) mutableListOf<(Canvas)->Unit>() else null
+        fun picture(): Bitmap = when {
+            !split -> output.copy(output.config!!,true)
+            extended -> WorkingColor.bitmap(output.width,output.height)
+            else -> Bitmap.createBitmap(output.width,output.height,Bitmap.Config.ARGB_8888)
+        }
+        val a = picture()
+        val b = picture()
         try {
+            val edgeFade=settings!=null && transition.kind=="Fade through color" && (before==null || after==null)
+            val fill=if (edgeFade) settings.color.toInt() else Color.BLACK
+            if (before==null && (edgeFade || split)) a.eraseColor(fill)
+            if (after==null && (edgeFade || split)) b.eraseColor(fill)
             if (before != null)
                 drawClip(
                     Canvas(a),
                     before,
-                    (if (transition.kind=="Still" && transition.controls!=null) max(before.start,(ceil(transition.pictureOrigin*fps-.000001)-1)/fps) else t).coerceIn(before.start, before.end - .001),
+                    (if (transition.kind=="Still" && transition.controls!=null) max(before.start,(ceil(transition.pictureOrigin*frameRate-.000001)-1)/frameRate) else t).coerceIn(before.start, before.end - .001),
                     output.width,
                     output.height,
+                    transitionOverlays=overlays?.let { if (before.contains(t)) it else mutableListOf() },
                 )
             if (after != null)
                 drawClip(
@@ -383,18 +397,21 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                     t.coerceIn(after.start, after.end - .001),
                     output.width,
                     output.height,
+                    transitionOverlays=overlays?.let { if (after.contains(t)) it else mutableListOf() },
                 )
             val progress = transition.progress(t)
-            val settings=transition.controls
             if (settings!=null) {
-                val frame=floor(progress*transition.duration*fps+.000001).toInt()
+                val duration=TransitionClock(transition).videoDuration
+                val flashing=transition.kind=="Flash Cut" &&
+                    floor((t-transition.pictureOrigin)*frameRate+.000001).toInt() in settings.flashes(duration,frameRate)
                 val color=settings.color.toInt()
                 val p=floatArrayOf(if (settings.vertical) 1f else 0f,settings.divider.toFloat(),if (settings.reverse) 1f else 0f,
                     settings.first.x.toFloat(),settings.first.y.toFloat(),settings.first.zoom.toFloat(),settings.second.x.toFloat(),settings.second.y.toFloat(),settings.second.zoom.toFloat(),
-                    Color.red(color)/255f,Color.green(color)/255f,Color.blue(color)/255f,if (frame in settings.flashes(transition.duration,fps)) 1f else 0f,0f)
+                    Color.red(color)/255f,Color.green(color)/255f,Color.blue(color)/255f,if (flashing) 1f else 0f,0f)
                 for (i in 9..11) p[i]=if (p[i]<=.04045f) p[i]/12.92f else ((p[i]+.055f)/1.055f).pow(2.4f)
-                Native.transition(a,b,output,Effects.transitionId(transition.kind),progress,transition.amount,
+                Native.transition(a,b,output,if (edgeFade) 0 else Effects.transitionId(transition.kind),progress,transition.amount,
                     transition.angle+(if (settings.reverse) 180f else 0f),transition.soft,p)
+                if (overlays!=null) Canvas(output).let { canvas -> overlays.forEach { it(canvas) } }
             } else Native.blend(
                 a,
                 b,
@@ -433,7 +450,8 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         finally { average.recycle() }
     }
 
-    private fun drawClip(canvas: Canvas, c: Clip, at: Double, width: Int, height: Int, decorate: Boolean=true) {
+    private fun drawClip(canvas: Canvas, c: Clip, at: Double, width: Int, height: Int, decorate: Boolean=true,
+                         transitionOverlays: MutableList<(Canvas)->Unit>?=null) {
         val local = at - c.start
         val cadence=if (c.photo || c.frozen!=null) null else cadence(c).hold(c.sourceTime(at))
         val heldTime=cadence?.boundary ?: c.sourceTime(at)
@@ -441,10 +459,14 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         val fx = EffectOrder.ordered(c.effects)
             .filter { it.active(local) && (it.kind!="Placement" || ArchiveGeometry.matches(it,placementMembers)) }.map { it.sampled(c.frozen?.let { hold -> hold.sourceTime+hold.offset+local } ?: heldTime) }
             .filter { it.kind !in setOf("Freeze","Strobe","Echo","Zoom","Mirror","Rotation","Crop","Letterbox","Blur","Widescreen 1953") || it.strength(local,c.duration)>0 }
+        fun overlays() {
+            if (transitionOverlays==null) annotations(canvas,c,fx,local,at,width,height)
+            else transitionOverlays.add { annotations(it,c,fx,local,at,width,height) }
+        }
         fx.lastOrNull { it.kind=="Placement" && it.values["geometry"]=="canvas" }?.let { placement ->
             val layer=WorkingColor.bitmap(width,height)
             try {
-                drawClip(Canvas(layer),c.copy(effects=c.effects.filter { it.id!=placement.id }.toMutableList()),at,width,height,decorate)
+                drawClip(Canvas(layer),c.copy(effects=c.effects.filter { it.id!=placement.id }.toMutableList()),at,width,height,decorate,transitionOverlays)
                 val (transform,clip)=ArchiveGeometry.placement(placement,width.toDouble(),height.toDouble())
                 val saved=canvas.save()
                 try {
@@ -463,7 +485,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                 if (print!=null) Native.timeFilm(layer,2,1f,floatArrayOf(1f),effectFrame,heldTime)
                 for (effect in frames) FrameEffects.decorate(layer,effect,effect.strength(local,c.duration))
                 canvas.drawBitmap(layer,0f,0f,paint.apply { alpha=255;colorFilter=null })
-                annotations(canvas,c,fx,local,at,width,height)
+                overlays()
             } finally { layer.recycle() }
             return
         }
@@ -716,7 +738,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             canvas.drawRect(0f,0f,width.toFloat(),margin,paint)
             canvas.drawRect(0f,height-margin,width.toFloat(),height.toFloat(),paint)
         }
-        if (decorate) annotations(canvas,c,fx,local,at,width,height)
+        if (decorate) overlays()
     }
 
     private fun annotations(canvas: Canvas,c: Clip,fx: List<Effect>,local: Double,at: Double,width: Int,height: Int) {

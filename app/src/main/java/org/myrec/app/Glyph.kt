@@ -144,12 +144,50 @@ class Glyph(context: Context, private val kind: String, private var tint: Int) :
                 if (kind == "Dual camera") c.drawRoundRect(-2f, -2f, 8f, 8f, 1.5f, 1.5f, p)
                 else c.drawRoundRect(0f, 1f, 8f, 7f, 1.5f, 1.5f, p)
             }
+            "Dissolve" -> {
+                c.drawRoundRect(-8f,-2f,3f,7f,1.4f,1.4f,p)
+                c.drawRoundRect(-3f,-7f,8f,2f,1.4f,1.4f,p)
+            }
+            "Fade through color" -> {
+                c.drawCircle(0f,0f,7.5f,p)
+                p.style=Paint.Style.FILL
+                c.drawArc(-7.5f,-7.5f,7.5f,7.5f,90f,180f,true,p)
+            }
+            "Wipe" -> {
+                c.drawRoundRect(-8f,-6f,8f,6f,1.5f,1.5f,p)
+                c.drawRect(-6f,-4f,-1f,4f,p.apply { style=Paint.Style.FILL })
+            }
+            "Hitchcock" -> {
+                c.drawCircle(0f,0f,7.5f,p)
+                for (y in -6..6 step 3) path(0f,y.toFloat(),kotlin.math.sqrt(56.25f-y*y),y.toFloat())
+            }
+            "Whip pan" -> {
+                for (y in -4..4 step 4) path(-8f,y.toFloat(),(5-kotlin.math.abs(y)/2).toFloat(),y.toFloat())
+                path(3f,-5f,8f,0f,3f,5f)
+            }
+            "Flash Cut" -> {
+                p.style=Paint.Style.FILL
+                path(1f,-8f,-6f,2f,-1f,2f,-2f,8f,6f,-2f,1f,-2f,1f,-8f)
+            }
+            "Still" -> {
+                c.drawRoundRect(-8f,-6f,8f,6f,1.5f,1.5f,p)
+                path(-2f,-3f,-2f,3f)
+                path(2f,-3f,2f,3f)
+            }
+            "Defocus" -> {
+                c.drawCircle(0f,0f,7.5f,p)
+                for (i in 0 until 6) {
+                    path(-3.5f,-6.6f,3.8f,-2.4f)
+                    c.rotate(60f)
+                }
+            }
+            "Split screen",
             "Split vertical",
             "Split horizontal",
             "Split diagonal" -> {
                 c.drawRoundRect(-8f, -6f, 8f, 6f, 1.5f, 1.5f, p)
                 when (kind) {
-                    "Split vertical" -> path(0f, -6f, 0f, 6f)
+                    "Split screen", "Split vertical" -> path(0f, -6f, 0f, 6f)
                     "Split horizontal" -> path(-8f, 0f, 8f, 0f)
                     else -> {
                         path(-7f, -5f, 7f, 5f)

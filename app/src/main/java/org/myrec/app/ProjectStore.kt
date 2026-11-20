@@ -41,8 +41,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 14) throw NewerProject()
-        require(version in 1L..14L) { "Invalid project version" }
+        if (version > 15) throw NewerProject()
+        require(version in 1L..15L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -299,7 +299,7 @@ class ProjectStore(val root: File) {
         return resolvedSources(recovered(file))
     }
 
-    fun currentSession(): EditSession {
+    fun currentSession(newProject: () -> Project = { Project() }): EditSession {
         val pointer = File(root, "current")
         if (pointer.exists()) {
             try {
@@ -311,7 +311,7 @@ class ProjectStore(val root: File) {
         }
         for (card in catalog()) try { return open(card.project.id) }
         catch (error: Exception) { problems[card.project.id]=error.message ?: "Cannot open project" }
-        return EditSession(Project())
+        return EditSession(newProject())
     }
 
     fun current(): Project = currentSession().project
@@ -793,14 +793,14 @@ class ProjectStore(val root: File) {
         require(p.transitions.all { t ->
             listOf(t.at, t.duration, t.hold, t.overlap, t.amount.toDouble(),
                 t.angle.toDouble(), t.phaseFrom.toDouble(), t.phaseTo.toDouble()).all { it.isFinite() } &&
-                t.duration >= 0 && t.hold >= 0 && t.duration + t.hold > 0 &&
+                t.duration >= 0 && t.hold >= 0 && t.duration + t.hold > 0 && t.timingScale in 0.0..1.0 &&
                 t.phaseFrom in 0f..1f && t.phaseTo in t.phaseFrom..1f && t.controls?.valid()!=false && listOfNotNull(t.windowFrom,t.windowTo).all { it.isFinite() && kotlin.math.abs(it)<=604800 } && (t.windowFrom==null && t.windowTo==null || t.windowFrom!=null && t.windowTo!=null && t.windowTo!!>t.windowFrom!!)
         }) { "Invalid transition timing" }
     }
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", 14)
+            put("version", if (p.transitions.any { it.timingScale != 1.0 }) 15 else 14)
             put("captureCount", p.captureCount)
             put("bookmarks",JSONArray().apply { p.bookmarks.forEach { put(JSONObject().put("id",it.id).put("time",it.time).put("label",it.label)) } })
             put("id", p.id)
@@ -894,6 +894,7 @@ class ProjectStore(val root: File) {
                                 put("soft", t.soft)
                                 put("phaseFrom", t.phaseFrom)
                                 put("phaseTo", t.phaseTo);put("windowFrom",t.windowFrom);put("windowTo",t.windowTo)
+                                if (t.timingScale != 1.0) put("timingScale",t.timingScale)
                                 t.controls?.let { c -> put("controls",JSONObject().apply {
                                     put("vertical",c.vertical);put("divider",c.divider);put("reverse",c.reverse);put("audio",c.audio);put("color",c.color)
                                     put("audioOffset",c.audioOffset);put("audioBlend",c.audioBlend);put("flashCount",c.flashCount);put("flashAcceleration",c.flashAcceleration);put("stillDissolve",c.stillDissolve)
@@ -1051,6 +1052,7 @@ class ProjectStore(val root: File) {
                     },
                     if (t.has("windowFrom")) t.getDouble("windowFrom") else null,
                     if (t.has("windowTo")) t.getDouble("windowTo") else null,
+                    t.optDouble("timingScale", 1.0),
                 )
             )
         }

@@ -1,14 +1,18 @@
 package org.myrec.app
 
 import android.app.Instrumentation
-import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.TextureView
 import java.io.File
 import kotlin.math.*
 
@@ -52,6 +56,9 @@ object FocusControlsTest {
         val manager = a.getSystemService(CameraManager::class.java)
         val cameras = CameraLenses.available(manager).map { it.id }.distinct()
         val back = cameras.first { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK }
+        val lens = manager.getCameraCharacteristics(back)
+        val continuous = CameraFocus.mode(lens.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf())
+        val targetable = (lens.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0 && CameraFocus.canLock(continuous)
         val other = cameras.firstOrNull { it != back }
         onMain { a.showCapture() }
         val capture = (0 until a.root.childCount).map { a.root.getChildAt(it) }.filterIsInstance<Capture>().single()
@@ -68,8 +75,67 @@ object FocusControlsTest {
             onMain { capture.switchCamera(id) }
             waitFor { capture.readyToRecord && capture.latestResult != null }
         }
+        fun tap(x: Float, y: Float) {
+            val now = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(now, now + 30, action, x, y, 0)
+                try { capture.dispatchTouchEvent(event) } finally { event.recycle() }
+            }
+        }
+        fun previewTap(x: Double, y: Double) {
+            val preview = capture.getChildAt(0) as TextureView
+            tap(preview.left + (preview.width * x).toFloat(), preview.top + (preview.height * y).toFloat())
+        }
+        fun region(): Rect? {
+            val result = capture.latestResult ?: return null
+            if (result.request.get(CaptureRequest.CONTROL_AF_REGIONS)?.any { it.meteringWeight > 0 } != true) return null
+            return result.get(CaptureResult.CONTROL_AF_REGIONS)?.firstOrNull { it.meteringWeight > 0 }?.rect
+        }
         try {
             switch(back)
+            if (targetable) test("preview taps move the hardware focus region in portrait and landscape") {
+                val originalOrientation = a.requestedOrientation
+                try {
+                    for (landscape in listOf(false, true)) {
+                        onMain {
+                            a.requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                        }
+                        waitFor { (capture.width > capture.height) == landscape }
+                        switch(back)
+                        waitFor { capture.cameraFrame(32, 18)?.let { it.recycle(); true } ?: false }
+                        var rotation = 0
+                        onMain {
+                            val sensor = lens.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                            rotation = CameraOrientation.recording(sensor, a.windowManager.defaultDisplay.rotation * 90, false)
+                            previewTap(.28, .34)
+                        }
+                        waitFor { region() != null }
+                        val first = checkNotNull(region())
+                        onMain {
+                            val p = capture.getChildAt(0)
+                            val scale = min(capture.width, capture.height) / 294f
+                            val image = Bitmap.createBitmap(capture.width, capture.height, Bitmap.Config.ARGB_8888)
+                            try {
+                                capture.getChildAt(1).draw(Canvas(image))
+                                val x = (p.left + p.width * .28).roundToInt()
+                                val y = (p.top + p.height * .34 - 13 * scale).roundToInt()
+                                check((y - 4..y + 4).any { Color.red(image.getPixel(x,it)) == 255 &&
+                                    Color.green(image.getPixel(x,it)) == 205 }) { "Missing focus box near the tap" }
+                            } finally { image.recycle() }
+                            previewTap(.72, .66)
+                        }
+                        waitFor { region()?.let { it != first } == true }
+                        val second = checkNotNull(region())
+                        val from = CameraFraming.oriented(CameraPoint(.28,.34), -rotation)
+                        val to = CameraFraming.oriented(CameraPoint(.72,.66), -rotation)
+                        check((second.centerX() - first.centerX()) * (to.x - from.x) > 0)
+                        check((second.centerY() - first.centerY()) * (to.y - from.y) > 0)
+                        waitFor { capture.latestResult?.request?.get(CaptureRequest.CONTROL_AF_MODE) == continuous }
+                        check(!capture.focusIsLocked)
+                    }
+                } finally { onMain { a.requestedOrientation = originalOrientation } }
+            }
             test("each camera restores its own zoom and manual lens state across switches and reopen") {
                 onMain {
                     capture.setZoom(1.4f, true)
@@ -102,6 +168,10 @@ object FocusControlsTest {
                         capture.dispatchTouchEvent(event); event.recycle()
                     }
                     if (capture.focusAdjustable) check(abs(capture.focusPosition - .625f) < .01)
+                    if (capture.focusAdjustable) {
+                        previewTap(.4, .35)
+                        check(capture.manualFocusActive && abs(capture.focusPosition - .625f) < .01)
+                    }
                     val wasLocked = capture.focusIsLocked
                     val before = prefs.getBoolean("focusPeaking", false)
                     for ((action, elapsed) in listOf(MotionEvent.ACTION_DOWN to 0L, MotionEvent.ACTION_UP to 500L)) {
@@ -112,8 +182,17 @@ object FocusControlsTest {
                 }
             }
             test("focus aid remains a preview overlay and recording retains a decodable source") {
-                onMain { a.editor.load(Project(name = "Focus controls check")); capture.start() }
+                onMain {
+                    a.editor.load(Project(name = "Focus controls check"))
+                    if (targetable && capture.focusIsLocked) capture.controlBounds("focus")?.let { tap(it.centerX(), it.centerY()) }
+                    capture.start()
+                }
                 Thread.sleep(1300); check(capture.recording)
+                if (targetable) {
+                    onMain { previewTap(.62, .42) }
+                    waitFor { region() != null }
+                    check(capture.recording)
+                }
                 onMain { capture.stop() }
                 val clip = a.editor.project.clips.single()
                 check(clip.effects.none { it.kind.contains("Peaking", true) } && File(clip.path).length() > 1000)

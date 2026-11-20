@@ -35,6 +35,8 @@ camera setup or horizon settings.
 The camera-with-arrows button switches front and rear. The lens selector lists
 available cameras. Zoom presets use the selected duration; a quick second tap
 changes zoom immediately. Each camera remembers its own zoom and focus state.
+In Single camera mode with AF enabled, tap a subject in the preview to focus on
+it. A yellow box marks the selected point on lenses that support it.
 Tap AF to request or release focus lock. On adjustable lenses, drag the locked
 focus control vertically for manual focus; short movements make fine changes,
 and longer movements accelerate. The percentage runs toward infinity at 100%.

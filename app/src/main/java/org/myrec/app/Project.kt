@@ -182,6 +182,7 @@ data class Transition(
     var controls: TransitionControls? = null,
     var windowFrom: Double? = null,
     var windowTo: Double? = null,
+    var timingScale: Double = 1.0,
 ) {
     private val window: Pair<Double,Double>
         get()=if (controls==null) 0.0 to duration+hold else TransitionClock(this).let { (windowFrom ?: it.lower) to (windowTo ?: it.upper) }
@@ -250,7 +251,8 @@ data class Project(
     var movieSettings: MovieSettings = MovieSettings(),
 ) {
     val duration
-        get() = clips.maxOfOrNull { it.end } ?: 0.0
+        get() = max(clips.maxOfOrNull { it.end } ?: 0.0,
+            transitions.asSequence().filter { it.controls!=null && it.rightId==null && it.leftId!=null }.maxOfOrNull { it.end } ?: 0.0)
 
     fun duplicate() =
         copy(
@@ -487,12 +489,12 @@ class Editor(var project: Project = Project()) {
         for (transition in project.transitions.toList()) {
             val left = project.clips.firstOrNull { it.id == transition.leftId }
             val right = project.clips.firstOrNull { it.id == transition.rightId }
-            val available = transitionAvailable(left, right, transition.id)
-            val cost=if (transition.controls!=null) transition.handleCosts().let { max(it.first,it.second) } else transition.overlap
-            if (cost > available + .000001)
-                placeTransition(
-                    transition.copy(duration = max(.001, available - 1.0 / project.fps))
-                )
+            val (before,after)=transitionSpace(left,right,transition.id)
+            val (usedBefore,usedAfter)=transition.handleCosts()
+            if (usedBefore > before+.000001 || usedAfter > after+.000001) {
+                val value=if (transition.controls!=null) transition else transition.copy(duration=max(.001,min(before,after)-1.0/project.fps))
+                placeTransition(value)
+            }
         }
         project.clips.forEach {
             it.start = max(0.0, it.start)
@@ -957,7 +959,7 @@ class Editor(var project: Project = Project()) {
         change { placeTransition(value) }
     }
 
-    private fun transitionAvailable(left: Clip?, right: Clip?, except: String? = null): Double {
+    private fun transitionSpace(left: Clip?, right: Clip?, except: String? = null): Pair<Double,Double> {
         val incoming =
             left?.let { clip ->
                 project.transitions
@@ -971,17 +973,25 @@ class Editor(var project: Project = Project()) {
                     .sumOf { if (it.controls!=null) it.handleCosts().first else it.overlap }
             } ?: 0.0
         fun length(clip: Clip) = project.sourceSpan(clip).let { it.endInclusive - it.start }
-        return min(
-            left?.let { length(it) - incoming } ?: Double.MAX_VALUE,
-            right?.let { length(it) - outgoing } ?: Double.MAX_VALUE,
-        )
+        return (left?.let { length(it) - incoming } ?: Double.MAX_VALUE) to
+            (right?.let { length(it) - outgoing } ?: Double.MAX_VALUE)
     }
 
     fun transitionMaximum(left: Clip?, right: Clip?, except: String? = null): Double {
-        val available = transitionAvailable(left, right, except)
+        val (before,after)=transitionSpace(left,right,except)
+        val available = min(before,after)
         if (available == Double.MAX_VALUE) return 5.0
         if (available <= .000001) return 0.0
         return max(min(.01, available), available - 1.0 / project.fps)
+    }
+
+    fun transitionMaximum(value: Transition,left: Clip?,right: Clip?,except: String?): Double {
+        if (value.controls==null) return transitionMaximum(left,right,except)
+        if (left==null && right==null) return 0.0
+        if (value.kind=="Still") return 604800.0
+        val (before,after)=transitionSpace(left,right,except)
+        val demand=if (value.kind=="Fade through color" && left!=null && right!=null) .5 else 1.0
+        return (min(before,after)/demand).coerceIn(0.0,604800.0)
     }
 
     private fun placeTransition(value: Transition) {
@@ -1004,18 +1014,20 @@ class Editor(var project: Project = Project()) {
         for (source in listOfNotNull(left, right)) project.clips
             .filter { it.id == source.id || it.audio && !it.video && samePart(it, source) }
             .forEach { it.group = source.group }
-        val maximum = transitionMaximum(left, right)
-        if (maximum <= 0) return
-        project.transitions.removeAll {
+        val competing=project.transitions.filter {
             (left != null && it.leftId == left.id) || (right != null && it.rightId == right.id)
         }
+        competing.forEach(::detachTransition)
+        val maximum = transitionMaximum(value,left,right,null)
+        if (maximum <= 0) return
         if (left != null && right != null) {
             val members = setOf(ArchiveGeometry.owner(left), ArchiveGeometry.owner(right))
             for (clip in project.clips) clip.effects.removeAll {
                 it.kind == "Placement" && it.values["members"]?.split(',')?.toSet() == members
             }
         }
-        val duration = value.duration.coerceIn(min(.01, maximum), maximum)
+        val duration = if (value.controls!=null) value.duration.coerceIn(.001,604800.0)
+            else value.duration.coerceIn(min(.01, maximum), maximum)
         val result =
             value.copy(
                 duration = duration,
@@ -1025,18 +1037,20 @@ class Editor(var project: Project = Project()) {
             )
         if (result.controls!=null) {
             result.windowFrom=null;result.windowTo=null
-            var clock=TransitionClock(result)
-            val available=transitionAvailable(left,right)
-            val cost=max(clock.leftCost,clock.rightCost)
-            if (cost>available && cost>0) {
-                val factor=max(.000001,(available-1.0/project.fps)/cost)
-                result.duration*=factor;result.hold*=factor
-                result.controls=result.controls!!.let { c -> c.copy(audioOffset=c.audioOffset?.times(factor),audioBlend=c.audioBlend?.times(factor),stillDissolve=c.stillDissolve*factor) }
-                clock=TransitionClock(result)
+            val (before,after)=transitionSpace(left,right)
+            fun fits(factor: Double)=TransitionClock(result,factor).let { it.leftCost<=before+.00000001 && it.rightCost<=after+.00000001 }
+            result.timingScale=1.0
+            if (!fits(1.0)) {
+                var low=0.0; var high=1.0
+                repeat(40) { val mid=(low+high)/2; if (fits(mid)) low=mid else high=mid }
+                result.timingScale=low
             }
-            result.overlap=if (left!=null && right!=null) clock.overlap else 0.0
-            val origin=if (left!=null) left.end-clock.leftEnd else right!!.start-clock.rightStart
-            if (left!=null && right!=null) shiftFrom(right,origin+clock.rightStart-right.start,left,null)
+            val clock=TransitionClock(result)
+            if (clock.videoDuration<=.000001) return
+            val origin=if (left!=null) left.end-clock.leftEnd else max(0.0,right!!.start-clock.rightStart)
+            val delta=right?.let { origin+clock.rightStart-it.start } ?: 0.0
+            result.overlap=-delta
+            if (right!=null && abs(delta)>.00000001) shiftFrom(right,delta,left,null)
             result.at=origin+(clock.lower+clock.upper)/2
             if (abs(cursor-boundary)<.1) cursor=result.cut
             project.transitions.add(result);return
@@ -1330,10 +1344,16 @@ class Editor(var project: Project = Project()) {
                     if (overlap <= 0 || overlap > transition.overlap + .00001) project.transitions.remove(transition)
                     else {
                         val ratio = overlap / transition.overlap
-                        transition.duration *= ratio
-                        transition.hold *= ratio
+                        if (transition.controls != null) {
+                            transition.timingScale = (transition.timingScale * ratio).coerceAtMost(1.0)
+                            val clock = TransitionClock(transition)
+                            transition.at = left!!.end - clock.leftEnd + (clock.lower + clock.upper) / 2
+                        } else {
+                            transition.duration *= ratio
+                            transition.hold *= ratio
+                            transition.at = (left!!.end + right!!.start) / 2
+                        }
                         transition.overlap = overlap
-                        transition.at = (left!!.end + right!!.start) / 2
                     }
                 }
             }
