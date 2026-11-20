@@ -92,6 +92,8 @@ class DualCamera(
                 renderer.clearInputs()
                 val inputs =
                     characteristics.mapIndexed { index, chars ->
+                        val rates = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                        val maximumFps = if (rates?.contains(Range(30, 30)) == true) 30 else rates?.maxOfOrNull { it.upper } ?: 30
                         renderer.input(
                             size.width,
                             size.height,
@@ -101,6 +103,7 @@ class DualCamera(
                             primaries(ids[index]),
                             ids[index],
                             android.os.Build.VERSION.SDK_INT<33 && chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)==CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
+                            maximumFps = maximumFps,
                         )
                     }
                 val configs =

@@ -42,32 +42,11 @@ class CameraComposition(
     private var encoderHeight = 0
     private var orientation = 0
     private var fps = 30
-    private var nextFrame = 0L
+    private var nextFrame = Long.MIN_VALUE
     private var recordingClock: ((Long) -> Unit)? = null
     private var encoderStartedAt=Long.MAX_VALUE
     private var encoderTimestamp=Long.MIN_VALUE
     private var encoderFrameTime=0L
-    private val encoderTick =
-        object : Runnable {
-            override fun run() {
-                if (closed || encoder == EGL14.EGL_NO_SURFACE) return
-                try {
-                    val stamp=inputs.maxOfOrNull { it.frame.time } ?: Long.MIN_VALUE
-                    if (stamp>encoderTimestamp && inputs.all { it.frame.time>=encoderStartedAt }) {
-                        encoderFrameTime=stamp
-                        draw(encoder, encoderWidth, encoderHeight, orientation)
-                        encoderTimestamp=stamp
-                    }
-                } catch (e: Throwable) {
-                    failure(e)
-                    return
-                }
-                nextFrame += 1_000_000_000L / fps
-                val now = System.nanoTime()
-                if (nextFrame < now) nextFrame = now
-                handler.postDelayed(this, ((nextFrame - now) / 1_000_000).coerceAtLeast(1))
-            }
-        }
     private var program = 0
     private var retainedProgram = 0
     private var frameCopy: CameraFrameCopy? = null
@@ -116,6 +95,7 @@ class CameraComposition(
         val id: String,
         val realtime: Boolean,
         var hardwareZoom: Double,
+        val maximumFps: Int,
         val pixels: P010Texture?=null,
     ) {
         // Two pending frames can absorb delivery jitter while the displayed frame stays intact.
@@ -311,12 +291,12 @@ class CameraComposition(
     }
 
     fun input(width: Int, height: Int, sensor: Int, front: Boolean, primaries: Int = 0,
-        id: String="", realtime: Boolean=false,zoom: Double=1.0): Surface =
+        id: String="", realtime: Boolean=false,zoom: Double=1.0,maximumFps: Int=30): Surface =
         call {
             check(inputs.size < 2)
             if (planar) {
                 val pixels=P010Texture(width,height)
-                val source=Input(0,null,pixels.reader.surface,width,height,sensor,front,primaries,id,realtime,zoom,pixels)
+                val source=Input(0,null,pixels.reader.surface,width,height,sensor,front,primaries,id,realtime,zoom,maximumFps,pixels)
                 inputs.add(source)
                 pixels.reader.setOnImageAvailableListener({ reader ->
                     if (!closed && source in inputs) try { reader.acquireLatestImage()?.use { image ->
@@ -337,7 +317,7 @@ class CameraComposition(
                 .glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, p, GLES20.GL_CLAMP_TO_EDGE)
             val image = SurfaceTexture(names[0]).apply { setDefaultBufferSize(width, height) }
             val source =
-                Input(names[0], image, Surface(image), width, height, sensor, front, primaries,id,realtime,zoom)
+                Input(names[0], image, Surface(image), width, height, sensor, front, primaries,id,realtime,zoom,maximumFps)
             inputs.add(source)
             image.setOnFrameAvailableListener(
                 {
@@ -387,7 +367,25 @@ class CameraComposition(
             source.pending.addLast(frame)
             if (!pairFrames()) return
         } else updateAssistance(source)
+        encodeFrame()
         render()
+    }
+
+    private fun encodeFrame() {
+        if (encoder == EGL14.EGL_NO_SURFACE || inputs.any { it.frame.time < encoderStartedAt }) return
+        val stamp = inputs.maxOf { it.frame.time }
+        if (stamp <= encoderTimestamp) return
+        val sourceFps = inputs.maxOf { it.maximumFps }
+        // Only downsample inputs negotiated above the requested recording rate.
+        if (sourceFps > fps) {
+            val period = 1_000_000_000L / fps
+            val tolerance = 500_000_000L / sourceFps
+            if (nextFrame != Long.MIN_VALUE && stamp < nextFrame - tolerance) return
+            nextFrame = (if (nextFrame == Long.MIN_VALUE || stamp - nextFrame >= period) stamp else nextFrame) + period
+        } else nextFrame = Long.MIN_VALUE
+        encoderFrameTime = stamp
+        draw(encoder, encoderWidth, encoderHeight, orientation)
+        encoderTimestamp = stamp
     }
 
     private fun pairFrames(): Boolean {
@@ -637,7 +635,6 @@ class CameraComposition(
         hint: Int = 0,
         framesPerSecond: Int = 30, clock: ((Long) -> Unit)? = null,
     ) = call {
-        handler.removeCallbacks(encoderTick)
         recordingClock=clock
         if (encoder != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, encoder)
         encoder = EGL14.EGL_NO_SURFACE
@@ -657,8 +654,7 @@ class CameraComposition(
             encoderHeight = h
             orientation = hint
             fps = framesPerSecond.coerceIn(1, 60)
-            nextFrame = System.nanoTime()
-            handler.post(encoderTick)
+            nextFrame = Long.MIN_VALUE
         }
     }
 

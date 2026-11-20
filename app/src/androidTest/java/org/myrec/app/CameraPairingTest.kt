@@ -13,6 +13,34 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 
 internal object CameraPairingTest {
+    fun encoderCadence() {
+        val thread = HandlerThread("cadence-test-output").apply { start() }
+        val handler = Handler(thread.looper)
+        val failure = AtomicReference<Throwable>()
+        fun reader() = ImageReader.newInstance(96, 64, PixelFormat.RGBA_8888, 3).apply {
+            setOnImageAvailableListener({ it.acquireLatestImage()?.close() }, handler)
+        }
+        try {
+            reader().use { preview -> reader().use { recording ->
+                CameraComposition(preview.surface, 96, 64) { failure.set(it) }.use { renderer ->
+                    val input = renderer.input(96, 64, 0, false, maximumFps = 60)
+                    val encoded = CopyOnWriteArrayList<Long>()
+                    renderer.record(recording.surface, 96, 64, clock = { encoded.add(it) })
+                    val start = System.nanoTime()
+                    TimedFrames(listOf(input)).use { producer ->
+                        repeat(8) { index ->
+                            producer.send(0, start + index * 1_000_000_000L / 60, Color.RED)
+                            Thread.sleep(45)
+                        }
+                    }
+                    failure.get()?.let { throw it }
+                    check(encoded.toList() == (0..6 step 2).map { start + it * 1_000_000_000L / 60 }) { "$encoded" }
+                    renderer.record(null)
+                }
+            } }
+        } finally { thread.quitSafely() }
+    }
+
     fun run() {
         val width=96
         val height=64

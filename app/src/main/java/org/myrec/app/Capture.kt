@@ -142,7 +142,7 @@ class Capture(
         sample = { pcm,time -> recorder?.appendAudio(pcm,time) })
     private var communicationRoute = -1
     private var previousAudioMode = AudioManager.MODE_NORMAL
-    internal var latestResult: TotalCaptureResult? = null
+    @Volatile internal var latestResult: TotalCaptureResult? = null
         private set
 
     private var focusLocked = false
@@ -610,10 +610,12 @@ class Capture(
             if (composition==null) composition=newComposition()
             composition!!.clearInputs()
             val chars=manager.getCameraCharacteristics(cameraId)
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            val rate = cameraFrameRate(chars) ?: builder.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
             val surfaces=mutableListOf(composition!!.input(captureSize.width,captureSize.height,
                 chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,front,hdrColor.profile(cameraId),cameraId,
                 Build.VERSION.SDK_INT<33 && chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)==CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
-                (assistInputZoom ?: zoom).toDouble()))
+                (assistInputZoom ?: zoom).toDouble(),maximumFps = rate?.upper ?: 30))
             updateAssistance()
             recordingSurface?.let {
                 val chars = manager.getCameraCharacteristics(cameraId)
@@ -634,11 +636,8 @@ class Capture(
                     )
                 )
             }
-            request =
-                camera.createCaptureRequest(
-                    CameraDevice.TEMPLATE_RECORD
-                )
-            surfaces.forEach { request!!.addTarget(it) }
+            surfaces.forEach { builder.addTarget(it) }
+            request = builder
             val callback =
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(s: CameraCaptureSession) {
@@ -733,6 +732,12 @@ class Capture(
         }
     }
 
+    private fun cameraFrameRate(chars: CameraCharacteristics): Range<Int>? {
+        val fps = prefs.getInt("fps", 30)
+        return chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.filter { it.contains(fps) }?.minByOrNull { it.upper - it.lower }
+    }
+
     private fun updateRequest() {
         updateAssistance()
         dualCamera?.let {
@@ -746,18 +751,12 @@ class Capture(
         val r = request ?: return
         try {
             r.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            val fps = prefs.getInt("fps", 30)
-            manager
-                .getCameraCharacteristics(cameraId)
-                .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-                ?.filter { it.contains(fps) }
-                ?.minByOrNull { it.upper - it.lower }
-                ?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            val characteristics=manager.getCameraCharacteristics(cameraId)
+            cameraFrameRate(characteristics)?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             r.set(CaptureRequest.CONTROL_AF_MODE, if (manualFocus) CaptureRequest.CONTROL_AF_MODE_OFF else focusMode)
             if (manualFocus) r.set(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistance)
             r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             r.set(CaptureRequest.CONTROL_AE_LOCK, false)
-            val characteristics=manager.getCameraCharacteristics(cameraId)
             r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (faceFollowEnabled || cameraTracking()) CameraFaces.mode(characteristics) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
             val inputZoom=assistInputZoom ?: zoom
             r.set(
