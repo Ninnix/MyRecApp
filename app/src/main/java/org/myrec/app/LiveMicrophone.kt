@@ -20,6 +20,7 @@ class LiveMicrophone(
     val gain = RecordingGain()
     val readings = RecordingReadings()
     private val worker = Executors.newSingleThreadExecutor()
+    private val stateLock = Any()
     @Volatile private var input: AudioRecord? = null
     @Volatile private var generation = 0
     @Volatile private var closed = false
@@ -32,6 +33,20 @@ class LiveMicrophone(
     val sessionId get() = input?.audioSessionId
     val configuration get() = if (Build.VERSION.SDK_INT >= 29) input?.activeRecordingConfiguration else null
 
+    private fun routedInput(record: AudioRecord, configuration: AudioRecordingConfiguration?): AudioDeviceInfo? =
+        record.routedDevice ?: configuration?.audioDevice
+            ?: if (Build.VERSION.SDK_INT >= 36) record.routedDevices.firstOrNull() else null
+
+    private fun activeBuiltInInput(record: AudioRecord, preferred: AudioDeviceInfo): AudioDeviceInfo? =
+        // Some camera audio modes report the individual microphones but omit the array's route.
+        runCatching {
+            preferred.takeIf { device ->
+                record.activeMicrophones.any { mic ->
+                    mic.type == device.type && mic.address == device.address
+                }
+            }
+        }.getOrNull()
+
     fun start(device: AudioDeviceInfo?, source: Int) {
         if (closed) return
         if (running && this.source == source) {
@@ -42,8 +57,11 @@ class LiveMicrophone(
             return
         }
         stop()
-        this.source = source; requested = device
-        val ticket = ++generation
+        val ticket = synchronized(stateLock) {
+            this.source = source
+            requested = device
+            ++generation
+        }
         worker.execute {
             var record: AudioRecord? = null
             var routing: AudioRouting.OnRoutingChangedListener? = null
@@ -70,14 +88,22 @@ class LiveMicrophone(
                     } catch (e: Throwable) { negotiation = e }
                 }
                 val current = record ?: throw negotiation ?: IllegalStateException("Microphone is unavailable")
-                if (ticket != generation || closed) return@execute
-                input = current
+                synchronized(stateLock) {
+                    if (ticket != generation || closed) return@execute
+                    input = current
+                }
                 routing = AudioRouting.OnRoutingChangedListener { route ->
-                    if (input === current) {
-                        actual = route.routedDevice
-                        actual?.let { gain.set(gainForDevice(it)) }
-                        changed()
+                    val reported = route.routedDevice ?: routedInput(current, configuration)
+                    val active = synchronized(stateLock) {
+                        if (input !== current) false else {
+                            if (reported != null) {
+                                actual = reported
+                                gain.set(gainForDevice(reported))
+                            }
+                            true
+                        }
                     }
+                    if (active) changed()
                 }
                 current.addOnRoutingChangedListener(routing, ui)
                 val channels = current.channelCount
@@ -85,6 +111,8 @@ class LiveMicrophone(
                 val stamp = AudioTimestamp()
                 val clock = MicrophoneClock()
                 var readFrames = 0L
+                var fallback: AudioDeviceInfo? = null
+                var nextRouteCheck = 0L
                 while (ticket == generation && !closed) {
                     val n = current.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                     check(n > 0) { if (n == AudioRecord.ERROR_DEAD_OBJECT) "Microphone connection was lost" else "Microphone audio stopped ($n)" }
@@ -94,25 +122,45 @@ class LiveMicrophone(
                     readFrames += frames
                     val hardware=if (current.getTimestamp(stamp, AudioTimestamp.TIMEBASE_MONOTONIC)==AudioRecord.SUCCESS)
                         stamp.nanoTime+(before-stamp.framePosition)*1_000_000_000L/48000 else null
-                    val time=clock.block(frames,System.nanoTime(),hardware)
-                    val route = current.routedDevice
-                    if (route?.id != actual?.id) {
-                        actual = route
-                        route?.let { gain.set(gainForDevice(it)) }
-                        ui.post { if (input === current) changed() }
+                    val now = System.nanoTime()
+                    val time=clock.block(frames,now,hardware)
+                    val configuration = if (Build.VERSION.SDK_INT >= 29) current.activeRecordingConfiguration else null
+                    val reported = routedInput(current, configuration)
+                    val preferred = requested?.takeIf {
+                        reported == null && source == MediaRecorder.AudioSource.CAMCORDER &&
+                            it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC && it.address.isNotEmpty() &&
+                            configuration?.isClientSilenced != true
                     }
-                    if (Build.VERSION.SDK_INT >= 29 && current.activeRecordingConfiguration?.isClientSilenced == true) {
-                        readings.reset()
-                        continue
+                    if (preferred == null) {
+                        fallback = null
+                        nextRouteCheck = 0L
+                    } else if (now >= nextRouteCheck) {
+                        fallback = activeBuiltInInput(current, preferred)
+                        nextRouteCheck = now + 250_000_000L
                     }
-                    val pcm = gain.process(buffer, n, channels)
-                    readings.update(pcm, System.nanoTime())
-                    sample(pcm, time)
+                    val route = reported ?: fallback?.takeIf { it.id == preferred?.id }
+                    synchronized(stateLock) {
+                        // A read started before stop can still return a final buffer.
+                        if (ticket != generation || input !== current || closed) return@execute
+                        if (route?.id != actual?.id) {
+                            actual = route
+                            route?.let { gain.set(gainForDevice(it)) }
+                            ui.post { if (input === current) changed() }
+                        }
+                        if (Build.VERSION.SDK_INT >= 29 && configuration?.isClientSilenced == true) readings.reset()
+                        else {
+                            val pcm = gain.process(buffer, n, channels)
+                            readings.update(pcm, now)
+                            sample(pcm, time)
+                        }
+                    }
                 }
             } catch (e: Throwable) {
                 problem = e
             } finally {
-                if (input === record) { input = null; actual = null }
+                synchronized(stateLock) {
+                    if (input === record) { input = null; actual = null }
+                }
                 routing?.let { listener -> runCatching { record?.removeOnRoutingChangedListener(listener) } }
                 runCatching { record?.stop() }
                 record?.release()
@@ -124,10 +172,10 @@ class LiveMicrophone(
     }
 
     fun stop() {
-        generation++
-        val old = input
-        input = null; actual = null
-        readings.reset()
+        val old = synchronized(stateLock) {
+            generation++
+            input.also { input = null; actual = null; readings.reset() }
+        }
         runCatching { old?.stop() }
     }
 

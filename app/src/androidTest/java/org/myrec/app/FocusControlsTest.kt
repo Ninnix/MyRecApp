@@ -60,16 +60,20 @@ object FocusControlsTest {
         val continuous = CameraFocus.mode(lens.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf())
         val targetable = (lens.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0 && CameraFocus.canLock(continuous)
         val other = cameras.firstOrNull { it != back }
-        onMain { a.showCapture() }
-        val capture = (0 until a.root.childCount).map { a.root.getChildAt(it) }.filterIsInstance<Capture>().single()
-        fun waitFor(predicate: () -> Boolean) {
+        lateinit var capture: Capture
+        onMain {
+            a.showCapture()
+            capture = (0 until a.root.childCount).map { a.root.getChildAt(it) }.filterIsInstance<Capture>().single()
+            capture.switchCamera(back)
+        }
+        fun waitFor(message: String = "Camera controls did not reach the expected state", predicate: () -> Boolean) {
             val deadline = SystemClock.uptimeMillis() + 12000
             while (SystemClock.uptimeMillis() < deadline) {
                 var ready = false; onMain { ready = predicate() }
                 if (ready) return
                 Thread.sleep(100)
             }
-            error("Camera controls did not reach the expected state")
+            error("$message. ${a.lastMessage}")
         }
         fun switch(id: String) {
             onMain { capture.switchCamera(id) }
@@ -92,7 +96,7 @@ object FocusControlsTest {
             return result.get(CaptureResult.CONTROL_AF_REGIONS)?.firstOrNull { it.meteringWeight > 0 }?.rect
         }
         try {
-            switch(back)
+            waitFor("Camera did not open when the preview became available") { capture.readyToRecord && capture.latestResult != null }
             if (targetable) test("preview taps move the hardware focus region in portrait and landscape") {
                 val originalOrientation = a.requestedOrientation
                 try {
@@ -182,12 +186,17 @@ object FocusControlsTest {
                 }
             }
             test("focus aid remains a preview overlay and recording retains a decodable source") {
+                waitFor("Camera and microphone did not become ready after reopening") {
+                    capture.readyToRecord && capture.microphoneInput != null && capture.microphoneReceiving
+                }
                 onMain {
                     a.editor.load(Project(name = "Focus controls check"))
                     if (targetable && capture.focusIsLocked) capture.controlBounds("focus")?.let { tap(it.centerX(), it.centerY()) }
                     capture.start()
                 }
-                Thread.sleep(1300); check(capture.recording)
+                waitFor("Focus-aid recording did not start") {
+                    capture.recording && !capture.paused && capture.elapsedSeconds() >= 1.3
+                }
                 if (targetable) {
                     onMain { previewTap(.62, .42) }
                     waitFor { region() != null }

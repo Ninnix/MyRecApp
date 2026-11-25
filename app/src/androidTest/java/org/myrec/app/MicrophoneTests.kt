@@ -114,7 +114,17 @@ object MicrophoneTests {
                 File(evidence,"gain.txt").writeText("gain=$db dB frames=${decoded.size/2} left=$base right=${rms(.2,.8,1)}\n")
             }
             main { a.showCapture(); capture.setHdr(false) }
-            waitFor("Camera and live microphone did not become ready") { capture.readyToRecord && microphone.running && microphone.readings.arriving(System.nanoTime()) && microphone.actual!=null }
+            try {
+                waitFor("Camera and live microphone did not become ready") { capture.readyToRecord && microphone.running && microphone.readings.arriving(System.nanoTime()) && microphone.actual!=null }
+            } catch (e: IllegalStateException) {
+                val input=LiveMicrophone::class.java.getDeclaredField("input").apply { isAccessible=true }.get(microphone) as? AudioRecord
+                fun port(d: AudioDeviceInfo?) = d?.let { "${it.id}/${it.type}/${it.address}" }
+                val available=capture.microphoneDevices().map(::port)
+                val active=runCatching { input?.activeMicrophones?.map { "${it.type}/${it.address}" } }.getOrNull()
+                error("${e.message}. Inputs=$available preferred=${port(input?.preferredDevice)} " +
+                    "routed=${port(input?.routedDevice)} configured=${port(microphone.configuration?.audioDevice)} " +
+                    "active=$active receiving=${microphone.readings.arriving(System.nanoTime())}")
+            }
             test("live microphone gain is remembered across input-engine reopening") {
                 val actual=microphone.actual ?: error("Missing actual route")
                 main { capture.setRecordingGain(-10.5f) }
@@ -269,7 +279,9 @@ object MicrophoneTests {
                 }
                 val active=capture.elapsedSeconds()
                 main { capture.stop() }
-                check(a.editor.project.clips.size==before+1)
+                waitFor("Minute recording did not save",30.0) {
+                    !capture.finalizing && a.editor.project.clips.size==before+1
+                }
                 val clip=a.editor.project.clips.last()
                 check(abs(clip.duration-active)<.2) { "Movie ${clip.duration}, active $active" }
                 check(recorder.insertedAudioSilence<9600) { "Unexpected silence ${recorder.insertedAudioSilence}" }

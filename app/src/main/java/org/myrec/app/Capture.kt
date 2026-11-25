@@ -625,6 +625,10 @@ class Capture(
 
     private fun open(id: String) {
         if (closed || opening) return
+        if (!texture.isAvailable) {
+            cameraId = id
+            return
+        }
         if (recording && hdr && !HdrRecorder.supported(manager, id)) {
             ui.post { activity.message("This camera cannot record HDR") }
             return
@@ -666,7 +670,7 @@ class Capture(
                 object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
                         opening = false
-                        if (closed || dualLayout!=4 || pendingSwitch != null) {
+                        if (closed || !texture.isAvailable || dualLayout!=4 || pendingSwitch != null) {
                             camera.close()
                             val next=pendingSwitch
                             pendingSwitch=null
@@ -2185,7 +2189,12 @@ class Capture(
             elevation = u.px(12f).toFloat()
         }
         settingsPopup = popup
+        var scroll: ScrollView? = null
+        var renderedState = ""
+        fun state() = "$opening:$dualReady:${device != null}:$hdr:$softwareHdr:$dualLayout:$front:$recording:$paused:$torch:$faceFollowEnabled:$horizonEnabled"
         fun render() {
+            val scrollY = scroll?.scrollY ?: 0
+            renderedState = state()
             body.removeAllViews()
             val header = u.row()
             header.addView(u.text("Camera settings", 12f, bold = true), LinearLayout.LayoutParams(0, u.px(34f), 1f))
@@ -2302,7 +2311,10 @@ class Capture(
                 hdrReason!=null -> hdrReason
                 else -> "SDR is ready to share on any display."
             }, 9f, Color.LTGRAY), 32f)
-            u.add(body, ScrollView(activity).apply { addView(content); isVerticalScrollBarEnabled = false }, if (landscape) 169f else 224f)
+            val scroller = ScrollView(activity).apply { addView(content); isVerticalScrollBarEnabled = false }
+            scroll = scroller
+            u.add(body, scroller, if (landscape) 169f else 224f)
+            if (scrollY > 0) scroller.post { scroller.scrollTo(0, scrollY) }
             u.divider(body)
             u.add(body, u.disclosure("More settings", false) { popup.dismiss(); moreSettings() }.apply {
                 (getChildAt(0) as TextView).setTextColor(Color.WHITE)
@@ -2311,11 +2323,9 @@ class Capture(
         render()
         popup.showAtLocation(this, if (landscape) Gravity.RIGHT or Gravity.CENTER_VERTICAL else Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, if (landscape) u.px(6f) else 0, u.px(6f))
         val refresh = object : Runnable {
-            var state = ""
             override fun run() {
                 if (!popup.isShowing) return
-                val next = "$opening:$dualReady:${device != null}:$hdr:$softwareHdr:$dualLayout:$front:$recording:$paused:$torch:$faceFollowEnabled:$horizonEnabled"
-                if (state != next) { state = next; render() }
+                if (renderedState != state()) render()
                 ui.postDelayed(this, 250)
             }
         }
