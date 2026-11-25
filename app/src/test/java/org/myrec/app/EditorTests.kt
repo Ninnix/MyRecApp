@@ -38,6 +38,27 @@ fun main() {
     BackgroundTests.run(::test)
     FrameEffectsTests.run(::test)
     ExistingEffectsTests.run(::test)
+    test("ranged grading leaves linked cuts intact and preserves the original grade outside the range") {
+        val first=Clip(path="first.mp4",sourceOut=4.0,effects=mutableListOf(
+            Effect(kind="Color LUTs",values=mutableMapOf("lut" to "Warm"))))
+        val second=Clip(path="second.mp4",sourceOut=4.0,start=4.0)
+        val editor=Editor(Project(clips=mutableListOf(first,second)))
+        val before=editor.project.duplicate()
+        val look=Effect(kind="Color LUTs",values=mutableMapOf("lut" to "Mono"))
+        editor.range=1.0..2.0
+        editor.applyEffect(look)
+        check(editor.project.clips.map { it.id }==before.clips.map { it.id })
+        check(first.effects.single { it.active(.5) }.values["lut"]=="Warm")
+        check(first.effects.single { it.active(1.5) }.id==look.id)
+        check(first.effects.single { it.active(2.5) }.values["lut"]=="Warm")
+        check(first.effects.map { it.id }.distinct().size==3)
+        editor.range=3.0..5.0
+        editor.applyEffect(Effect(kind="Color LUTs"))
+        check(editor.project.clips.size==2 && editor.project.duration==8.0)
+        check(first.effects.last().from==3.0 && second.effects.single().to==1.0)
+        editor.undo();editor.undo()
+        check(editor.project==before)
+    }
     test("new recordings remain through undo redo and restored editing sessions") {
         val e = Editor()
         val first = Clip(path = "first.mp4", sourceOut = 5.0)

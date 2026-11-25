@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.*
 import java.io.File
@@ -118,7 +119,35 @@ class CoverPicker(private val a: MainActivity, private val source: CoverSource) 
             scaleType = ImageView.ScaleType.FIT_CENTER; contentDescription = "Cover image"
             setImageBitmap(if (loaded == index) full else thumbnails[index])
         }
+        fun go(pick: Int) {
+            if (pick in 0 until source.pool.count && pick!=index) { selected=pick;show() }
+        }
+        var downX=0f
+        var downY=0f
+        image.setOnTouchListener { _,event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downX=event.x;downY=event.y }
+                MotionEvent.ACTION_UP -> {
+                    val dx=event.x-downX
+                    if (kotlin.math.abs(dx)>ui.px(28f) && kotlin.math.abs(dx)>kotlin.math.abs(event.y-downY))
+                        go(index+if (dx<0) 1 else -1)
+                }
+            }
+            true
+        }
         content.addView(image,LinearLayout.LayoutParams(-1,0,1f))
+        val navigation=ui.row()
+        fun navigate(label: String,enabled: Boolean,action: () -> Unit) {
+            navigation.addView(ui.action(label,click=action).apply { isEnabled=enabled },
+                LinearLayout.LayoutParams(0,ui.px(40f),1f))
+        }
+        navigate("Previous frame",index>0) { go(index-1) }
+        navigate("Update",source.pool.count>1) {
+            val next=kotlin.random.Random.nextInt(source.pool.count-1)
+            go(if (next<index) next else next+1)
+        }
+        navigate("Next frame",index+1<source.pool.count) { go(index+1) }
+        ui.add(content,navigation)
         val status = ui.text("Preparing full-resolution JPEG…",9f,Panels.MUTED)
         ui.add(content,status,28f)
         val actions = ui.row()
@@ -181,6 +210,7 @@ class CoverPicker(private val a: MainActivity, private val source: CoverSource) 
                 else if (result != null && jpeg != null) ready(result,jpeg)
                 else {
                     result?.recycle(); status.text = error ?: "Couldn't load this frame"
+                    if (cached!=null) jpegs.remove(index)
                     ui.add(content,ui.action("Try again","Reset") { show() },38f)
                 }
             }

@@ -11,22 +11,19 @@ import kotlin.math.*
 /** One AAC sample clock survives input format negotiation and camera replacement. */
 class CaptureAudio(
     private val file: File,
-    private val cache: AudioCache,
     private val clock: RecordingClock,
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
     private data class Block(val pcm: FloatArray, val timestamp: Long)
     private val queue = ArrayBlockingQueue<Block>(64)
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-    private val muxer = MediaMuxer(file.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     private val normalizer = RecordingAudioClock()
     @Volatile private var finishAt = -1L
     private var finishDeadline = Long.MAX_VALUE
     @Volatile private var accepting = true
     @Volatile private var abort = false
     @Volatile private var problem: Throwable? = null
-    private var track = -1
-    private var started = false
+    private var samples: CaptureSamples.Writer? = null
     private var position = 0L
     private var outputDone = false
     private val info = MediaCodec.BufferInfo()
@@ -58,13 +55,11 @@ class CaptureAudio(
         while (!outputDone) {
             val index = codec.dequeueOutputBuffer(info,wait)
             if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                track = muxer.addTrack(codec.outputFormat); muxer.start(); started = true
+                check(samples==null) { "Microphone encoder changed its output format during a take" }
+                samples=CaptureSamples.Writer(file,codec.outputFormat)
             } else if (index >= 0) {
                 if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                    check(started)
-                    val buffer = codec.getOutputBuffer(index)!!
-                    buffer.position(info.offset); buffer.limit(info.offset + info.size)
-                    muxer.writeSampleData(track,buffer,info)
+                    checkNotNull(samples).append(codec.getOutputBuffer(index)!!,info)
                 }
                 outputDone = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                 codec.releaseOutputBuffer(index,false)
@@ -128,22 +123,19 @@ class CaptureAudio(
             }
         } catch (e: Throwable) {
             if (!abort) { problem = e; failure(e) }
-        } finally {
-            if (started) runCatching { muxer.stop() }.onFailure { if (!abort) problem = it }
-        }
+        } finally { runCatching { samples?.close() }.onFailure { if (!abort) problem=it } }
     }
-    fun finish(frames: Long): Int {
+    fun finish(frames: Long) {
         finishDeadline=System.nanoTime()+300_000_000
         finishAt = frames.coerceAtLeast(0)
         worker?.join(10000)
         check(worker?.isAlive != true) { "Microphone encoder timed out" }
         problem?.let { throw it }
-        return Mp4Audio.delay(cache.head(file.path,12288))
     }
     override fun close() {
         abort = true
         worker?.join(6000)
         runCatching { codec.stop() }
-        codec.release(); muxer.release()
+        codec.release()
     }
 }

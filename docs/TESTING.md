@@ -161,6 +161,11 @@ the isolated package before passing `--device-checks`.
 python3 scripts/test-reliability.py --serial SERIAL --package org.myrec.app.reliabilityqa --device-checks
 ```
 
+Use `--active-take` with the same isolated package to stop the process while it
+is still recording. The test restarts twice, checks there is exactly one
+recovered take, then decodes the picture and microphone audio. It needs a
+foreground camera and granted microphone permission.
+
 The controller stops the test process after the save is on disk and before
 its index rename, while an unverified export section is rendering, and before
 the verified replacement movie is published. After restart it checks the last
@@ -169,8 +174,9 @@ and reuse of the verified export sections. The suite also exercises a
 34-minute timeline and a backgrounded capture. It injects `ENOSPC`, free-space
 readings and thermal status into the isolated app. These checks exercise the
 pressure responses without filling the phone or inducing hardware overheating.
-The process stops target the save and export transactions. An active take with
-unfinalized tracks is a separate recovery case.
+The normal run targets the save and export transactions. The active-take run
+uses new encoded sample journals. Recovery of older unfinished MP4 files
+still needs separate testing.
 
 The audio speed stage uses a stereo waveform-similarity overlap-add implementation
 based on the [WSOLA method](https://www.isca-archive.org/eurospeech_1993/roelands93_eurospeech.html).

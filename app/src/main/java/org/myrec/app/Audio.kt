@@ -275,6 +275,7 @@ class AudioMixer(
     private val ramps=mutableMapOf<String,RampAudio>()
     private var framePosition = 0L
     private val backgrounds=BackgroundAudio(cache)
+    internal var onEditedPeak: ((Float) -> Unit)? = null
 
     fun seek(time: Double) {
         framePosition = (time * 48000).toLong()
@@ -383,6 +384,9 @@ class AudioMixer(
     fun read(frames: Int): FloatArray {
         val project = this.project
         val mixed = FloatArray(frames * 2)
+        val measure=onEditedPeak
+        val contributors=if (measure!=null) ByteArray(frames) else null
+        val boosted=if (measure!=null) BooleanArray(frames) else null
         val time = framePosition / 48000.0
         val end = (framePosition + frames) / 48000.0
         for (original in project.clips) for (clip in original.playbackPieces()) {
@@ -432,15 +436,28 @@ class AudioMixer(
                     fade(project, clip, dry, time, first)
                     dry.sumOf { it.toDouble() * it }
                 }
-            for (fx in
-                (if (prepared != null) emptyList() else clip.effects).filter {
-                    it.active((time - clip.start).coerceAtLeast(0.0))
-                }) {
-                if (fx.kind !in Effects.audio) continue
-                val strength = fx.strength(time - clip.start, clip.duration)
-                if (strength <= 0f) continue
-                val state = states.getOrPut(clip.id + ":" + fx.id) { Native.audioCreate(48000) }
-                AudioFilter.process(state, pcm, fx, strength)
+            val processed=clip.effects.filter { it.enabled && it.kind in Effects.audio }
+            for (fx in processed) {
+                val lo=max(first,ceil((clip.start+fx.from-time)*48000-1e-6).toInt())
+                val hi=min(last,ceil((clip.start+fx.to-time)*48000-1e-6).toInt())
+                if (lo>=hi) continue
+                val strength=fx.strength(time+lo/48000.0-clip.start,clip.duration)
+                if (strength<=0) continue
+                if (prepared==null) {
+                    val state=states.getOrPut(clip.id+":"+fx.id) { Native.audioCreate(48000) }
+                    if (lo==first && hi==last) AudioFilter.process(state,pcm,fx,strength)
+                    else {
+                        val portion=pcm.copyOfRange((lo-first)*2,(hi-first)*2)
+                        AudioFilter.process(state,portion,fx,strength)
+                        portion.copyInto(pcm,(lo-first)*2)
+                    }
+                }
+                if (boosted!=null && clip.gainDb>-60f && when (fx.kind) {
+                        "Output gain" -> fx.number("gain")>0
+                        "Voice EQ" -> fx.number("gain",if (AudioFilter.modern(fx)) 0f else 3f)!=0f
+                        "Limiter","Noise gate" -> false
+                        else -> true
+                    }) boosted.fill(true,lo,hi)
             }
             if (matchListening && originalPower > 0.00001) {
                 val processedPower = pcm.sumOf { it.toDouble() * it }
@@ -451,13 +468,29 @@ class AudioMixer(
                 }
             }
             if (finishing) audioFinish(project, clip, pcm, time + first / 48000.0 - clip.start)
-            for (i in first until last) for (ch in 0..1) mixed[i * 2 + ch] +=
-                pcm[(i - first) * 2 + ch]
+            for (i in first until last) {
+                val j=(i-first)*2
+                mixed[i*2]+=pcm[j];mixed[i*2+1]+=pcm[j+1]
+                if (contributors!=null && boosted!=null && (pcm[j]!=0f || pcm[j+1]!=0f)) {
+                    if (contributors[i]<2) contributors[i]=(contributors[i]+1).toByte()
+                    if (clip.gainDb>0f || clip.effectiveRate!=1.0 || ramp!=null) boosted[i]=true
+                }
+            }
         }
         for (original in project.clips.filter { it.video && it.start<end && it.end>time }) for (clip in original.playbackPieces()) {
             val pcm=backgrounds.read(clip,time,frames,original)
             fade(project,clip,pcm,time,0,true)
-            for (i in mixed.indices) mixed[i]+=pcm[i]
+            for (i in 0 until frames) {
+                mixed[i*2]+=pcm[i*2];mixed[i*2+1]+=pcm[i*2+1]
+                if (contributors!=null && (pcm[i*2]!=0f || pcm[i*2+1]!=0f) && contributors[i]<2)
+                    contributors[i]=(contributors[i]+1).toByte()
+            }
+        }
+        if (measure!=null && contributors!=null && boosted!=null) {
+            var peak=0f
+            for (i in 0 until frames) if (contributors[i]>1 || boosted[i])
+                peak=max(peak,max(abs(mixed[i*2]),abs(mixed[i*2+1])))
+            if (peak>0f && peak.isFinite()) measure(peak)
         }
         for (i in mixed.indices) mixed[i] = mixed[i].coerceIn(-1f, 1f)
         framePosition += frames

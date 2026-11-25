@@ -68,21 +68,26 @@ object YouRecArchive {
             .put("events",JSONArray((clip.bookmarks+clip.marks.map(::recordingBookmark)).filter { !it.local }.distinctBy { it.id }.map { JSONObject().put("id",YouRecDocument.uuid(it.id)).put("time",it.time).put("kind","bookmark").put("detail",it.label) })) })
         ArchiveMetadata(target.parentFile!!,LIMIT).use { metadata ->
             val snapshots=JSONArray();var metadataBytes=0L
+            var schema=12
             fun snapshot(p: Project) {
                 stop(cancelled)
                 val materialized=Editor(p).apply { load(p,portable.copy(project=p)) }.project
-                val data=YouRecDocument.snapshot(materialized,sourceIds,portable.captures.size,::shape).put("myrec",store.encode(p)).toString().toByteArray()
+                val snapshot=YouRecDocument.snapshot(materialized,sourceIds,portable.captures.size,::shape)
+                schema=maxOf(schema,YouRecDocument.schema(snapshot))
+                val data=snapshot.put("myrec",store.encode(p)).toString().toByteArray()
                 require(data.size<=32000000) { "An editing state exceeds the YouRec archive limit" }
                 metadataBytes+=data.size;require(metadataBytes<=LIMIT) { "Editing history exceeds the archive limit" }
                 val name=digest(data)+".json";metadata["History/$name"]=data;snapshots.put(name)
             }
             portable.undo.forEach { snapshot(it.project) };snapshot(portable.project);portable.redo.asReversed().forEach { snapshot(it.project) }
             fun clips(items: List<Clip>)=store.encode(Project(clips=items.toMutableList())).getJSONArray("clips")
-            val header=JSONObject().put("schemaVersion",12).put("id",YouRecDocument.uuid(project.id)).put("title",project.name).put("createdAt",0).put("updatedAt",0)
+            val header=JSONObject().put("schemaVersion",schema).put("id",YouRecDocument.uuid(project.id)).put("title",project.name).put("createdAt",0).put("updatedAt",0)
                 .put("sources",sources).put("historyCursor",portable.undo.size).put("snapshotFiles",snapshots)
                 .put("captureLedger",JSONArray(portable.captures.map { JSONObject().put("clip",YouRecDocument.capture(it,sourceIds.getValue(it.path),project.width to project.height,::shape)).put("insertion",false) }))
                 .put("recordingHistoryVersion",1).put("automaticCanvasVersion",1)
-                .put("exportSettings",JSONObject().put("codec","H.264").put("resolution","Project size").put("frameRate",project.fps))
+                .put("exportSettings",YouRecMovieSettings.encode(portable.project))
+                .put("myrecTimelineFrameRate",portable.project.fps)
+                .put("myrecExportColor",portable.project.movieSettings.color.name)
                 .put("myrecSession",JSONObject().put("version",1).put("captures",clips(portable.captures)).put("originals",clips(portable.originals)))
             val headerData=header.toString().toByteArray();metadata["project.json"]=headerData
             require(headerData.size<=32000000) { "The YouRec archive index is too large" }
@@ -126,7 +131,7 @@ object YouRecArchive {
                 val entries=zip.entries().asSequence().toList();require(entries.size<=100000)
                 require(entries.map { it.name.lowercase() }.distinct().size==entries.size && entries.none { it.isDirectory })
                 val header=JSONObject(String(read(zip,"project.json",LIMIT),Charsets.UTF_8))
-                require(integer(header,"schemaVersion") in 1..12) { "This YouRec project needs a newer reader" }
+                require(integer(header,"schemaVersion") in 1..16) { "This YouRec project needs a newer reader" }
                 require(YouRecDocument.uuid(header.getString("id"))==header.getString("id").lowercase())
                 val declared=(0 until header.getJSONArray("sources").length()).map { header.getJSONArray("sources").getJSONObject(it) }
                 require(declared.map { it.getString("id") }.distinct().size==declared.size && declared.map { it.getString("filename").lowercase() }.distinct().size==declared.size)
@@ -137,40 +142,13 @@ object YouRecArchive {
                 require(declared.all { flat(it.getString("filename")) && it.getString("filename") in media && (!it.has("sha256") || it.getString("sha256")==hashes.getString(it.getString("filename"))) })
                 val paths=media.associateWith { File(destination,it).path }
                 val names=header.optJSONArray("snapshotFiles");val inline=header.optJSONArray("snapshots")
-                val count=names?.length() ?: inline?.length() ?: error("Unsupported legacy YouRec history")
+                val history=header.optJSONArray("history")
+                val count=names?.length() ?: inline?.length() ?: history?.length() ?: error("Missing YouRec editing history")
                 val cursor=integer(header,"historyCursor");require(count in 1..100000 && cursor in 0 until count)
-                var bytes=0L
-                fun state(index: Int): Project {
-                    stop(cancelled)
-                    val snapshot=if (names!=null) {
-                        val name=names.getString(index);require(name.matches(Regex("[0-9a-f]{64}\\.json")))
-                        val data=read(zip,"History/$name",32000000);bytes+=data.size
-                        require(digest(data)+".json"==name) { "Damaged YouRec editing history" }
-                        JSONObject(String(data,Charsets.UTF_8))
-                    } else inline!!.getJSONObject(index)
-                    return snapshot.optJSONObject("myrec")?.let { store.decode(it).also { p -> require(YouRecDocument.uuid(p.id)==header.getString("id")) } }
-                        ?: YouRecDocument.project(YouRecDocument.materialized(snapshot,header),header,media.associateWith { it })
-                }
-                val current=state(cursor);val originalId=current.id;val counts=IntArray(count)
-                for (j in 0 until count) {
-                    val p=if (j==cursor) current else state(j);require(p.id==originalId)
-                    counts[j]=p.captureCount
-                    require(ProjectAssets.paths(EditSession(p)).all { it in paths }) { "An archived edit points outside its media" }
-                }
-                require(bytes<=LIMIT) { "Editing history exceeds the archive limit" }
-                val allowed=media.toSet()+setOf("project.json","integrity.json","Timeline.otio")+(if (names!=null) (0 until names.length()).map { "History/${names.getString(it)}" } else emptyList())
+                val allowed=media.toSet()+setOf("project.json","integrity.json","Timeline.otio")+(if (names!=null) (0 until names.length()).map {
+                    val name=names.getString(it);require(name.matches(Regex("[0-9a-f]{64}\\.json")));"History/$name"
+                } else emptyList())
                 require(entries.all { it.name in allowed || flat(it.name) && it.name.endsWith(".otio") }) { "Unexpected YouRec archive entry" }
-                fun clips(key: String): List<Clip> {
-                    val session=header.optJSONObject("myrecSession") ?: return emptyList()
-                    require(session.getInt("version")==1)
-                    return store.decode(JSONObject().put("id",originalId).put("name",current.name).put("clips",session.getJSONArray(key))).clips
-                }
-                val undo=(0 until cursor).map { index -> EditRevision.deferred(originalId,counts[index]) { state(index) } }
-                val redo=(cursor+1 until count).reversed().map { index -> EditRevision.deferred(originalId,counts[index]) { state(index) } }
-                val captured=clips("captures")
-                val originals=clips("originals").ifEmpty { YouRecDocument.originals(header,media.associateWith { it }) }
-                val saved=EditSession(current,undo,redo,captured,originals)
-                val allPaths=ProjectAssets.paths(saved);require(allPaths.all { it in paths })
                 val budget=(working.usableSpace-64L*1024*1024).coerceAtLeast(0);var total=0L
                 for (name in media) { val entry=zip.getEntry(name);if (entry!=null) { require(entry.size>=0 && entry.size<=budget-total);total+=entry.size } }
                 val missing=mutableListOf<String>();var done=0L
@@ -186,8 +164,51 @@ object YouRecArchive {
                     } }
                     require(size==entry.size && sum.digest().joinToString("") { "%02x".format(it) }==hashes.getString(name)) { "Damaged YouRec original: $name" }
                 }
+                val shapes=mutableMapOf<String,Pair<Int,Int>?>()
+                fun shape(name: String): Pair<Int,Int>? {
+                    if (!shapes.containsKey(name)) {
+                        val file=File(working,name)
+                        shapes[name]=if (file.isFile) runCatching { ProjectStore.shape(file.path) }.getOrNull() else null
+                    }
+                    return shapes[name]
+                }
+                val nativePaths=media.associateWith { it }
+                var bytes=0L
+                fun state(index: Int): Project {
+                    stop(cancelled)
+                    val snapshot=if (names!=null) {
+                        val name=names.getString(index)
+                        val data=read(zip,"History/$name",32000000);bytes+=data.size
+                        require(digest(data)+".json"==name) { "Damaged YouRec editing history" }
+                        JSONObject(String(data,Charsets.UTF_8))
+                    } else if (inline!=null) inline.getJSONObject(index)
+                    else JSONObject().put("state",history!!.getJSONObject(index)).put("captureCursor",0)
+                    return snapshot.optJSONObject("myrec")?.let { store.decode(it).also { p -> require(YouRecDocument.uuid(p.id)==header.getString("id")) } }
+                        ?: YouRecDocument.project(YouRecDocument.materialized(snapshot,header),header,nativePaths,::shape)
+                }
+                val current=state(cursor);val originalId=current.id;val counts=IntArray(count)
+                for (j in 0 until count) {
+                    val p=if (j==cursor) current else state(j);require(p.id==originalId)
+                    counts[j]=p.captureCount
+                    require(ProjectAssets.paths(EditSession(p)).all { it in paths }) { "An archived edit points outside its media" }
+                }
+                require(bytes<=LIMIT) { "Editing history exceeds the archive limit" }
+                fun clips(key: String): List<Clip> {
+                    val session=header.optJSONObject("myrecSession") ?: return emptyList()
+                    require(session.getInt("version")==1)
+                    return store.decode(JSONObject().put("id",originalId).put("name",current.name).put("clips",session.getJSONArray(key))).clips
+                }
+                val undo=(0 until cursor).map { index -> EditRevision.deferred(originalId,counts[index]) { state(index) } }
+                val redo=(cursor+1 until count).reversed().map { index -> EditRevision.deferred(originalId,counts[index]) { state(index) } }
+                val captured=clips("captures")
+                val originals=clips("originals").ifEmpty { YouRecDocument.originals(header,nativePaths) }
+                val saved=EditSession(current,undo,redo,captured,originals)
+                val allPaths=ProjectAssets.paths(saved);require(allPaths.all { it in paths })
                 store.publishMedia(working,destination)
                 val restored=ProjectAssets.remap(saved,id,current.name) { paths.getValue(it) }
+                if (header.isNull("myrecExportColor") && restored.project.clips.any { clip ->
+                        clip.video && !clip.photo && File(clip.path).isFile && runCatching { WorkingColor.hdr(clip.path) }.getOrDefault(false)
+                    }) restored.project.movieSettings=restored.project.movieSettings.copy(color=ExportColor.HLG)
                 store.save(restored,false);published=true;File(destination,".myrec-restore").delete()
                 if (missing.isNotEmpty()) store.problems[id]="Restored ${current.name} with missing media. Its complete edit was retained."
                 ProjectArchive.Restored(restored.project,missing)

@@ -55,6 +55,27 @@ class RecordingReadings {
     fun reset() { lastAudio = Long.MIN_VALUE; clearLevel() }
 }
 
+internal class MicrophoneClock {
+    private var previous = Long.MIN_VALUE
+    private var expected = 0L
+
+    fun block(frames: Int, now: Long, hardware: Long?): Long {
+        val duration=frames*1_000_000_000L/48000
+        val host=now-duration
+        val time=if (previous==Long.MIN_VALUE) {
+            hardware?.takeIf { it in (host-500_000_000)..now } ?: host
+        } else {
+            // Bluetooth can reset or jump its timestamp while the PCM stream keeps running.
+            val earliest=max(previous+1,max(host-150_000_000,expected-2_000_000))
+            hardware?.takeIf { it in earliest..min(now,expected+20_000_000) }
+                ?: max(expected,host-150_000_000)
+        }
+        previous=time
+        expected=time+duration
+        return time
+    }
+}
+
 class RecordingMicrophoneRoute {
     data class Decision(val request: String? = null, val recheck: Double? = null,
         val disconnected: String? = null, val failed: String? = null)

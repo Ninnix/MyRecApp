@@ -13,7 +13,7 @@ import kotlin.math.abs
 import kotlin.math.max
 
 class MovieExports(private val root: File) {
-    data class Movie(val file: File, val reused: Boolean)
+    data class Movie(val file: File, val reused: Boolean, val editedAudioPeak: Double? = null)
     internal data class Ticket(val project: String, val key: String, val inputs: JSONObject)
 
     private fun checkCancelled(cancelled: () -> Boolean) {
@@ -68,7 +68,7 @@ class MovieExports(private val root: File) {
             models.put(kind, AudioModels.version(kind))
         val inputs = JSONObject().put("version", 1)
             // Bump this when changing render math, bundled fonts or processing runtimes.
-            .put("renderer", "myrec-movie-6").put("platform", Build.FINGERPRINT)
+            .put("renderer", "myrec-movie-7").put("platform", Build.FINGERPRINT)
             .put("width", width).put("height", height).put("color", color.name)
             .put("edit", editKey(store, project)).put("sources", files).put("models", models)
         if (fps != project.fps) inputs.put("fps", fps)
@@ -111,7 +111,7 @@ class MovieExports(private val root: File) {
             }
         }
     }
-    private fun find(ticket: Ticket, project: Project, width: Int, height: Int, fps: Int, cancelled: () -> Boolean): File? {
+    private fun find(ticket: Ticket, project: Project, width: Int, height: Int, fps: Int, cancelled: () -> Boolean): Movie? {
         val folder = directory(ticket.project)
         val receipt = File(folder, "${ticket.key}.json")
         if (!receipt.isFile || receipt.length() !in 1..1048576) return null
@@ -121,19 +121,21 @@ class MovieExports(private val root: File) {
             val file = File(folder, "${ticket.key}.mp4")
             if (!file.isFile || file.length() != info.getLong("bytes") || hash(file, cancelled) != info.getString("sha256")) return null
             verify(file, project, width, height, fps, cancelled)
-            return file
+            return Movie(file,true,info.optDouble("editedAudioPeak").takeIf { it.isFinite() && it>=1.0592537 })
         } catch (e: InterruptedIOException) { throw e }
         catch (_: Exception) { return null }
     }
     fun movie(store: ProjectStore, project: Project, width: Int, height: Int, color: ExportColor,
               cancelled: () -> Boolean = { false }, progress: (Float) -> Unit = {},
+              editedAudioPeak: () -> Double? = { null },
               render: (File, (Float) -> Unit) -> Unit): Movie =
-        movie(store, project, width, height, color, project.fps, false, cancelled, progress) { file, _, report -> render(file, report) }
+        movie(store, project, width, height, color, project.fps, false, cancelled, progress, editedAudioPeak) { file, _, report -> render(file, report) }
 
     internal fun resumable(store: ProjectStore, project: Project, width: Int, height: Int, color: ExportColor,
                            fps: Int, cancelled: () -> Boolean, progress: (Float) -> Unit,
+                           editedAudioPeak: () -> Double? = { null },
                            render: (File, MovieCheckpoint?, (Float) -> Unit) -> Unit): Movie =
-        movie(store, project, width, height, color, fps, true, cancelled, progress, render)
+        movie(store, project, width, height, color, fps, true, cancelled, progress, editedAudioPeak, render)
 
     private fun checkpoints(project: String) = File(root, project).listFiles().orEmpty().filter {
         it.isDirectory && it.name.matches(Regex("[a-f0-9]{64}\\.resume"))
@@ -160,6 +162,7 @@ class MovieExports(private val root: File) {
 
     private fun movie(store: ProjectStore, project: Project, width: Int, height: Int, color: ExportColor,
                       fps: Int, resume: Boolean, cancelled: () -> Boolean, progress: (Float) -> Unit,
+                      editedAudioPeak: () -> Double?,
                       render: (File, MovieCheckpoint?, (Float) -> Unit) -> Unit): Movie = synchronized(publishing) {
         checkCancelled(cancelled)
         val ticket = ticket(store, project, width, height, color, cancelled, fps)
@@ -167,7 +170,7 @@ class MovieExports(private val root: File) {
         for (file in folder.listFiles().orEmpty()) if (file.isFile && abandoned.matches(file.name)) file.delete()
         find(ticket, project, width, height, fps, cancelled)?.let {
             if (resume) discard(project.id)
-            checkCancelled(cancelled); progress(1f); return@synchronized Movie(it, true)
+            checkCancelled(cancelled); progress(1f); return@synchronized it
         }
         val file = File(folder, "${ticket.key}.mp4")
         val published = File(folder, "${ticket.key}.json")
@@ -193,6 +196,8 @@ class MovieExports(private val root: File) {
             val info = JSONObject().put("version", 1).put("key", ticket.key).put("project", project.id)
                 .put("created", System.currentTimeMillis()).put("inputs", ticket.inputs)
                 .put("bytes", partial.length()).put("sha256", checksum)
+            val peak=editedAudioPeak()
+            peak?.let { info.put("editedAudioPeak",it) }
             FileOutputStream(receipt).use { out -> out.write(info.toString().toByteArray(Charsets.UTF_8)); out.fd.sync() }
             checkCancelled(cancelled)
             check(partial.renameTo(file) && receipt.renameTo(published)) { "Cannot publish the completed export" }
@@ -200,7 +205,7 @@ class MovieExports(private val root: File) {
             retire(folder, ticket.key)
             if (resume) discard(project.id)
             progress(1f)
-            Movie(file, false)
+            Movie(file,false,peak)
         } finally { partial.delete(); receipt.delete() }
     }
 

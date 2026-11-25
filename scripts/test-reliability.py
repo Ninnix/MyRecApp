@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--adb', default=str(Path(os.environ.get('ANDROID_HOME', Path.home() / 'Android/Sdk')) / 'platform-tools/adb'))
     parser.add_argument('--output', type=Path, default=Path('artifacts/reliability'))
     parser.add_argument('--device-checks', action='store_true', help='Also run the camera interruption and pressure checks')
+    parser.add_argument('--active-take', action='store_true', help='Run only active-take process termination and recovery')
     args = parser.parse_args()
     if not re.fullmatch(r'org\.myrec\.app\.[\w.]+', args.package):
         parser.error('Use an isolated MyRec package with an application ID suffix')
@@ -54,9 +55,11 @@ def main():
     phases = ['save-arm', 'save-check', 'save-check', 'export-arm', 'publish-arm', 'export-check']
     if args.device_checks:
         phases.insert(0, 'exercise')
+    if args.active_take:
+        phases = ['capture-arm', 'capture-check', 'capture-check']
     for index, phase in enumerate(phases, 1):
         run(phase, args.output / f'{index:02d}-{phase}.log', kill=phase.endswith('-arm'))
-    print(f'PASS recovery after three external force-stops. Logs in {args.output}', flush=True)
+    print(f'PASS recovery after {sum(phase.endswith("-arm") for phase in phases)} external force-stops. Logs in {args.output}', flush=True)
 
 
 if __name__ == '__main__':

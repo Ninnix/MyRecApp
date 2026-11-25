@@ -82,7 +82,9 @@ object TextDeviceTests {
                 check(duplicate.resolvedBookmarks().single().mark.label=="Colosseum")
                 check(duplicate.clips.single().effects.single().values["face"]==face.id)
             }
-            test("all eight title looks shape multilingual outlines backgrounds and all twelve gradients") {
+            test("the four YouRec title collections and MyRec looks render multilingual text and gradients") {
+                for (collection in listOf("Editorial","Cinema","Print","Display"))
+                    check(TitleStyle.lookCollections.getValue(collection).size==6)
                 for (look in TitleStyle.looks.values) for (alignment in listOf("Left","Center","Right")) {
                     val effect=Effect(kind="Text");TitleStyle.initialize(effect,true);TitleStyle.applyLook(effect,look)
                     effect.values.putAll(mapOf("text" to "Roma • روما\nColosseo 🌍","align" to alignment,"outlined" to "true","plate" to "Each line"))

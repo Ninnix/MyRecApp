@@ -83,11 +83,8 @@ class LiveMicrophone(
                 val channels = current.channelCount
                 val buffer = FloatArray(480 * channels)
                 val stamp = AudioTimestamp()
+                val clock = MicrophoneClock()
                 var readFrames = 0L
-                var anchorTime = 0L
-                var anchorFrame = 0L
-                var lastStart = Long.MIN_VALUE
-                var hardwareTime = false
                 while (ticket == generation && !closed) {
                     val n = current.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                     check(n > 0) { if (n == AudioRecord.ERROR_DEAD_OBJECT) "Microphone connection was lost" else "Microphone audio stopped ($n)" }
@@ -95,18 +92,9 @@ class LiveMicrophone(
                     val frames = n / channels
                     val before = readFrames
                     readFrames += frames
-                    val hadHardwareTime = hardwareTime
-                    if (current.getTimestamp(stamp, AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS) {
-                        hardwareTime = true
-                        anchorTime = stamp.nanoTime
-                        anchorFrame = stamp.framePosition
-                    } else if (anchorTime == 0L) {
-                        anchorTime = System.nanoTime() - frames * 1_000_000_000L / 48000
-                        anchorFrame = before
-                    }
-                    val time = anchorTime + (before - anchorFrame) * 1_000_000_000L / 48000
-                    if (hadHardwareTime && lastStart != Long.MIN_VALUE && time + 2_000_000 < lastStart) error("Microphone clock moved backwards")
-                    lastStart = time
+                    val hardware=if (current.getTimestamp(stamp, AudioTimestamp.TIMEBASE_MONOTONIC)==AudioRecord.SUCCESS)
+                        stamp.nanoTime+(before-stamp.framePosition)*1_000_000_000L/48000 else null
+                    val time=clock.block(frames,System.nanoTime(),hardware)
                     val route = current.routedDevice
                     if (route?.id != actual?.id) {
                         actual = route

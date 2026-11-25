@@ -50,8 +50,27 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
     }
     fun build(parent: LinearLayout) {
         this.parent = parent; parent.removeAllViews(); specimens.clear()
+        if (!subtitle) ui.segments(parent,listOf("Single text","Label + headline"),
+            if (TitleCard.enabled(fx)) "Label + headline" else "Single text") {
+            fx.values["grouped"]=(it=="Label + headline").toString()
+            if (it=="Label + headline") fx.values.putIfAbsent("label","First text")
+            rebuild()
+        }
+        if (!subtitle && TitleCard.enabled(fx)) {
+            val label=EditText(a).apply {
+                setText(fx.values["label"]);hint="Label";contentDescription="Label text"
+                setTextColor(Color.WHITE);setHintTextColor(Panels.MUTED)
+                filters=arrayOf(InputFilter.LengthFilter(500))
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { set("label",s?.toString().orEmpty()) }
+                    override fun afterTextChanged(s: Editable?) {}
+                })
+            }
+            ui.add(parent,label)
+        }
         val input = EditText(a).apply {
-            setText(fx.values["text"] ?: ""); hint = "Write something"
+            setText(fx.values["text"] ?: ""); hint = if (TitleCard.enabled(fx)) "Headline" else "Write something"
             setTextColor(Color.WHITE); setHintTextColor(Panels.MUTED)
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, ui.px(11f).toFloat())
             background = ui.shape(Color.BLACK, 3f, Color.rgb(48, 48, 50))
@@ -67,6 +86,10 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
         ui.add(parent, input); ui.gap(parent, 8f)
         if (!subtitle) timing(parent)
         ui.gap(parent, 8f)
+        if (!subtitle && TitleCard.enabled(fx)) {
+            groupAppearance(parent)
+            return
+        }
         val names = listOf("Looks", "Font", "Fill", "Outline", "Shadow", "Background", "Motion")
         ui.grid(parent, names.size, 4, 32f) { index ->
             val name = names[index]
@@ -117,6 +140,88 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
             slider(parent, "Across", "x", .5f, 0f, 1f); slider(parent, "Down", "y", .5f, 0f, 1f)
             ui.add(parent, ui.action("Centre text") { set("x", .5); set("y", .5); rebuild() })
         }
+    }
+
+    private fun groupAppearance(parent: LinearLayout) {
+        val parts=listOf("Looks","Label","Headline","Card","Motion")
+        val part=tab.takeIf { it in parts } ?: "Looks"
+        ui.segments(parent,parts,part) { hideKeyboard();tab=it;rebuild() }
+        when (part) {
+            "Looks" -> groupLooks(parent)
+            "Motion" -> motion(parent)
+            "Card" -> {
+                color(parent,"Card fill","card.fill",TitleCard.fill)
+                color(parent,"Card outline","card.border",TitleCard.border)
+                for ((key,value) in TitleCard.dimensions) {
+                    slider(parent,key.replaceFirstChar { it.uppercase() },"card.$key",value,0f,if (key=="borderWidth") .1f else 1f)
+                }
+            }
+            else -> {
+                val key=part.lowercase()
+                val style=TitleCard.style(fx,key)
+                val faces=TitleStyle.families
+                val name=faces.firstOrNull { it.id==style["face"] }?.name ?: style["fontName"] ?: "Imported font"
+                ui.add(parent,ui.action("Font · $name","Font") {
+                    a.choose("Choose font",faces.map { it.name }) { index ->
+                        fx.values.remove("$key.path")
+                        fx.values["$key.face"]=faces[index].id
+                        fx.values["$key.weight"]=faces[index].weights.first().toString()
+                        rebuild()
+                    }
+                })
+                ui.add(parent,ui.action("Font library…","Font",background=Color.TRANSPARENT) {
+                    hideKeyboard();a.playback.pause()
+                    FontLibraryDialog(a,ui) { face ->
+                        fx.values["$key.face"]=face.id;fx.values["$key.path"]=face.file.path
+                        fx.values["$key.fontName"]=face.info.name;fx.values["$key.fontIndex"]=face.info.index.toString()
+                        fx.values["$key.weight"]=face.info.weight.toString();fx.values["$key.italic"]=face.info.italic.toString()
+                        rebuild()
+                    }.show()
+                })
+                color(parent,"Letter color","$key.color",style.getValue("color"))
+                slider(parent,"Relative size","${key}Scale",if (key=="label") .36f else 1f,
+                    if (key=="label") .2f else .5f,if (key=="label") 1f else 1.8f)
+                slider(parent,"Horizontal offset","card.$key.x",0f,-1f,1f)
+                slider(parent,"Vertical offset","card.$key.y",0f,-1f,1f)
+                ui.add(parent,ui.action("Reset $key position","Reset") {
+                    fx.values.remove("card.$key.x");fx.values.remove("card.$key.y");rebuild()
+                })
+            }
+        }
+        slider(parent,"Whole title size","size",.065f,.02f,.3f)
+        slider(parent,"Horizontal position","x",.5f,0f,1f)
+        slider(parent,"Vertical position","y",.5f,0f,1f)
+    }
+
+    private fun groupLooks(parent: LinearLayout) {
+        val choices=TitleCard.looks.entries.toList()
+        ui.grid(parent,choices.size,3,45f) { index ->
+            val (name,look)=choices[index]
+            ui.action(name) { TitleCard.applyLook(fx,look);rebuild() }
+        }
+        val saved=JSONArray(prefs.getString("title.cardStyles","[]"))
+        for (i in 0 until saved.length()) {
+            val item=saved.getJSONObject(i)
+            ui.add(parent,ui.action(item.getString("name")) {
+                val look=item.getJSONObject("look")
+                TitleCard.applyLook(fx,look.keys().asSequence().associateWith { look.getString(it) })
+                rebuild()
+            })
+        }
+        ui.add(parent,ui.action("Save as channel style","Bookmark",background=Color.TRANSPARENT) {
+            val input=EditText(a).apply { hint="Style name";filters=arrayOf(InputFilter.LengthFilter(60)) }
+            android.app.AlertDialog.Builder(a).setTitle("Save card style").setView(input)
+                .setNegativeButton("Cancel",null).setPositiveButton("Save") { _,_ ->
+                    val name=input.text.toString().trim()
+                    if (name.isNotEmpty()) {
+                        val values=fx.values.filterKeys(TitleCard::appearance)
+                        val index=(0 until saved.length()).firstOrNull { saved.getJSONObject(it).getString("name")==name } ?: saved.length()
+                        saved.put(index,JSONObject().put("name",name).put("look",JSONObject(values)))
+                        prefs.edit().putString("title.cardStyles",saved.toString()).apply()
+                        rebuild()
+                    }
+                }.show()
+        })
     }
     private fun timing(parent: LinearLayout) {
         val label = "${"%.2f".format(java.util.Locale.getDefault(), fx.to - fx.from).trimEnd('0').trimEnd('.', ',')} s"
@@ -190,15 +295,18 @@ class TitleInspector(private val ui: InspectorUi, private val fx: Effect, privat
             }, LinearLayout.LayoutParams(ui.px(36f), ui.px(40f)))
             ui.add(parent, line); ui.gap(parent, 5f)
         }
-        val looks = TitleStyle.looks.entries.toList()
-        ui.grid(parent, looks.size, 3, 47f) { i ->
-            val (name, values) = looks[i]
-            val candidate = fx.copyEffect().also { TitleStyle.applyLook(it, values) }
-            ui.column().apply {
-                background = ui.shape(); setPadding(ui.px(5f), ui.px(4f), ui.px(5f), ui.px(4f)); contentDescription = name
-                setOnClickListener { TitleStyle.applyLook(fx, values); rebuild() }
-                addView(specimen(candidate), LinearLayout.LayoutParams(-1, 0, 1f))
-                addView(ui.text(name, 8f, Panels.MUTED), LinearLayout.LayoutParams(-1, ui.px(15f)))
+        for ((collection,styles) in TitleStyle.lookCollections) {
+            ui.add(parent, ui.text(collection, bold = true), 24f)
+            val looks = styles.entries.toList()
+            ui.grid(parent, looks.size, 3, 47f) { i ->
+                val (name, values) = looks[i]
+                val candidate = fx.copyEffect().also { TitleStyle.applyLook(it, values) }
+                ui.column().apply {
+                    background = ui.shape(); setPadding(ui.px(5f), ui.px(4f), ui.px(5f), ui.px(4f)); contentDescription = name
+                    setOnClickListener { TitleStyle.applyLook(fx, values); rebuild() }
+                    addView(specimen(candidate), LinearLayout.LayoutParams(-1, 0, 1f))
+                    addView(ui.text(name, 8f, Panels.MUTED), LinearLayout.LayoutParams(-1, ui.px(15f)))
+                }
             }
         }
         ui.add(parent, ui.action("Save as channel style", "Bookmark", background = Color.TRANSPARENT) {

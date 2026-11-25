@@ -746,7 +746,9 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             if (e.subtitle!=null && e.values["subtitleOwner"]=="audio") continue
             if (e.kind == "Text" && e.values["design"] == "1") {
                 val phase = e.phase
-                val elapsed = if (phase == null) local - e.from else phase.offset + phase.elapsed(c.sourceTime(at)) - e.number("titleOrigin")
+                val titleTime=c.frozen?.let { it.sourceTime+it.offset+local } ?: c.sourceTime(at)
+                val elapsed = if (phase == null) local - e.from else phase.offset + phase.elapsed(titleTime) -
+                    (e.values["titleOrigin"]?.toDoubleOrNull() ?: 0.0)
                 TitleStyle.draw(canvas, e, width, height, elapsed, e.number("titleDuration", (min(e.to, c.duration) - e.from).toFloat()).toDouble())
             } else if (e.kind == "Text") {
                 paint.color =

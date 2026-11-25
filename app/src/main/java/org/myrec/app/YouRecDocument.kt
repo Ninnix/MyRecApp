@@ -4,8 +4,7 @@ import java.util.UUID
 import org.json.*
 import kotlin.math.*
 
-/* The archive envelope is native schema 12. Refuse an untranslatable edit before
- * publishing media; a conform that drops processing is not a project restore. */
+/* Refuse edits that cannot be translated before publishing media. */
 object YouRecDocument {
     fun uuid(value: String)=runCatching { UUID.fromString(value).toString() }.getOrElse { UUID.nameUUIDFromBytes(value.toByteArray()).toString() }
     private fun array(o: JSONObject,key: String)=o.optJSONArray(key) ?: JSONArray()
@@ -123,7 +122,8 @@ object YouRecDocument {
         result.to=if (clip.frozen!=null) clip.duration else clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))).coerceAtMost(clip.duration)
         val origin=o.getDouble("start")-if (kind=="Crash Zoom") o.optDouble("phaseOffset",0.0) else 0.0
         result.values["origin"]=origin.toString()
-        result.phase=EffectPhase(o.getDouble("start"),o.optDouble("phaseOffset",0.0),objects(array(o,"strobeTimeMap")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
+        if (kind in TimeEffects.kinds)
+            result.phase=EffectPhase(o.getDouble("start"),o.optDouble("phaseOffset",0.0),objects(array(o,"strobeTimeMap")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
         if (o.has("releaseTime")) result.values["release"]=(o.getDouble("releaseTime")-origin).toString()
         result.motion=o.optJSONObject("motion")?.let(::motion)
         return result
@@ -145,18 +145,239 @@ object YouRecDocument {
         return EffectMotion(pose("a"),pose("b"),EffectTiming(curve("curve"),t.getDouble("rise"),t.getDouble("release"),curve("ramp")),o.getDouble("duration"),o.getDouble("frame"),
             objects(array(o,"clock")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) })
     }
+    private val looks=listOf("natural","warm","cool","cinema","mono","portrait","daylight","goldenHour","mutedFilm","richContrast","pastel","night","silver","ink")
+
+    private fun grade(fx: Effect): JSONObject {
+        if (fx.values["source"] !in listOf(null,"Recorded")) unsupported("manual Log interpretation")
+        val look=CubeLut.looks.indexOf(fx.values["lut"] ?: "Natural")
+        require(look in looks.indices)
+        val color=JSONObject().put("id",uuid(fx.id)).put("look",looks[look]).put("amount",fx.number("strength",1f))
+        for (key in listOf("exposure","highlights","localRecovery","warmth","tint")) color.put(key,fx.number(key))
+        fx.values["path"]?.let {
+            val input=when (fx.values["input"]) {
+                "Apple Log" -> "appleLog"
+                "Apple Log 2" -> "appleLog2"
+                "O-Log" -> unsupported("O-Log LUTs")
+                else -> "rec709"
+            }
+            color.put("imported",JSONObject().put("filename",it).put("name",fx.values["name"] ?: "Imported LUT").put("input",input))
+        }
+        fx.motion?.let { color.put("motion",motion(it)) }
+        return color
+    }
+
+    private fun grade(o: JSONObject,paths: Map<String,String>): Effect {
+        val index=looks.indexOf(o.getString("look"))
+        require(index>=0)
+        val fx=Effect(id=o.getString("id"),kind="Color LUTs",values=mutableMapOf("lut" to CubeLut.looks[index],
+            "strength" to o.getDouble("amount").toString(),"balanceModel" to "2"))
+        for (key in listOf("exposure","highlights","localRecovery","warmth","tint")) fx.values[key]=o.optDouble(key,0.0).toString()
+        fx.motion=o.optJSONObject("motion")?.let(::motion)
+        o.optJSONObject("imported")?.let { lut ->
+            fx.values["path"]=paths.getValue(lut.getString("filename"))
+            fx.values["name"]=lut.getString("name")
+            fx.values["input"]=when (lut.getString("input")) {
+                "appleLog" -> "Apple Log"
+                "appleLog2" -> "Apple Log 2"
+                "rec709" -> "Rec.709"
+                else -> unsupported("this LUT input color space")
+            }
+        }
+        return fx
+    }
+
+    private fun clock(clip: Clip,local: Double): Double {
+        val time=local.coerceIn(0.0,clip.duration)
+        return clip.frozen?.let { it.sourceTime+it.offset+time } ?: clip.sourceTime(clip.start+time)
+    }
+
+    private fun activeRange(clip: Clip,fx: Effect): JSONObject? {
+        if (fx.from<=0 && fx.to>=clip.duration) return null
+        val start=clock(clip,fx.from);val end=clock(clip,fx.to)
+        require(start<end) { "An effect has no representable source range" }
+        return JSONObject().put("start",start).put("end",end)
+    }
+
+    private fun scoped(clip: Clip,fx: Effect,range: JSONObject?): Effect? {
+        if (range==null) return fx.copy(from=0.0,to=clip.duration)
+        val start=range.getDouble("start");val end=range.getDouble("end")
+        require(start.isFinite() && end.isFinite() && start>=0 && start<end && end<=604800)
+        val lo=clock(clip,0.0);val hi=clock(clip,clip.duration)
+        if (start>=hi || end<=lo) return null
+        fun local(source: Double) = if (clip.frozen!=null) source-lo else clip.timelineOffset(source)
+        return fx.copy(from=local(max(lo,start)),to=local(min(hi,end)))
+    }
+
+    private fun framingRecipe(fx: Effect,clip: Clip,canvas: Pair<Int,Int>,shape: (String)->Pair<Int,Int>): JSONObject {
+        if (!fx.enabled || fx.number("strength",1f)!=1f || fx.number("animate")!=0f)
+            unsupported("disabled or blended framing")
+        return when (fx.kind) {
+            "Crop","Zoom" -> {
+                if (fx.values["geometry"]!="source" && clip.effects.any { it.kind=="Mirror" && activeRange(clip,it)!=null })
+                    unsupported("legacy crop over a ranged mirror")
+                YouRecGeometry.crop(fx,clip,canvas,shape)
+            }
+            "Mirror" -> JSONObject().put("id",uuid(fx.id))
+                .put("horizontal",fx.number("horizontal",if (fx.number("vertical")==0f) 1f else 0f)>0)
+                .put("vertical",fx.number("vertical")>0)
+            else -> {
+                if (!StabilizationSettings.modern(fx)) unsupported("legacy stabilization")
+                val (start,end)=StabilizationSettings.range(fx,clip)
+                JSONObject().put("id",uuid(fx.id)).put("level",StabilizationSettings.level(fx).name.lowercase())
+                    .put("version",1).put("referenceStart",start).put("referenceEnd",end)
+            }
+        }
+    }
+
+    private fun framingName(kind: String) = when (kind) {
+        "Crop","Zoom" -> "crop"
+        "Mirror" -> "mirror"
+        else -> "stabilization"
+    }
+
+    private fun effectWindows(body: JSONObject): Map<String,List<JSONObject>> {
+        val windows=mutableMapOf<String,List<JSONObject>>()
+        when (val data=body.opt("effectWindows")) {
+            null, JSONObject.NULL -> Unit
+            is JSONArray -> {
+                require(data.length()%2==0)
+                for (i in 0 until data.length() step 2)
+                    require(windows.put(data.getString(i),objects(data.getJSONArray(i+1)))==null)
+            }
+            is JSONObject -> for (key in data.keys()) windows[key]=objects(data.getJSONArray(key))
+            else -> error("Invalid effect windows")
+        }
+        for (spans in windows.values) {
+            require(spans.isNotEmpty() && spans.size<=10000 && spans.all { span ->
+                val start=span.getDouble("start");val end=span.getDouble("end")
+                start.isFinite() && end.isFinite() && start>=0 && start<end && end<=604800
+            } && spans.zipWithNext().all { (a,b) -> a.getDouble("end")<b.getDouble("start") }) { "Invalid effect windows" }
+        }
+        return windows
+    }
+
+    private fun readFraming(body: JSONObject,clip: Clip,windows: Map<String,List<JSONObject>>,used: MutableSet<String>): List<Effect> {
+        val kinds=listOf("crop","mirror","stabilization")
+        val recipes=kinds.mapNotNull { key -> body.optJSONObject(key)?.let { key to it } }.toMutableList()
+        for (variant in objects(array(body,"framingVariants"))) {
+            val key=variant.keys().asSequence().single()
+            require(key in kinds)
+            val payload=variant.getJSONObject(key)
+            val recipe=payload.getJSONObject(if (key=="stabilization") "_1" else "_0")
+            if (key=="stabilization") require(payload.getString("_0")==recipe.getString("id"))
+            require(windows.containsKey(recipe.getString("id"))) { "A framing variant has no windows" }
+            recipes.add(key to recipe)
+        }
+        val result=mutableListOf<Effect>()
+        for ((kind,recipe) in recipes) {
+            val id=recipe.optString("id",uuid(clip.group+":stabilization"))
+            require(used.add(id)) { "Duplicate native framing identity" }
+            val fx=when (kind) {
+                "crop" -> YouRecGeometry.crop(recipe,clip.duration)
+                "mirror" -> Effect(id=id,kind="Mirror",values=mutableMapOf(
+                    "horizontal" to if (recipe.getBoolean("horizontal")) "1" else "0",
+                    "vertical" to if (recipe.getBoolean("vertical")) "1" else "0"))
+                else -> {
+                    require(recipe.optInt("version",1)==1)
+                    Effect.create("Stabilize").copy(id=id,to=clip.duration).apply {
+                        values["level"]=recipe.getString("level").replaceFirstChar { it.uppercase() }
+                        values["referenceStart"]=recipe.optDouble("referenceStart",body.getDouble("start")).toString()
+                        values["referenceEnd"]=recipe.optDouble("referenceEnd",body.getDouble("end")).toString()
+                        require(StabilizationSettings.valid(this,clip))
+                    }
+                }
+            }
+            val spans=windows[id]
+            val range=recipe.optJSONObject("activeRange")
+            if (spans==null) {
+                scoped(clip,fx,range)?.let(result::add)
+                continue
+            }
+            for ((index,span) in spans.withIndex()) {
+                val intersection=if (range==null) span else JSONObject()
+                    .put("start",max(span.getDouble("start"),range.getDouble("start")))
+                    .put("end",min(span.getDouble("end"),range.getDouble("end")))
+                if (intersection.getDouble("start")>=intersection.getDouble("end")) continue
+                val effect=scoped(clip,fx,intersection) ?: continue
+                if (spans.size==1) result.add(effect)
+                else result.add(effect.copy(id=if (index==0) id else uuid("$id:window:$index"),
+                    values=effect.values.toMutableMap().apply { put("nativeFramingId",id) }))
+            }
+        }
+        for (same in result.groupBy { it.kind }.values) if (same.sortedBy { it.from }.zipWithNext().any { (a,b) -> a.to>b.from })
+            unsupported("overlapping native framing variants")
+        return result
+    }
+
+    private fun restrict(clip: Clip,fx: Effect,windows: List<JSONObject>?): List<Effect> {
+        if (windows==null) return listOf(fx)
+        return windows.mapIndexedNotNull { index,window ->
+            val span=scoped(clip,fx,window) ?: return@mapIndexedNotNull null
+            val from=max(fx.from,span.from)
+            val to=min(fx.to,span.to)
+            if (from>=to) return@mapIndexedNotNull null
+            if (fx.kind=="Freeze Frame") unsupported("a partially scoped inserted hold")
+            val result=fx.copyEffect().copy(from=from,to=to,id=if (index==0) fx.id else uuid("${fx.id}:window:$index"))
+            if (fx.kind=="Text" && fx.phase==null) {
+                result.phase=if (clip.frozen==null) EffectPhase.anchor(clip,0.0) else {
+                    val start=clock(clip,0.0)
+                    EffectPhase(start,clock=listOf(EffectTimePoint(start,0.0),EffectTimePoint(start+clip.duration,clip.duration)))
+                }
+                result.values["titleOrigin"]=fx.from.toString()
+                result.values["titleDuration"]=(fx.to-fx.from).toString()
+            }
+            result
+        }
+    }
+
     private fun content(clip: Clip,source: String,canvas: Pair<Int,Int>,shape: (String)->Pair<Int,Int>): JSONObject {
         if (clip.effects.any { it.values["matteJournal"]!=null }) unsupported("recorded background masks; use a MyRec archive or rendered video")
-        if (clip.frozen!=null && clip.effects.any { it.kind !in Effects.audio && (it.from>0 || it.to<clip.duration) }) unsupported("locally scoped held-frame layers")
+        val framing=setOf("Crop","Zoom","Mirror","Stabilize","Color LUTs")
+        if (clip.frozen!=null && clip.effects.any { it.kind !in Effects.audio && it.kind !in framing && (it.from>0 || it.to<clip.duration) }) unsupported("locally scoped held-frame layers")
         val out=JSONObject().put("id",uuid(clip.id)).put("sourceID",source).put("start",clip.sourceIn).put("end",clip.sourceOut)
         val effects=JSONArray()
+        val grades=clip.effects.filter { it.kind=="Color LUTs" }.sortedBy { it.from }
+        if (grades.any { !it.enabled } || grades.zipWithNext().any { (a,b) -> a.to>b.from })
+            unsupported("disabled or stacked color grades")
+        if (grades.size==1 && activeRange(clip,grades.single())==null) out.put("color",grade(grades.single()))
+        else if (grades.isNotEmpty()) out.put("colorRegions",JSONArray(grades.map { fx ->
+            val range=activeRange(clip,fx) ?: unsupported("overlapping color grades")
+            range.put("grade",grade(fx))
+        }))
+        val variants=JSONArray()
+        val windows=JSONArray()
+        for ((kind,items) in clip.effects.filter { it.kind in framing && it.kind!="Color LUTs" }.groupBy { framingName(it.kind) }) {
+            val sorted=items.sortedBy { it.from }
+            if (sorted.zipWithNext().any { (a,b) -> a.to>b.from }) unsupported("overlapping $kind recipes")
+            val recipes=sorted.groupBy { effect ->
+                val root=effect.values["nativeFramingId"] ?: effect.id
+                framingRecipe(effect,clip,canvas,shape).put("id",uuid(root)).toString()
+            }
+            for ((index,entry) in recipes.entries.withIndex()) {
+                val recipe=JSONObject(entry.key)
+                val intervals=entry.value.map { activeRange(clip,it) }
+                if (index==0 && intervals.size==1) out.put(kind,recipe.put("activeRange",intervals.single()))
+                else {
+                    val id=recipe.getString("id")
+                    if ((0 until windows.length() step 2).any { windows.getString(it)==id } || index>0 && out.optJSONObject(kind)?.optString("id")==id)
+                        unsupported("framing variants with conflicting identities")
+                    if (intervals.any { it==null }) unsupported("overlapping $kind recipes")
+                    windows.put(id).put(JSONArray(intervals))
+                    if (index==0) out.put(kind,recipe)
+                    else {
+                        val payload=if (kind=="stabilization") JSONObject().put("_0",id).put("_1",recipe)
+                            else JSONObject().put("_0",recipe)
+                        variants.put(JSONObject().put(kind,payload))
+                    }
+                }
+            }
+        }
+        if (windows.length()>0) out.put("effectWindows",windows)
+        if (variants.length()>0) out.put("framingVariants",variants)
         for (fx in clip.effects) when (fx.kind) {
             in Effects.audio -> Unit
             in names -> effects.put(nativeEffect(fx,clip))
-            "Crop", "Zoom" -> {
-                if (!fx.enabled || fx.from>0 || fx.to<clip.duration || out.has("crop") || fx.number("strength",1f)!=1f || fx.number("animate")!=0f) unsupported("scoped, blended or stacked crops")
-                out.put("crop",YouRecGeometry.crop(fx,clip,canvas,shape))
-            }
+            in framing -> Unit
             "Image" -> {
                 if (!fx.enabled) unsupported("disabled image overlays")
                 val images=out.optJSONArray("images") ?: JSONArray().also { out.put("images",it) }
@@ -168,28 +389,6 @@ object YouRecDocument {
                 if (!fx.enabled) unsupported("disabled text layers")
                 val texts=out.optJSONArray("texts") ?: JSONArray().also { out.put("texts",it) }
                 texts.put(nativeText(fx,clip))
-            }
-            "Color LUTs" -> {
-                if (!fx.enabled || out.has("color") || fx.from>0 || fx.to<clip.duration) unsupported("scoped or stacked color grades")
-                if (fx.values["source"] !in listOf(null,"Recorded")) unsupported("manual Log interpretation")
-                val look=fx.values["lut"] ?: "Natural"
-                val looks=listOf("natural","warm","cool","cinema","mono","portrait","daylight","goldenHour","mutedFilm","richContrast","pastel","night","silver","ink")
-                val index=CubeLut.looks.indexOf(look);require(index>=0)
-                val color=JSONObject().put("id",uuid(fx.id)).put("look",looks[index]).put("amount",fx.number("strength",1f))
-                for (key in listOf("exposure","highlights","localRecovery","warmth","tint")) color.put(key,fx.number(key))
-                fx.values["path"]?.let { color.put("imported",JSONObject().put("filename",it).put("name",fx.values["name"] ?: "Imported LUT").put("input",when (fx.values["input"]) { "Apple Log" -> "appleLog";"Apple Log 2" -> "appleLog2";"O-Log" -> unsupported("O-Log LUTs");else -> "rec709" })) }
-                fx.motion?.let { color.put("motion",motion(it)) }
-                out.put("color",color)
-            }
-            "Mirror" -> {
-                if (!fx.enabled || fx.from>0 || fx.to<clip.duration || fx.number("strength",1f)!=1f || fx.number("animate")!=0f) unsupported("scoped or blended mirror transforms")
-                out.put("mirror",JSONObject().put("id",uuid(fx.id)).put("horizontal",fx.number("horizontal",if (fx.number("vertical")==0f) 1f else 0f)>0).put("vertical",fx.number("vertical")>0))
-            }
-            "Stabilize" -> {
-                if (!fx.enabled || !StabilizationSettings.modern(fx) || fx.from>0 || fx.to<clip.duration) unsupported("scoped or legacy stabilization")
-                val (start,end)=StabilizationSettings.range(fx,clip)
-                out.put("stabilization",JSONObject().put("id",uuid(fx.id)).put("level",StabilizationSettings.level(fx).name.lowercase())
-                    .put("version",1).put("referenceStart",start).put("referenceEnd",end))
             }
             else -> unsupported(fx.kind)
         }
@@ -206,44 +405,116 @@ object YouRecDocument {
     private fun ink(o: JSONObject): String {
         val n=o.getLong("rgba");return "#%08x".format(java.util.Locale.US,((n and 255) shl 24) or (n ushr 8))
     }
-    private fun nativeText(fx: Effect,clip: Clip): JSONObject {
-        if (fx.subtitle!=null) unsupported("subtitle ownership")
-        if (fx.values["design"]!="1") unsupported("legacy title layout")
-        val d=TitleStyle.defaults+fx.values
+    private fun titleDesign(d: Map<String,String>): JSONObject {
         if (TitleStyle.families.none { it.id==d["face"] } && FontLibrary.Reference.parse(d.getValue("face"))==null) unsupported("device-specific fonts")
+        FontLibrary.Reference.parse(d.getValue("face"))?.let {
+            require(java.io.File(d.getValue("path")).name=="font-${it.digest}.sfnt") { "Invalid imported font asset" }
+        }
         val design=JSONObject().put("face",d.getValue("face")).put("weight",d.getValue("weight").toInt()).put("italic",d.getValue("italic").toBoolean())
             .put("alignment",d.getValue("align").lowercase()).put("fill",ink(d.getValue("color"))).put("border",ink(d.getValue("border")))
             .put("shade",ink(d.getValue("shade"))).put("backing",ink(d.getValue("backing"))).put("outlined",d.getValue("outlined").toBoolean()).put("shadow",d.getValue("shadow").toBoolean())
             .put("plate",when (d["plate"]) { "One box" -> "block";"Each line" -> "lines";else -> "off" })
         for (key in listOf("tracking","lineSpacing","borderWidth","shadowBlur","shadowOffset","padding","radius")) design.put(key,d.getValue(key).toDouble())
-        d["gradientFirst"]?.let { design.put("gradient",JSONObject().put("first",ink(it)).put("last",ink(d.getValue("gradientLast"))).put("angle",fx.number("gradientAngle"))) }
+        d["gradientFirst"]?.let { design.put("gradient",JSONObject().put("first",ink(it)).put("last",ink(d.getValue("gradientLast"))).put("angle",d.getValue("gradientAngle").toDouble())) }
+        return design
+    }
+    private fun nativeText(fx: Effect,clip: Clip): JSONObject {
+        if (fx.subtitle!=null) unsupported("subtitle ownership")
+        if (fx.values["design"]!="1") unsupported("legacy title layout")
+        val d=TitleStyle.defaults+fx.values
         val out=JSONObject().put("id",uuid(fx.id)).put("text",d["text"] ?: "Your text").put("start",clip.sourceTime(clip.start+fx.from))
             .put("end",if (clip.frozen!=null) clip.sourceOut else clip.sourceTime(clip.start+min(fx.to,clip.duration))).put("x",fx.number("x",.5f)).put("y",fx.number("y",.5f)).put("size",fx.number("size",.065f))
-            .put("style","bold").put("color","white").put("appearance",design)
-        if (FontLibrary.Reference.parse(d.getValue("face"))!=null && d["path"]!=null)
-            require(java.io.File(d.getValue("path")).name=="font-${FontLibrary.Reference.parse(d.getValue("face"))!!.digest}.sfnt") { "Invalid imported font asset" }
+            .put("style","bold").put("color","white")
+        if (TitleCard.enabled(fx)) {
+            val card=JSONObject().put("fill",ink(d["card.fill"] ?: TitleCard.fill))
+                .put("border",ink(d["card.border"] ?: TitleCard.border))
+            for ((key,value) in TitleCard.dimensions) card.put(key,fx.number("card.$key",value))
+            val group=JSONObject().put("label",d["label"] ?: "").put("labelScale",fx.number("labelScale",.36f))
+                .put("headlineScale",fx.number("headlineScale",1f)).put("card",card)
+            for (part in listOf("label","headline")) {
+                if (d.containsKey("card.$part.x") || d.containsKey("card.$part.y"))
+                    card.put("${part}Offset",JSONObject().put("x",fx.number("card.$part.x")).put("y",fx.number("card.$part.y")))
+                group.put("${part}Style",titleDesign(TitleCard.style(fx,part)))
+            }
+            out.put("labelHeadline",group)
+        } else out.put("appearance",titleDesign(d))
         val m=JSONObject()
         for (key in listOf("entrance","exit","inDirection","outDirection")) m.put(key,(d[key] ?: if (key.endsWith("Direction")) "Up" else "None").lowercase())
         for (key in listOf("inSeconds","outSeconds")) m.put(key,fx.number(key,.35f))
         out.put("motion",m)
+        val phase=fx.phase
+        if (phase!=null && (m.getString("entrance")!="none" || m.getString("exit")!="none")) {
+            val origin=d["titleOrigin"]?.toDoubleOrNull() ?: 0.0
+            val lower=clock(clip,fx.from)
+            val upper=clock(clip,min(fx.to,clip.duration))
+            fun elapsed(time: Double)=phase.offset+phase.elapsed(time)-origin
+            val localDuration=min(fx.to,clip.duration)-fx.from
+            val duration=d["titleDuration"]?.toDoubleOrNull()?.takeIf { it in .000001..604800.0 }
+                ?: max(localDuration,elapsed(upper))
+            val changedStart=m.getString("entrance")!="none" && abs(elapsed(lower))>.000001
+            val changedEnd=m.getString("exit")!="none" && abs(elapsed(upper)-duration)>.000001
+            if (changedStart || changedEnd) {
+                val points=(listOf(lower,upper)+phase.clock.map { it.source }.filter { it>lower && it<upper }).distinct().sorted()
+                out.put("playbackClock",JSONObject().put("duration",duration).put("points",
+                    JSONArray(points.map { JSONObject().put("source",it).put("elapsed",elapsed(it)) })))
+            }
+        }
         return out
     }
+    private fun titleDesign(d: JSONObject,paths: Map<String,String>): Map<String,String> = TitleStyle.defaults.toMutableMap().apply {
+        put("face",d.getString("face"));put("weight",d.getInt("weight").toString());put("italic",d.getBoolean("italic").toString())
+        put("align",d.getString("alignment").replaceFirstChar { it.uppercase() })
+        for ((key,name) in mapOf("color" to "fill","border" to "border","shade" to "shade","backing" to "backing")) put(key,ink(d.getJSONObject(name)))
+        for (key in listOf("tracking","lineSpacing","borderWidth","shadowBlur","shadowOffset","padding","radius")) put(key,d.getDouble(key).toString())
+        for (key in listOf("outlined","shadow")) put(key,d.getBoolean(key).toString())
+        put("plate",when (d.getString("plate")) { "block" -> "One box";"lines" -> "Each line";else -> "None" })
+        FontLibrary.Reference.parse(getValue("face"))?.let {
+            put("path",paths.getValue("font-${it.digest}.sfnt"));put("fontIndex",it.index.toString());put("fontName",it.postScript)
+        }
+        d.optJSONObject("gradient")?.let {
+            put("gradientFirst",ink(it.getJSONObject("first")));put("gradientLast",ink(it.getJSONObject("last")));put("gradientAngle",it.getDouble("angle").toString())
+        }
+    }
+
     private fun text(o: JSONObject,clip: Clip,paths: Map<String,String>): Effect {
         val fx=Effect(kind="Text",id=o.getString("id"),from=if (clip.frozen!=null) 0.0 else clip.timelineOffset(max(clip.sourceIn,o.getDouble("start"))),to=if (clip.frozen!=null) clip.duration else clip.timelineOffset(min(clip.sourceOut,o.getDouble("end"))))
         fx.values.putAll(TitleStyle.defaults);fx.values["text"]=o.getString("text");fx.values["x"]=o.getDouble("x").toString();fx.values["y"]=o.getDouble("y").toString();fx.values["size"]=o.getDouble("size").toString()
-        val d=o.optJSONObject("appearance") ?: unsupported("legacy title design")
-        fx.values["face"]=d.getString("face");fx.values["weight"]=d.getInt("weight").toString();fx.values["italic"]=d.getBoolean("italic").toString()
-        fx.values["align"]=d.getString("alignment").replaceFirstChar { it.uppercase() }
-        for ((key,name) in mapOf("color" to "fill","border" to "border","shade" to "shade","backing" to "backing")) fx.values[key]=ink(d.getJSONObject(name))
-        for (key in listOf("tracking","lineSpacing","borderWidth","shadowBlur","shadowOffset","padding","radius")) fx.values[key]=d.getDouble(key).toString()
-        for (key in listOf("outlined","shadow")) fx.values[key]=d.getBoolean(key).toString()
-        fx.values["plate"]=when (d.getString("plate")) { "block" -> "One box";"lines" -> "Each line";else -> "None" }
-        FontLibrary.Reference.parse(fx.values.getValue("face"))?.let { fx.values["path"]=paths.getValue("font-${it.digest}.sfnt");fx.values["fontIndex"]=it.index.toString();fx.values["fontName"]=it.postScript }
+        val group=o.optJSONObject("labelHeadline")
+        val design=o.optJSONObject("appearance")
+        if (design!=null) fx.values.putAll(titleDesign(design,paths))
+        else if (group==null) unsupported("legacy title design")
+        if (group!=null) {
+            fx.values["grouped"]="true"
+            fx.values["label"]=group.getString("label")
+            val card=group.getJSONObject("card")
+            for (key in listOf("fill","border")) fx.values["card.$key"]=ink(card.getJSONObject(key))
+            for (key in TitleCard.dimensions.keys) fx.values["card.$key"]=card.getDouble(key).toString()
+            for (part in listOf("label","headline")) {
+                fx.values["${part}Scale"]=group.getDouble("${part}Scale").toString()
+                for ((key,value) in titleDesign(group.getJSONObject("${part}Style"),paths)) fx.values["$part.$key"]=value
+                card.optJSONObject("${part}Offset")?.let { offset ->
+                    for (axis in listOf("x","y")) fx.values["card.$part.$axis"]=offset.getDouble(axis).toString()
+                }
+            }
+            require(TitleCard.valid(fx)) { "Invalid YouRec title card" }
+        }
         o.optJSONObject("motion")?.let { m ->
             for (key in listOf("entrance","exit","inDirection","outDirection")) if (m.has(key)) fx.values[key]=m.getString(key).replaceFirstChar { it.uppercase() }
             for (key in listOf("inSeconds","outSeconds")) fx.values[key]=m.getDouble(key).toString()
         }
-        d.optJSONObject("gradient")?.let { fx.values["gradientFirst"]=ink(it.getJSONObject("first"));fx.values["gradientLast"]=ink(it.getJSONObject("last"));fx.values["gradientAngle"]=it.getDouble("angle").toString() }
+        o.optJSONObject("playbackClock")?.let { clock ->
+            val duration=clock.getDouble("duration")
+            require(duration.isFinite() && duration in .000001..604800.0) { "Invalid title animation duration" }
+            val raw=objects(clock.getJSONArray("points")).map { EffectTimePoint(it.getDouble("source"),it.getDouble("elapsed")) }
+            require(raw.isNotEmpty() && raw.zipWithNext().all { (a,b) -> a.source<=b.source && a.elapsed<=b.elapsed })
+            if (raw.zipWithNext().any { (a,b) -> a.source==b.source && a.elapsed!=b.elapsed }) unsupported("a discontinuous title playback clock")
+            val bias=max(0.0,-raw.first().elapsed)
+            val phase=EffectPhase(raw.first().source,clock=raw.distinct().map { it.copy(elapsed=it.elapsed+bias) })
+            require(phase.valid()) { "Invalid title animation clock" }
+            fx.phase=phase
+            fx.values["titleOrigin"]=bias.toString()
+            fx.values["titleDuration"]=duration.toString()
+        }
         return fx
     }
     private fun mapping(clip: Clip)=JSONObject().put("runs",JSONArray().apply {
@@ -414,13 +685,37 @@ object YouRecDocument {
         }
     }
 
-    fun project(snapshot: JSONObject,header: JSONObject,paths: Map<String,String>): Project {
+    internal fun schema(snapshot: JSONObject): Int {
+        val timeline=snapshot.getJSONObject("state").getJSONObject("timeline")
+        return objects(array(timeline,"video")).maxOfOrNull { item ->
+            val body=item.getJSONObject("content")
+            when {
+                body.has("effectWindows") || body.has("framingVariants") -> 16
+                objects(array(body,"texts")).any { !it.isNull("playbackClock") } -> 16
+                listOf("crop","mirror","stabilization").any { body.optJSONObject(it)?.has("activeRange")==true } -> 15
+                objects(array(body,"texts")).any { !it.isNull("labelHeadline") } -> 14
+                body.has("colorRegions") -> 13
+                else -> 12
+            }
+        } ?: 12
+    }
+
+    fun project(snapshot: JSONObject,header: JSONObject,paths: Map<String,String>,shape: (String)->Pair<Int,Int>? = { null }): Project {
         val state=snapshot.getJSONObject("state");val timeline=state.getJSONObject("timeline")
         val subtitles=timeline.optJSONObject("subtitles")
         val sources=objects(header.getJSONArray("sources")).associateBy { it.getString("id") }
-        val size=state.optJSONArray("outputSize")
-        val result=Project(id=header.getString("id"),name=header.getString("title"),width=size?.getInt(0) ?: 1920,height=size?.getInt(1) ?: 1080,
-            fps=header.optJSONObject("exportSettings")?.optInt("frameRate",30) ?: 30,captureCount=0)
+        val size=state.optJSONArray("outputSize")?.let { it.getInt(0) to it.getInt(1) } ?: run {
+            val video=objects(array(timeline,"video"))
+            val reference=state.optString("canvasReference")
+            val item=video.firstOrNull { it.getJSONObject("content").getString("sourceID")==reference }
+                ?: video.minByOrNull { seconds(it.getJSONObject("start")) }
+            item?.let { sources.getValue(it.getJSONObject("content").getString("sourceID")).getString("filename") }
+                ?.let(shape)?.let { (w,h) -> ((w+1) and -2) to ((h+1) and -2) }
+        } ?: (1920 to 1080)
+        var movie=YouRecMovieSettings.decode(header.optJSONObject("exportSettings"))
+        if (header.optString("myrecExportColor")==ExportColor.HLG.name) movie=movie.copy(color=ExportColor.HLG)
+        val result=Project(id=header.getString("id"),name=header.getString("title"),width=size.first,height=size.second,
+            fps=header.optInt("myrecTimelineFrameRate",movie.fps ?: 30),captureCount=0,movieSettings=movie)
         val membership=objects(array(timeline,"links")).flatMap { link -> (0 until link.getJSONArray("members").length()).map { link.getJSONArray("members").getString(it) to link.getString("id") } }.toMap()
         fun add(item: JSONObject,video: Boolean) {
             val body=if (video) item.getJSONObject("content") else item
@@ -446,33 +741,39 @@ object YouRecDocument {
                 require(c.frozen?.valid()!=false && (!hold || from<source.getDouble("duration"))) { "Invalid held-frame clock" }
                 fun active(o: JSONObject)=o.getDouble("start")<(if (hold) from+.0000001 else to) && o.getDouble("end")>from
                 if (video) {
-                    val allowed=setOf("id","sourceID","start","end","speed","frozenFrame","videoEffects","texts","color","mirror","stabilization","crop","images")
+                    val allowed=setOf("id","sourceID","start","end","speed","frozenFrame","videoEffects","texts","color","colorRegions",
+                        "mirror","stabilization","crop","images","effectWindows","framingVariants")
                     for (key in body.keys()) if (key !in allowed && body.opt(key)!=JSONObject.NULL) unsupported(key)
-                    c.effects.addAll(objects(array(body,"videoEffects")).filter(::active).map { effect(it,c).apply {
+                    val windows=effectWindows(body)
+                    val used=mutableSetOf<String>()
+                    fun scopedItems(key: String,convert: (JSONObject)->Effect) {
+                        for (recipe in objects(array(body,key))) {
+                            val id=recipe.getString("id")
+                            require(used.add(id)) { "Duplicate video effect identity" }
+                            if (active(recipe)) c.effects.addAll(restrict(c,convert(recipe),windows[id]))
+                        }
+                    }
+                    scopedItems("videoEffects") { effect(it,c).apply {
                         if (kind in listOf("Undercranking","Step Printing")) {
                             parameter("speed")?.let { p -> p.value=EffectValue.Number(1.0);p.keyframes.clear() }
                             motion=motion?.let { m -> m.copy(a=m.a-"speed",b=m.b-"speed").takeIf { it.a.isNotEmpty() } }
                         }
-                    } })
-                    c.effects.addAll(objects(array(body,"texts")).filter(::active).map { text(it,c,paths) })
-                    body.optJSONObject("crop")?.let { c.effects.add(YouRecGeometry.crop(it,c.duration)) }
-                    c.effects.addAll(objects(array(body,"images")).filter(::active).map { YouRecGeometry.image(it,c,result.width to result.height,paths) })
-                    body.optJSONObject("stabilization")?.let {
-                        require(it.optInt("version",1)==1)
-                        val fx=Effect.create("Stabilize").copy(id=it.optString("id",uuid(owner+":stabilization")),to=c.duration)
-                        fx.values["level"]=it.getString("level").replaceFirstChar { it.uppercase() }
-                        fx.values["referenceStart"]=it.optDouble("referenceStart",from).toString();fx.values["referenceEnd"]=it.optDouble("referenceEnd",to).toString()
-                        require(StabilizationSettings.valid(fx,c));c.effects.add(fx)
-                    }
-                    body.optJSONObject("mirror")?.let { c.effects.add(Effect(id=it.getString("id"),kind="Mirror",to=c.duration,values=mutableMapOf("horizontal" to (if (it.getBoolean("horizontal")) "1" else "0"),"vertical" to (if (it.getBoolean("vertical")) "1" else "0")))) }
+                    } }
+                    scopedItems("texts") { text(it,c,paths) }
+                    c.effects.addAll(readFraming(body,c,windows,used))
+                    scopedItems("images") { YouRecGeometry.image(it,c,result.width to result.height,paths) }
+                    if (windows.keys.any { it !in used }) unsupported("effect windows with no matching recipe")
+                    val colors=objects(array(body,"colorRegions"))
+                    require(colors.zipWithNext().all { (a,b) -> a.getDouble("end")<=b.getDouble("start") })
                     body.optJSONObject("color")?.let {
-                        val looks=listOf("natural","warm","cool","cinema","mono","portrait","daylight","goldenHour","mutedFilm","richContrast","pastel","night","silver","ink")
-                        val index=looks.indexOf(it.getString("look"));require(index>=0)
-                        val fx=Effect(id=it.getString("id"),kind="Color LUTs",to=c.duration,values=mutableMapOf("lut" to CubeLut.looks[index],"strength" to it.getDouble("amount").toString(),"balanceModel" to "2"))
-                        for (key in listOf("exposure","highlights","localRecovery","warmth","tint")) fx.values[key]=it.optDouble(key,0.0).toString()
-                        fx.motion=it.optJSONObject("motion")?.let(::motion)
-                        it.optJSONObject("imported")?.let { lut -> fx.values["path"]=paths.getValue(lut.getString("filename"));fx.values["name"]=lut.getString("name");fx.values["input"]=when (lut.getString("input")) { "appleLog" -> "Apple Log";"appleLog2" -> "Apple Log 2";else -> "Rec.709" } }
-                        c.effects.add(fx)
+                        require(colors.isEmpty())
+                        c.effects.add(grade(it,paths).copy(to=c.duration))
+                    }
+                    val gradeIds=mutableSetOf<String>()
+                    for ((index,region) in colors.withIndex()) {
+                        val fx=grade(region.getJSONObject("grade"),paths)
+                        val local=if (gradeIds.add(fx.id)) fx else fx.copy(id=uuid("${fx.id}:color:$index"))
+                        scoped(c,local,region)?.let(c.effects::add)
                     }
                 } else {
                     if (hold && freeze!=null) c.effects.add(effect(freeze,c))
@@ -597,6 +898,7 @@ object YouRecDocument {
         val result=JSONObject(snapshot.toString());val timeline=result.getJSONObject("state").getJSONObject("timeline")
         val ledger=objects(array(header,"captureLedger"));val cursor=result.optInt("captureCursor",0);require(cursor in 0..ledger.size)
         var time=objects(array(timeline,"video")).plus(objects(array(timeline,"audio"))).maxOfOrNull { item -> seconds(item.getJSONObject("start"))+objects(item.getJSONObject("mapping").getJSONArray("runs")).sumOf { seconds(it.getJSONObject("duration")) } } ?: 0.0
+        for (region in objects(array(timeline,"generated"))) time=max(time,seconds(region.getJSONObject("interval").getJSONObject("end")))
         var layer=objects(array(timeline,"video")).maxOfOrNull { it.optInt("layer",0) } ?: -1
         val sources=objects(header.getJSONArray("sources")).associateBy { it.getString("id") }
         for (entry in ledger.drop(cursor).filter { !it.getBoolean("insertion") }) {
@@ -605,10 +907,20 @@ object YouRecDocument {
                 rate=body.optJSONObject("speed")?.getDouble("rate") ?: 1.0,video=!source.optBoolean("audioOnly",false),audio=!source.optBoolean("isStillPhoto",false))
             if (body.has("pauses") || body.has("frozenFrame")) unsupported("capture-ledger retiming")
             clip.effects.addAll(objects(array(body,"videoEffects")).map { effect(it,clip) })
-            val map=mapping(clip);val occurrence=uuid(clip.id+":capture")
+            val map=mapping(clip);val occurrence=clip.id
             if (clip.video) timeline.getJSONArray("video").put(JSONObject().put("content",body).put("start",time(time)).put("layer",++layer).put("occurrenceID",occurrence).put("mapping",map).put("localOrigin",time(0.0)))
-            if (clip.audio) timeline.getJSONArray("audio").put(JSONObject().put("id",uuid(clip.id+":audio")).put("sourceID",body.getString("sourceID")).put("start",time(time))
-                .put("occurrenceID",occurrence).put("mapping",map).put("localOrigin",time(0.0)).put("volumeDB",0).put("muted",false).put("enhancements",JSONArray()))
+            if (clip.audio) {
+                val id=UUID.fromString(clip.id)
+                val audioId=UUID(id.mostSignificantBits,id.leastSignificantBits xor 0x80L).toString()
+                val sound=JSONObject().put("id",audioId).put("sourceID",body.getString("sourceID")).put("start",time(time))
+                    .put("occurrenceID",occurrence).put("mapping",map).put("localOrigin",time(0.0)).put("volumeDB",0).put("muted",false).put("enhancements",JSONArray())
+                if (clip.video) {
+                    sound.put("followsVideo",clip.id)
+                    val links=array(timeline,"links").put(JSONObject().put("id",clip.id).put("members",JSONArray(listOf(clip.id,audioId))))
+                    timeline.put("links",links)
+                }
+                timeline.getJSONArray("audio").put(sound)
+            }
             time+=clip.duration
         }
         result.put("captureCursor",ledger.size);return result

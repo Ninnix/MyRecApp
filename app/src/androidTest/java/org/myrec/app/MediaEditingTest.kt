@@ -506,6 +506,38 @@ object MediaEditingTest {
                 check(a.editor.project == edit)
             } finally { instrumentation.removeMonitor(monitor) }
         }
+        test("a failed second import leaves the committed edit and its completed movie intact") {
+            val before=Project(name="Import failure",width=160,height=90,clips=mutableListOf(
+                ProjectStore.inspect(source).copy(sourceOut=1.0)))
+            onMain { a.editor.load(before.duplicate());a.saveProject() }
+            val movie=a.movieExports.movie(a.store,before,160,90,ExportColor.SDR) { target,progress ->
+                Export(a.audioCache).run(before,target,160,90,progress=progress)
+            }
+            val hash=SourceAudio.hash(movie.file)
+            val data=android.content.ClipData.newRawUri("Video",Uri.fromFile(source)).apply {
+                addItem(android.content.ClipData.Item(Uri.fromFile(File(folder,"missing-import.mp4"))))
+            }
+            val filter=IntentFilter(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addDataType("*/*");addCategory(Intent.CATEGORY_OPENABLE)
+            }
+            val monitor=instrumentation.addMonitor(filter,Instrumentation.ActivityResult(
+                Activity.RESULT_OK,Intent().apply { clipData=data }),true)
+            try {
+                onMain { a.importVideo() }
+                Thread.sleep(250)
+                onMain { checkNotNull(a.importDialog).getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick() }
+                val deadline=SystemClock.uptimeMillis()+10000
+                var finished=false
+                while (!finished && SystemClock.uptimeMillis()<deadline) {
+                    Thread.sleep(100)
+                    onMain { finished=!a.panels.isOpen }
+                }
+                check(finished && a.editor.project==before && !a.editor.canUndo)
+                check(a.store.open(before.id).project==before)
+                check(movie.file.isFile && SourceAudio.hash(movie.file)==hash)
+                check(a.store.media.listFiles().orEmpty().none { File(it,".myrec-import").exists() })
+            } finally { instrumentation.removeMonitor(monitor) }
+        }
         test("Voiceover records PCM passes without pause gaps, saves an independent layer and undoes once") {
             val before = Project(name = "Voiceover", clips = mutableListOf(ProjectStore.inspect(source)))
             onMain { a.editor.load(before.duplicate()); a.editor.cursor = .5; a.voiceover() }

@@ -54,8 +54,9 @@ object MicrophoneTests {
         try {
             test("recording gain reaches encoded AAC samples with correct stereo, priming and duration") {
                 val file=File(scratch,"gain.m4a")
+                val journal=CaptureSamples.audio(file)
                 val clock=RecordingClock(); val failure=AtomicReference<Throwable>()
-                val writer=CaptureAudio(file,a.audioCache,clock) { failure.set(it) }
+                val writer=CaptureAudio(journal,clock) { failure.set(it) }
                 val origin=System.nanoTime()
                 val gain=RecordingGain()
                 var tail: Thread?=null
@@ -80,11 +81,20 @@ object MicrophoneTests {
                         for (block in 297..299) append(block)
                     }.apply { start() }
                     clock.stop(origin+3_000_000_000)
-                    val priming=writer.finish(144000)
+                    writer.finish(144000)
                     tail.join()
                     failure.get()?.let { throw it }
                     check(writer.insertedSilence==0L)
-                    Mp4Audio.trim(file,Mp4Audio.PREFIX+priming,3.0)
+                    CaptureSamples.Reader(journal).use { reader ->
+                        val muxer=MediaMuxer(file.path,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                        try {
+                            val track=muxer.addTrack(reader.format)
+                            muxer.start()
+                            while (true) muxer.writeSampleData(track,reader.next() ?: break,reader.info)
+                            muxer.stop()
+                        } finally { muxer.release() }
+                    }
+                    Mp4Audio.trim(file,Mp4Audio.PREFIX+Mp4Audio.delay(a.audioCache.head(file.path,12288)),3.0)
                 } finally { tail?.join(1000); writer.close() }
                 val decoded=pcm(file)
                 check(abs(decoded.size/2-144000)<=2) { "Decoded ${decoded.size/2} frames" }

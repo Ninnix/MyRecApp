@@ -117,8 +117,8 @@ and downloaded models separate. There is no automatic migration yet; keep the
 old app installed if it holds recordings or edits you need.
 
 This is development software. Camera, microphone and HDR support depend on the
-phone and its drivers. Full behavior and processing parity with iOS remains in
-progress.
+phone and its drivers. See the [porting status](docs/PORTING.md) for known
+differences from YouRec and the checks still needed on Android and iOS.
 
 ## Build
 

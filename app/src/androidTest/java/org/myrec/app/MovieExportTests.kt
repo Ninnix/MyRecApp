@@ -101,6 +101,37 @@ object MovieExportTests {
             val reopened = MovieExports(directory).movie(a.store, project, 160, 90, ExportColor.SDR) { _, _ -> error("An unchanged movie was encoded again") }
             check(reopened.reused && reopened.file == completed.file && reopened.file.readBytes().contentEquals(good.readBytes()))
         }
+        test("scoped clipping warning follows the edited samples and survives audio checkpoint reuse") {
+            val wave=File(root,"loud.wav")
+            val frames=48000
+            val bytes=java.nio.ByteBuffer.allocate(44+frames*2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            bytes.put("RIFF".toByteArray()).putInt(36+frames*2).put("WAVEfmt ".toByteArray()).putInt(16)
+                .putShort(1).putShort(1).putInt(48000).putInt(96000).putShort(2).putShort(16)
+                .put("data".toByteArray()).putInt(frames*2)
+            repeat(frames) { index ->
+                bytes.putShort((.7*32767*kotlin.math.sin(2*Math.PI*index/48)).toInt().toShort())
+            }
+            wave.writeBytes(bytes.array())
+            val sound=Clip(path=wave.path,sourceOut=1.0,video=false,linked=false)
+            val edit=Project(width=160,height=90,clips=mutableListOf(
+                Clip(path=source.path,sourceOut=1.0,audio=false),sound))
+            val dry=Export(a.audioCache)
+            dry.run(edit,File(root,"straight.mp4"),160,90) {}
+            check(dry.editedAudioPeak==null)
+            sound.effects.add(AudioFilter.effect("Output gain").copy(from=.35,to=.65).apply { values["gain"]="6" })
+            val ticket=exports.ticket(a.store,edit,160,90,ExportColor.SDR)
+            val audioPart=File(directory,"${edit.id}/${ticket.key}.resume/audio.m4a")
+            fun render(job: Export,progress: (Float)->Unit) = exports.resumable(a.store,edit,160,90,ExportColor.SDR,30,
+                cancelled={ job.paused },progress=progress,editedAudioPeak={ job.editedAudioPeak }) { target,checkpoint,report ->
+                job.render(edit,target,160,90,ExportColor.SDR,30,checkpoint,report)
+            }
+            val first=Export(a.audioCache)
+            check(runCatching { render(first) { if (audioPart.isFile) first.paused=true } }.isFailure)
+            check(audioPart.isFile)
+            val resumed=render(Export(a.audioCache)) {}
+            check(resumed.editedAudioPeak?.let { it in 1.38..1.42 }==true)
+            check(render(Export(a.audioCache)) {}.let { it.reused && it.editedAudioPeak==resumed.editedAudioPeak })
+        }
         test("export identity includes source bytes sidecars settings and edits but ignores dictionary order and project title") {
             fun key(p: Project = project, width: Int = 160, color: ExportColor = ExportColor.SDR) = exports.ticket(a.store, p, width, 90, color).key
             val first = key()

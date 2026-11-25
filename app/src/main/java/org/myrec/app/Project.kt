@@ -75,7 +75,7 @@ data class Effect(
     }
 
     fun copyEffect(newId: Boolean = false) =
-        copy(id = if (newId) uid() else id, values = values.toMutableMap(),
+        copy(id = if (newId) uid() else id, values = values.toMutableMap().apply { if (newId) remove("nativeFramingId") },
             parameters = parameters.map { it.duplicate() }.toMutableList(), motion = motion?.duplicate(),
             phase = phase?.copy(clock = phase!!.clock.toList()))
 
@@ -735,6 +735,33 @@ class Editor(var project: Project = Project()) {
     }
 
     fun applyEffect(effect: Effect, replaceId: String? = null) {
+        val scope=range
+        if (scope!=null && effect.kind in setOf("Color LUTs","Crop","Mirror","Stabilize")) {
+            change {
+                for (clip in targets().filter { it.video }) {
+                    val from=max(0.0,scope.start-clip.start)
+                    val to=min(clip.duration,scope.endInclusive-clip.start)
+                    val previous=clip.effects.firstOrNull { it.id==replaceId }
+                    if (to<=from || replaceId!=null && previous==null || effect.kind=="Stabilize" && clip.photo) continue
+                    val kept=clip.effects.flatMap { current ->
+                        val renew=current.id==effect.id
+                        if (current.kind!=effect.kind || current.from>=to || current.to<=from)
+                            listOf(if (renew) current.copyEffect(newId=true) else current)
+                        else listOfNotNull(
+                            current.takeIf { it.from<from }?.copyEffect(newId=renew)?.copy(to=from),
+                            current.takeIf { it.to>to }?.copyEffect(newId=renew || current.from<from)?.copy(from=to),
+                        )
+                    }
+                    clip.effects.clear()
+                    clip.effects.addAll(kept)
+                    val applied=effect.copyEffect().copy(from=from,to=to,
+                        motion=effect.motion?.let { if (it.clock.isEmpty()) it.anchored(clip,clip.start-scope.start) else it })
+                    if (StabilizationSettings.modern(applied)) StabilizationSettings.bind(applied,clip,previous)
+                    clip.effects.add(applied)
+                }
+            }
+            return
+        }
         change {
             val retimed = mutableSetOf<Pair<Double, Double>>()
             val r = range

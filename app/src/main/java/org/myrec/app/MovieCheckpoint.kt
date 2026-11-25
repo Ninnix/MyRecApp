@@ -20,9 +20,9 @@ internal class MovieCheckpoint(private val folder: File) {
     }
 
     fun segment(start: Int, end: Int, check: () -> Unit, render: (File) -> Unit): File =
-        save("frames-$start-$end", "mp4", check, render)
+        save("frames-$start-$end", "mp4", check) { render(it); null }.first
 
-    fun audio(check: () -> Unit, render: (File) -> Unit): File = save("audio", "m4a", check, render)
+    fun audio(check: () -> Unit, render: (File) -> Double?): Pair<File,Double?> = save("audio", "m4a", check, render)
 
     private fun hash(file: File, check: () -> Unit): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -38,22 +38,27 @@ internal class MovieCheckpoint(private val folder: File) {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun save(name: String, extension: String, check: () -> Unit, render: (File) -> Unit): File {
+    private fun save(name: String, extension: String, check: () -> Unit, render: (File) -> Double?): Pair<File,Double?> {
         val output = File(folder, "$name.$extension")
         val receipt = File(folder, "$name.sha256")
-        if (output.isFile && receipt.isFile && receipt.length() == 64L && receipt.readText() == hash(output, check)) return output
+        if (output.isFile && receipt.isFile && receipt.length() in 64L..128L) {
+            val data=receipt.readLines()
+            if (data.firstOrNull()==hash(output,check))
+                return output to data.getOrNull(1)?.toDoubleOrNull()?.takeIf { it.isFinite() && it>=0 }
+        }
         val temporary = File(folder, ".$name-${uid()}.$extension")
         val stamp = File(folder, ".$name-${uid()}.sha256")
         try {
-            render(temporary)
+            val peak=render(temporary)
             // A section becomes reusable only after the encoder closes it and both files reach disk.
             val checksum = hash(temporary) {}
             FileOutputStream(temporary, true).use { it.fd.sync() }
-            FileOutputStream(stamp).use { it.write(checksum.toByteArray(Charsets.US_ASCII)); it.fd.sync() }
+            val metadata=if (peak==null) checksum else "$checksum\n$peak"
+            FileOutputStream(stamp).use { it.write(metadata.toByteArray(Charsets.US_ASCII)); it.fd.sync() }
             kotlin.check(temporary.renameTo(output) && stamp.renameTo(receipt)) { "Cannot save the export checkpoint" }
             syncDirectory(folder)
             check()
-            return output
+            return output to peak
         } finally { temporary.delete(); stamp.delete() }
     }
 

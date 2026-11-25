@@ -83,7 +83,7 @@ class Playback(
                 if (editor.cursor >= end) {
                     editor.cursor = end
                     pause()
-                    onTick()
+                    refresh()
                     return
                 }
                 refresh()

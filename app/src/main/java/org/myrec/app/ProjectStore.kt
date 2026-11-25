@@ -41,8 +41,8 @@ class ProjectStore(val root: File) {
 
     private fun checkVersion(o: JSONObject) {
         val version = integer(o, "version", 1)
-        if (version > 15) throw NewerProject()
-        require(version in 1L..15L) { "Invalid project version" }
+        if (version > 16) throw NewerProject()
+        require(version in 1L..16L) { "Invalid project version" }
     }
 
     private fun sha(data: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -384,14 +384,23 @@ class ProjectStore(val root: File) {
 
     fun abandonCapture(receipt: CaptureReceipt) {
         val file = recordingFile(receipt)
-        val parts = listOf(".video.mp4", ".audio.m4a", ".finalizing.mp4", ".sealed.mp4")
+        val parts = listOf(".video.mp4", ".audio.m4a", ".finalizing.mp4", ".sealed.mp4") + CaptureSamples.suffixes
         if (file.length() == 0L && parts.none { File(file.path + it).length() > 0 }) {
             receiptFile(receipt).delete()
             syncDirectory(receiptFile(receipt).parentFile!!)
         }
     }
 
-    fun recoverCaptures(): Int {
+    internal fun needsRecordingRemux(): Boolean = File(root,"pending").listFiles().orEmpty().any { entry ->
+        if (entry.extension!="json") return@any false
+        runCatching {
+            val o=JSONObject(String(bytes(entry),Charsets.UTF_8))
+            val file=recordingFile(CaptureReceipt(o.getString("id"),o.getString("project"),o.getString("filename")))
+            !file.exists() && !File(file.path+".sealed.mp4").exists() && CaptureSamples.video(file).isFile
+        }.getOrDefault(false)
+    }
+
+    fun recoverCaptures(): Int = synchronized(captureRecovery) {
         var recovered = 0
         for (entry in File(root, "pending").listFiles()?.filter { it.extension == "json" } ?: emptyList()) {
             try {
@@ -404,16 +413,18 @@ class ProjectStore(val root: File) {
                 val file = recordingFile(receipt)
                 val saved = open(receipt.project)
                 if (saved.originals.any { it.id == receipt.id || it.path == file.absolutePath }) {
-                    acknowledgeCapture(receipt)
+                    if (acknowledgeCapture(receipt)) CaptureSamples.clean(file)
                     continue
                 }
                 val sealed = File(file.path + ".sealed.mp4")
                 if (!file.exists() && sealed.isFile) {
                     val media = inspect(sealed)
-                    check(media.video && media.audio) { "The finalized recording is missing a track" }
+                    check(media.video) { "The finalized recording is missing its video track" }
                     Os.rename(sealed.path, file.path)
                     syncDirectory(file.parentFile!!)
                 }
+                if (!file.exists() && CaptureSamples.video(file).isFile)
+                    CaptureSamples.seal(file,AudioCache(File(root,"recovery-audio")))
                 val source = inspect(file).copy(id = receipt.id, group = receipt.id, occurrence = receipt.id)
                 val recipe = try { clips(o.optJSONArray("recipe")).singleOrNull() }
                 catch (_: Exception) { preserve(entry, receipt.project); null }
@@ -428,14 +439,14 @@ class ProjectStore(val root: File) {
                 if (receipt.insertion == null) editor.appendRecording(source)
                 else editor.insertBatch(listOf(source), receipt.insertion, receipt.layer)
                 save(editor, false)
-                acknowledgeCapture(receipt)
+                if (acknowledgeCapture(receipt)) CaptureSamples.clean(file)
                 recovered++
                 problems[receipt.project] = "Recovered an interrupted take in ${editor.project.name}."
             } catch (e: Exception) {
                 problems["take:${entry.name}"] = "An unfinished recording was kept for recovery: ${e.message}"
             }
         }
-        return recovered
+        recovered
     }
 
     private fun mediaHash(file: File, cancelled: () -> Boolean = { false }): String {
@@ -580,7 +591,7 @@ class ProjectStore(val root: File) {
 
     fun cleanTransfers(): Int {
         var removed = 0
-        val markers = listOf(".myrec-copy", ".myrec-restore", ".myrec-repair")
+        val markers = listOf(".myrec-copy", ".myrec-restore", ".myrec-repair", ".myrec-import")
         for (folder in media.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
             if (folder.absolutePath in ProjectAssets.transfers) continue
             if (folder.canonicalFile.parentFile != media.canonicalFile || folder.canonicalFile.name != folder.name) continue
@@ -767,6 +778,7 @@ class ProjectStore(val root: File) {
             require(c.effects.size <= 10000 && c.effects.map { it.id }.distinct().size == c.effects.size &&
                 c.effects.all { it.id.isNotBlank() && it.id.length <= 100 }) { "Invalid effect identities" }
             for (effect in c.effects) {
+                if (effect.kind=="Text" && TitleCard.enabled(effect)) require(TitleCard.valid(effect)) { "Invalid title card" }
                 if (effect.values.containsKey("geometry")) require(ArchiveGeometry.valid(effect)) { "Invalid source geometry" }
                 if (effect.kind=="Color LUTs") {
                     val recovery=effect.values["localRecovery"]
@@ -800,7 +812,11 @@ class ProjectStore(val root: File) {
 
     fun encode(p: Project): JSONObject =
         JSONObject().apply {
-            put("version", if (p.transitions.any { it.timingScale != 1.0 }) 15 else 14)
+            put("version", when {
+                p.clips.any { clip -> clip.effects.any { it.kind=="Text" && TitleCard.enabled(it) } } -> 16
+                p.transitions.any { it.timingScale != 1.0 } -> 15
+                else -> 14
+            })
             put("captureCount", p.captureCount)
             put("bookmarks",JSONArray().apply { p.bookmarks.forEach { put(JSONObject().put("id",it.id).put("time",it.time).put("label",it.label)) } })
             put("id", p.id)
@@ -1063,6 +1079,7 @@ class ProjectStore(val root: File) {
 
     companion object {
         private val publishing = Any()
+        private val captureRecovery = Any()
         private val abandonedSave = Regex("\\.saving-[a-f0-9-]{36}")
 
         fun shape(path: String): Pair<Int, Int> {

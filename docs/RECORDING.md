@@ -7,8 +7,10 @@ ledger, so undoing an older edit does not remove a new take. MyRec reserves
 space to assemble the finished movie and stops the take if storage runs low or
 Android reports critical thermal pressure. A finished movie can recover into
 its recorded project once even if MyRec stopped before saving the timeline.
-Unfinished tracks are kept for recovery. Unfinalized MP4 containers still
-require separate repair.
+New recordings keep checksummed encoded samples while the take is running.
+After a process stop, MyRec rebuilds the movie from complete samples and
+reattaches the take when the project opens. A torn final sample is discarded.
+Recordings made by earlier builds can still require repair of an unfinished MP4.
 
 While idle, scissors open the editor and the stacked icon opens Projects.
 During a take, portrait puts Mark to the right and Pause/Resume to the left;
@@ -33,8 +35,9 @@ camera setup or horizon settings.
 ## Choose a camera
 
 The camera-with-arrows button switches front and rear. The lens selector lists
-available cameras. Zoom presets use the selected duration; a quick second tap
-changes zoom immediately. Each camera remembers its own zoom and focus state.
+available cameras. Zoom presets use the selected duration. Swipe up or down on
+the duration to change it in half-second steps. Double-tap the same preset for
+a one-second move. Each camera remembers its own zoom and focus state.
 In Single camera mode with AF enabled, tap a subject in the preview to focus on
 it. A yellow box marks the selected point on lenses that support it.
 Tap AF to request or release focus lock. On adjustable lenses, drag the locked

@@ -14,24 +14,24 @@ import java.io.FileNotFoundException
 class SharedImages : ContentProvider() {
     companion object {
         fun directory(context: Context) = File(context.cacheDir,"shared-images").apply {
-            check(isDirectory || mkdirs()) { "Cannot prepare the JPEG directory" }
+            check(isDirectory || mkdirs()) { "Cannot prepare shared images" }
         }
         fun uri(context: Context, file: File): Uri {
-            require(file.isFile && file.extension == "jpg" && file.canonicalFile.parentFile == directory(context).canonicalFile)
+            require(file.isFile && file.extension in listOf("jpg","png") && file.canonicalFile.parentFile == directory(context).canonicalFile)
             return Uri.Builder().scheme("content").authority(context.packageName + ".images").appendPath(file.name).build()
         }
     }
     override fun onCreate() = true
     private fun file(uri: Uri): File {
-        val name = uri.lastPathSegment ?: throw FileNotFoundException("No JPEG selected")
+        val name = uri.lastPathSegment ?: throw FileNotFoundException("No image selected")
         val root = directory(context!!).canonicalFile
         val file = File(root,name).canonicalFile
-        if (file.parentFile != root || file.extension != "jpg" || !file.isFile) throw FileNotFoundException("JPEG is unavailable")
+        if (file.parentFile != root || file.extension !in listOf("jpg","png") || !file.isFile) throw FileNotFoundException("Image is unavailable")
         return file
     }
-    override fun getType(uri: Uri): String { file(uri); return "image/jpeg" }
+    override fun getType(uri: Uri): String = if (file(uri).extension=="png") "image/png" else "image/jpeg"
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
-        if (mode != "r") throw SecurityException("Shared JPEGs are read only")
+        if (mode != "r") throw SecurityException("Shared images are read only")
         return ParcelFileDescriptor.open(file(uri),ParcelFileDescriptor.MODE_READ_ONLY)
     }
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor {

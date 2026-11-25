@@ -124,8 +124,12 @@ placement combinations, independently styled caption series, saved platform
 analysis, sliced native transitions and incompatible inference/color recipes.
 Actual iOS import/export acceptance remains open.
 
-This development build saves MyRec project format 14. Older builds refuse the
-new format so they cannot silently discard recorded masks or native geometry.
+MyRec's own format uses version 15 for fitted transition timing and version 16
+for grouped title cards. A compatible YouRec ZIP uses a separate version number.
+The native ZIP now carries the chosen export codec, size and frame rate and
+supports ranged grades, ranged framing, grouped titles and selected schema-16
+effect windows. Complex combinations are tracked in the porting checklist.
+[Porting status](PORTING.md)
 
 Unzip an archive and open Timeline.otio in an external editor for a source
 conform with tracks, gaps, trims, speed, bookmarks, and simple dissolves.
@@ -363,7 +367,7 @@ retain their declared domain limits. Automatic Log metadata recognition and
 numerical comparison with Core Image white balance remain open.
 New styled titles and animated/balanced grades carry effect algorithm 2, which
 older builds refuse rather than silently discard their appearance or motion.
-Projects saved by this version use format 12 for the new grading controls.
+MyRec project format 12 introduced these grading controls.
 
 Pauses analyzes original-source RMS, then shows candidates with separate keep
 before/after padding. Automatic mode estimates a threshold; Manual uses the

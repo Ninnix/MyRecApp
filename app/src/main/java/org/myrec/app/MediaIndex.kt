@@ -5,9 +5,13 @@ import android.media.MediaMetadataRetriever
 import android.os.Handler
 import android.os.Looper
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.Executors
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.min
 
 class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit) {
     private val worker = Executors.newFixedThreadPool(2)
@@ -16,6 +20,102 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
     val waves = mutableMapOf<String, FloatArray>()
     val durations = mutableMapOf<String, Double>()
     private val requested = mutableSetOf<String>()
+    private data class WaveTile(val path: String,val tile: Int)
+    private val waveTiles=LinkedHashMap<WaveTile,FloatArray>(64,.75f,true)
+    private val waveRequests=mutableSetOf<WaveTile>()
+    private val detail=Executors.newSingleThreadExecutor()
+    private val filmstrip=Executors.newSingleThreadExecutor()
+    private data class FilmFrame(val path: String,val time: Long,val recipe: List<Effect>,val canvas: Pair<Int,Int>,
+                                 val composition: Long)
+    private val filmFrames=LinkedHashMap<FilmFrame,Bitmap>(128,.75f,true)
+    private val filmRequests=mutableSetOf<FilmFrame>()
+    @Volatile private var editGeneration=1L
+    private var compositeFilmstrip=false
+    private var closed=false
+
+    fun editChanged(project: Project) {
+        editGeneration++
+        compositeFilmstrip=project.transitions.isNotEmpty() || project.clips.any { clip ->
+            clip.effects.any { it.enabled && (it.kind=="Placement" || it.subtitle!=null) }
+        }
+    }
+
+    fun editedFrame(project: Project,clip: Clip,position: Double): Bitmap? {
+        val at=position.coerceIn(clip.start,max(clip.start,clip.end-.000001))
+        val effects=clip.effects.filter { it.active(at-clip.start) && it.kind !in Effects.audio }
+        if (!compositeFilmstrip && effects.isEmpty()) return null
+        val theEdit=editGeneration
+        val sourceTime=clip.sourceTime(at)
+        val exact=compositeFilmstrip || clip.frozen!=null || effects.any { it.motion!=null || it.phase!=null || it.parameters.any { p -> p.keyframes.isNotEmpty() } }
+        val key=FilmFrame(clip.path,if (exact) (at*240000).toLong() else (sourceTime*4).toLong(),
+            if (exact) emptyList() else effects.map { it.copyEffect().apply { from=0.0;to=Double.MAX_VALUE } },
+            project.width to project.height,if (exact) theEdit else 0)
+        filmFrames[key]?.let { return it }
+        if (closed || filmRequests.size>=6 || !filmRequests.add(key)) return null
+        val snapshot=if (compositeFilmstrip) project.duplicate() else project.copy(
+            clips=mutableListOf(clip.duplicate()),transitions=mutableListOf())
+        filmstrip.execute {
+            val frame=runCatching {
+                val edge=max(snapshot.width,snapshot.height)
+                val w=max(2,144*snapshot.width/edge)
+                val h=max(2,144*snapshot.height/edge)
+                Frames(cancelled={ editGeneration!=theEdit }).use { it.render(snapshot,at,w,h) }
+            }.getOrNull()
+            ui.post {
+                filmRequests.remove(key)
+                if (frame!=null) {
+                    if (closed || editGeneration!=theEdit) frame.recycle()
+                    else {
+                        filmFrames[key]=frame
+                        if (filmFrames.size>128) filmFrames.remove(filmFrames.keys.first())?.recycle()
+                    }
+                }
+                if (!closed && (frame!=null || editGeneration!=theEdit)) changed()
+            }
+        }
+        return null
+    }
+
+    fun waveDetail(path: String,source: Double): Pair<Float,Float>? {
+        val millisecond=(source*1000).toLong().coerceAtLeast(0)
+        val key=WaveTile(path,(millisecond/4000).toInt())
+        waveTiles[key]?.let {
+            val index=(millisecond%4000).toInt()*2
+            return it[index] to it[index+1]
+        }
+        if (closed || waveRequests.size>=8 || !waveRequests.add(key)) return null
+        detail.execute {
+            val values=FloatArray(8000)
+            runCatching {
+                RandomAccessFile(cache.get(path),"r").use { input ->
+                    val start=key.tile*4000L*48L*8L
+                    val size=min(4000L*384,(input.length()-start).coerceAtLeast(0L)).toInt()
+                    input.seek(start)
+                    val buffer=ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
+                    input.readFully(buffer.array())
+                    var i=0
+                    while (buffer.remaining()>=4) {
+                        var lower=0f;var upper=0f
+                        repeat(min(96,buffer.remaining()/4)) {
+                            val sample=buffer.float
+                            lower=min(lower,sample);upper=max(upper,sample)
+                        }
+                        values[i*2]=lower;values[i*2+1]=upper
+                        i++
+                    }
+                }
+            }
+            ui.post {
+                waveRequests.remove(key)
+                if (!closed) {
+                    waveTiles[key]=values
+                    if (waveTiles.size>64) waveTiles.remove(waveTiles.keys.first())
+                    changed()
+                }
+            }
+        }
+        return null
+    }
 
     fun request(clip: Clip) {
         if (!requested.add(clip.path)) return
@@ -97,6 +197,12 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
     }
 
     fun close() {
+        closed=true
+        editGeneration++
+        filmstrip.shutdownNow()
+        filmFrames.values.forEach(Bitmap::recycle)
+        filmFrames.clear()
+        detail.shutdownNow()
         worker.shutdown()
     }
 }

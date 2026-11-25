@@ -20,6 +20,8 @@ object TitleStyle {
         Family("sourceserif4", "Source Serif 4", "SourceSerif4[opsz,wght].ttf"),
         Family("fraunces", "Fraunces", "Fraunces[SOFT,WONK,opsz,wght].ttf"),
         Family("ibmplexmono", "IBM Plex Mono", "IBMPlexMono-Regular.ttf", listOf(400, 500, 700)),
+        Family("bodonimoda", "Bodoni Moda", "BodoniModa[opsz,wght].ttf"),
+        Family("unbounded", "Unbounded", "Unbounded[wght].ttf", italic = false),
         Family("caveat", "Caveat", "Caveat[wght].ttf", listOf(400, 500, 600, 700), false),
     )
     data class Gradient(val name: String, val first: String, val last: String, val angle: Float)
@@ -36,16 +38,132 @@ object TitleStyle {
         "outlined" to "false", "border" to "#000000", "borderWidth" to ".045", "shadow" to "true",
         "shade" to "#d2000000", "shadowBlur" to ".12", "shadowOffset" to ".05", "plate" to "None",
         "backing" to "#cd111218", "padding" to ".28", "radius" to ".14")
-    val looks = linkedMapOf(
-        "Clean" to mapOf("face" to "atkinsonhyperlegiblenext", "weight" to "600"),
-        "Film title" to mapOf("face" to "sourceserif4", "weight" to "500"),
-        "Lower third" to mapOf("face" to "barlowcondensed", "plate" to "One box", "shadow" to "false", "align" to "Left"),
-        "Headline" to mapOf("face" to "archivoblack"),
-        "Field note" to mapOf("face" to "caveat", "weight" to "600"),
-        "Dateline" to mapOf("face" to "ibmplexmono", "weight" to "500", "tracking" to ".06"),
-        "Warm editorial" to mapOf("face" to "fraunces", "gradientFirst" to "#fff0ba", "gradientLast" to "#f58283", "gradientAngle" to "105"),
-        "Sunset mono" to mapOf("face" to "ibmplexmono", "weight" to "500", "tracking" to ".06", "gradientFirst" to "#fff0ba", "gradientLast" to "#f58283", "gradientAngle" to "105"),
+    val lookCollections = linkedMapOf(
+        "Editorial" to linkedMapOf(
+            "Clean" to mapOf(
+                "face" to "atkinsonhyperlegiblenext", "weight" to "600", "lineSpacing" to "0.04",
+                "shade" to "#f0090b0d", "shadowBlur" to "0.085", "shadowOffset" to "0.035"),
+            "Field report" to mapOf(
+                "face" to "barlowcondensed", "weight" to "700", "align" to "Left",
+                "tracking" to "0.02", "lineSpacing" to "0.05", "color" to "#f8f8f4",
+                "shadow" to "false", "plate" to "Each line", "backing" to "#e0102335",
+                "padding" to "0.15", "radius" to "0"),
+            "Dateline" to mapOf(
+                "face" to "ibmplexmono", "weight" to "500", "align" to "Left",
+                "tracking" to "0.025", "lineSpacing" to "0.06", "color" to "#ffd79b",
+                "shade" to "#fa21170f", "shadowBlur" to "0.055", "shadowOffset" to "0.055"),
+            "Caption box" to mapOf(
+                "face" to "atkinsonhyperlegiblenext", "weight" to "500", "lineSpacing" to "0.09",
+                "shadow" to "false", "plate" to "One box", "backing" to "#a8111319",
+                "padding" to "0.24", "radius" to "0.24"),
+            "Pull quote" to mapOf(
+                "face" to "sourceserif4", "weight" to "600", "align" to "Left",
+                "tracking" to "-0.012", "lineSpacing" to "0.12", "color" to "#27231f",
+                "shadow" to "false", "plate" to "One box", "backing" to "#f4efdf",
+                "padding" to "0.31", "radius" to "0.025"),
+            "Interview" to mapOf(
+                "face" to "system", "weight" to "600", "align" to "Left",
+                "tracking" to "-0.01", "lineSpacing" to "0.06", "color" to "#121d28",
+                "shadow" to "false", "plate" to "One box", "backing" to "#a6eff6fa",
+                "padding" to "0.26", "radius" to "0.14"),
+        ),
+        "Cinema" to linkedMapOf(
+            "Film title" to mapOf(
+                "face" to "sourceserif4", "weight" to "500", "tracking" to "0.035",
+                "lineSpacing" to "0.10", "color" to "#f9efdc", "shade" to "#f5181519",
+                "shadowBlur" to "0.10", "shadowOffset" to "0.045"),
+            "Opening credit" to mapOf(
+                "face" to "barlowcondensed", "weight" to "400", "tracking" to "0.075",
+                "lineSpacing" to "0.16", "color" to "#f4f6fa", "shade" to "#f5101720",
+                "shadowBlur" to "0.07", "shadowOffset" to "0.04"),
+            "Intertitle" to mapOf(
+                "face" to "bodonimoda", "weight" to "600", "tracking" to "0.035",
+                "lineSpacing" to "0.12", "color" to "#f3e6ce", "shadow" to "false",
+                "plate" to "One box", "backing" to "#d619191a", "padding" to "0.40",
+                "radius" to "0.035"),
+            "Daylight" to mapOf(
+                "face" to "bodonimoda", "weight" to "700", "italic" to "true",
+                "tracking" to "-0.012", "lineSpacing" to "0.08", "color" to "#28212a",
+                "shade" to "#e5fff9ed", "shadowBlur" to "0.12", "shadowOffset" to "0"),
+            "Night drive" to mapOf(
+                "face" to "unbounded", "weight" to "500", "tracking" to "0.065",
+                "lineSpacing" to "0.12", "color" to "#deedff", "gradientFirst" to "#f4f8fc",
+                "gradientLast" to "#a9cdfa", "gradientAngle" to "90", "shade" to "#192d50",
+                "shadowBlur" to "0.07", "shadowOffset" to "0.035", "plate" to "One box",
+                "backing" to "#66112238", "padding" to "0.22", "radius" to "0.075"),
+            "Matinée" to mapOf(
+                "face" to "barlowcondensed", "weight" to "700", "italic" to "true",
+                "tracking" to "0.02", "color" to "#ffdaa8", "shadow" to "false",
+                "plate" to "Each line", "backing" to "#be531e27", "padding" to "0.16",
+                "radius" to "0.035"),
+        ),
+        "Print" to linkedMapOf(
+            "Headline" to mapOf(
+                "face" to "archivoblack", "weight" to "400", "align" to "Left",
+                "tracking" to "-0.035", "color" to "#fffcf2", "shade" to "#151319",
+                "shadowBlur" to "0.018", "shadowOffset" to "0.065"),
+            "Magazine italic" to mapOf(
+                "face" to "fraunces", "weight" to "600", "italic" to "true",
+                "tracking" to "-0.018", "lineSpacing" to "0.04", "color" to "#ffe7dc",
+                "shade" to "#f5352027", "shadowBlur" to "0.09", "shadowOffset" to "0.04"),
+            "Source note" to mapOf(
+                "face" to "ibmplexmono", "weight" to "400", "align" to "Left",
+                "tracking" to "0.015", "lineSpacing" to "0.12", "color" to "#302822",
+                "shadow" to "false", "plate" to "Each line", "backing" to "#b5f4e4c7",
+                "padding" to "0.16", "radius" to "0"),
+            "Masthead" to mapOf(
+                "face" to "bodonimoda", "weight" to "800", "align" to "Left",
+                "tracking" to "-0.04", "color" to "#471628", "shadow" to "false",
+                "plate" to "One box", "backing" to "#e8f7e9e9", "padding" to "0.12",
+                "radius" to "0"),
+            "Clothbound" to mapOf(
+                "face" to "sourceserif4", "weight" to "500", "tracking" to "0.045",
+                "lineSpacing" to "0.10", "color" to "#f1e2b2", "shadow" to "false",
+                "plate" to "One box", "backing" to "#c8183f34", "padding" to "0.38",
+                "radius" to "0.065"),
+            "Field note" to mapOf(
+                "face" to "caveat", "weight" to "700", "align" to "Left",
+                "lineSpacing" to "0.06", "color" to "#ffe379", "shade" to "#292018",
+                "shadowBlur" to "0.095", "shadowOffset" to "0.045"),
+        ),
+        "Display" to linkedMapOf(
+            "Gaffer tape" to mapOf(
+                "face" to "caveat", "weight" to "700", "align" to "Left",
+                "tracking" to "0.025", "lineSpacing" to "0.06", "color" to "#1a2025",
+                "shadow" to "false", "plate" to "Each line", "backing" to "#baf3f1e6",
+                "padding" to "0.14", "radius" to "0"),
+            "Highlighter" to mapOf(
+                "face" to "atkinsonhyperlegiblenext", "weight" to "800", "align" to "Left",
+                "tracking" to "-0.025", "lineSpacing" to "0.04", "color" to "#142214",
+                "shadow" to "false", "plate" to "Each line", "backing" to "#d9fa68",
+                "padding" to "0.13", "radius" to "0.045"),
+            "Afterglow" to mapOf(
+                "face" to "fraunces", "weight" to "800", "tracking" to "-0.025",
+                "lineSpacing" to "0.03", "color" to "#fff0ad", "gradientFirst" to "#fff0ad",
+                "gradientLast" to "#ffa68e", "gradientAngle" to "105", "shade" to "#f5462335",
+                "shadowBlur" to "0.08", "shadowOffset" to "0.055"),
+            "Wide type" to mapOf(
+                "face" to "unbounded", "weight" to "800", "align" to "Left",
+                "tracking" to "-0.03", "color" to "#ddf4c9", "shade" to "#17362b",
+                "shadowBlur" to "0.02", "shadowOffset" to "0.075"),
+            "Flyer" to mapOf(
+                "face" to "archivoblack", "weight" to "400", "tracking" to "-0.025",
+                "lineSpacing" to "0.04", "color" to "#fffff5", "shadow" to "false",
+                "plate" to "One box", "backing" to "#e2ac2633", "padding" to "0.22",
+                "radius" to "0"),
+            "Lilac gel" to mapOf(
+                "face" to "unbounded", "weight" to "600", "tracking" to "-0.025",
+                "lineSpacing" to "0.05", "color" to "#261a40", "shadow" to "false",
+                "plate" to "One box", "backing" to "#aae8d9ff", "padding" to "0.30",
+                "radius" to "0.80"),
+        ),
+        "MyRec" to linkedMapOf(
+            "Lower third" to mapOf("face" to "barlowcondensed", "plate" to "One box", "shadow" to "false", "align" to "Left"),
+            "Warm editorial" to mapOf("face" to "fraunces", "gradientFirst" to "#fff0ba", "gradientLast" to "#f58283", "gradientAngle" to "105"),
+            "Sunset mono" to mapOf("face" to "ibmplexmono", "weight" to "500", "tracking" to ".06", "gradientFirst" to "#fff0ba", "gradientLast" to "#f58283", "gradientAngle" to "105"),
+        ),
     )
+    val looks = lookCollections.values.flatMap { it.entries }.associate { it.key to it.value }
     fun initialize(fx: Effect, fresh: Boolean) {
         if (fx.values["design"] == "1") return
         for ((key, value) in defaults) fx.values.putIfAbsent(key, value)
@@ -97,6 +215,7 @@ object TitleStyle {
                         "atkinsonhyperlegiblenext" -> "AtkinsonHyperlegibleNext-Italic[wght].ttf"
                         "sourceserif4" -> "SourceSerif4-Italic[opsz,wght].ttf"
                         "fraunces" -> "Fraunces-Italic[SOFT,WONK,opsz,wght].ttf"
+                        "bodonimoda" -> "BodoniModa-Italic[opsz,wght].ttf"
                         else -> name
                     }
                     Typeface.Builder(context.assets, "title-fonts/${family.id}/$name")
@@ -169,14 +288,16 @@ object TitleStyle {
         return image
     }
 
-    private data class RasterKey(val design: Map<String, String>, val size: Float, val width: Int)
+    private data class RasterKey(val design: Map<String, String>, val size: Float, val width: Int, val height: Int)
     private val rasters = linkedMapOf<RasterKey, Bitmap>()
 
     @Synchronized fun draw(canvas: Canvas, fx: Effect, width: Int, height: Int, elapsed: Double, duration: Double) {
-        if (fx.values["text"].isNullOrEmpty()) return
+        val card=TitleCard.enabled(fx)
+        if (fx.values["text"].isNullOrBlank() && (!card || fx.values["label"].isNullOrBlank())) return
         val key = RasterKey(fx.values.filterKeys { it !in setOf("x", "y", "size", "entrance", "exit", "inSeconds", "outSeconds", "inDirection", "outDirection", "titleOrigin", "titleDuration") },
-            min(width, height) * fx.number("size", .065f), (width * .94f).toInt())
-        val image = rasters[key] ?: raster(context, fx, key.size, key.width).also { image ->
+            min(width, height) * fx.number("size", .065f), (width * .94f).toInt(), height)
+        val image = rasters[key] ?: (if (card) TitleCard.raster(context,fx,key.size,key.width.coerceAtLeast(1),height)
+            else raster(context, fx, key.size, key.width)).also { image ->
             while (rasters.isNotEmpty() && rasters.values.sumOf { it.allocationByteCount.toLong() } + image.allocationByteCount > 16 * 1024 * 1024)
                 rasters.remove(rasters.keys.first())!!.recycle()
             if (image.allocationByteCount <= 16 * 1024 * 1024) rasters[key] = image

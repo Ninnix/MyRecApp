@@ -5,6 +5,7 @@ import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.*
@@ -125,7 +126,27 @@ class MainActivity : Activity() {
             )
         store.cleanInterruptedSaves()
         store.cleanTransfers()
-        store.recoverCaptures()
+        if (store.needsRecordingRemux()) {
+            setContentView(TextView(this).apply {
+                text="Recovering recording…"
+                gravity=Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.BLACK)
+                accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE
+            })
+            worker.execute {
+                store.recoverCaptures()
+                ui.post { if (!isFinishing && !isDestroyed) finishStartup(testSession,testSessionId) }
+            }
+        } else {
+            store.recoverCaptures()
+            finishStartup(testSession,testSessionId)
+        }
+    }
+
+    internal val startupComplete get() = ::editor.isInitialized
+
+    private fun finishStartup(testSession: Boolean,testSessionId: String) {
         val saved = currentProjectSession()
         editor = Editor(saved.project).apply { load(saved.project, saved) }
         val editorSettings = getSharedPreferences(if (testSession) "editor-test-$testSessionId" else "editor", MODE_PRIVATE)
@@ -143,6 +164,7 @@ class MainActivity : Activity() {
         root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         setContentView(root)
         mediaIndex = MediaIndex(audioCache) { editorView.invalidate() }
+        mediaIndex.editChanged(editor.project)
         editorView = EditorView(this, editor, mediaIndex, ::action) { playback.seek(it) }
         editor.onSnapChange = {
             editorSettings.edit().putBoolean("snapToCuts", it).apply()
@@ -170,9 +192,11 @@ class MainActivity : Activity() {
             )
         panels = Panels(this)
         editorView.onInspection = { if (!panels.isOpen) playback.inspect(it) }
+        editorView.onCopyFrame = ::copyFrame
         root.addView(editorView, FrameLayout.LayoutParams(-1, -1))
         editor.onChange = {
             saveProject()
+            mediaIndex.editChanged(editor.project)
             editorView.resetScroll()
             editorView.invalidate()
             playback.refresh()
@@ -189,7 +213,7 @@ class MainActivity : Activity() {
                 if (Build.VERSION.SDK_INT >= 33)
                     intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
                 else @Suppress("DEPRECATION") intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            if (uri != null) importUri(uri, false)
+            if (uri != null) importBatch(listOf(uri),MediaImport(editor.project.id,editor.cursor,false,false))
         }
     }
 
@@ -397,6 +421,28 @@ class MainActivity : Activity() {
                 editorView.invalidate()
             }
             "transition" -> panels.transition()
+        }
+    }
+
+    private fun copyFrame(picture: Bitmap) {
+        val frame=picture.copy(Bitmap.Config.ARGB_8888,false) ?: return
+        worker.execute {
+            val result=runCatching {
+                val folder=SharedImages.directory(this)
+                val target=File(folder,"clipboard-${uid()}_MyRec frame.png")
+                try {
+                    target.outputStream().use { check(frame.compress(Bitmap.CompressFormat.PNG,100,it)) }
+                    SharedImages.uri(this,target)
+                } catch (failure: Exception) { target.delete();throw failure }
+            }
+            frame.recycle()
+            ui.post {
+                if (!isDestroyed && !isFinishing) result.fold({ uri ->
+                    val clipboard=getSystemService(android.content.ClipboardManager::class.java)
+                    clipboard.setPrimaryClip(ClipData.newUri(contentResolver,"MyRec frame",uri))
+                    if (Build.VERSION.SDK_INT<33) message("Frame copied")
+                },{ message(it.message ?: "Cannot copy this frame") })
+            }
         }
     }
 
@@ -1207,12 +1253,7 @@ class MainActivity : Activity() {
             }
             else if (type in listOf("application/zip", "application/x-zip-compressed") ||
                 documentName(uri).endsWith(".zip", true)) restoreProject(uri)
-            else {
-                if (!saveProject()) return
-                val previous = editor.project.id
-                newProject()
-                if (editor.project.id != previous) importUri(uri, false)
-            }
+            else reviewImport(listOf(uri), null, true)
         }
         if (requestCode == 20) {
             val asProject = importAsProject
@@ -1227,22 +1268,16 @@ class MainActivity : Activity() {
         if (requestCode == 22) {
             val target = pendingImport
             pendingImport = null
-            data.data?.let { importUri(it, false, target) }
+            data.data?.let { importBatch(listOf(it),target ?: MediaImport(editor.project.id,editor.cursor,true,true)) }
         }
-        if (requestCode == 21) data.data?.let { importUri(it, true) }
+        if (requestCode == 21) data.data?.let(::importImageUri)
     }
 
     private fun reviewImport(uris: List<Uri>, target: MediaImport?, asProject: Boolean) {
         if (uris.isEmpty()) return
         fun start(ordered: List<Uri>) {
-            var destination = target ?: MediaImport(editor.project.id, editor.cursor, false, false, editor.project.duplicate())
-            if (asProject) {
-                val previous = editor.project.id
-                newProject()
-                if (editor.project.id == previous) return
-                destination = destination.copy(project = editor.project.id, at = 0.0, base = editor.project.duplicate())
-            }
-            importBatch(ordered, destination)
+            val destination = target ?: MediaImport(editor.project.id, editor.cursor, false, false, editor.project.duplicate())
+            importBatch(ordered, destination, asProject)
         }
         if (uris.size == 1) { start(uris); return }
         val ordered = uris.toMutableList()
@@ -1273,43 +1308,104 @@ class MainActivity : Activity() {
             .create().also { dialog -> dialog.setOnDismissListener { importDialog = null }; dialog.show() }
     }
 
-    private fun importBatch(uris: List<Uri>, target: MediaImport) {
+    private fun importBatch(uris: List<Uri>, target: MediaImport, asProject: Boolean = false) {
         val expected = target.base ?: editor.project.duplicate()
-        panels.progress("Importing ${uris.size} items…", 0f, null)
+        if (asProject && !saveProject()) return
+        val newProject = if (asProject) datedProject() else null
+        val projectId = newProject?.id ?: target.project
+        val name="import-${uid()}"
+        val working=File(store.media,".$name")
+        val destination=File(store.media,name)
+        val signal=android.os.CancellationSignal()
+        panels.progress("Importing ${uris.size} items…", 0f) { signal.cancel() }
+        ProjectAssets.begin(working,destination)
         worker.execute {
-            val files = mutableListOf<File>()
             try {
+                check(working.mkdir()) { "Cannot stage the selected media" }
+                val marker=".myrec-import"
+                java.io.FileOutputStream(File(working,marker)).use { out ->
+                    out.write(projectId.toByteArray());out.fd.sync()
+                }
                 val clips = uris.mapIndexed { index, uri ->
+                    signal.throwIfCanceled()
                     val ext = android.webkit.MimeTypeMap.getSingleton()
-                        .getExtensionFromMimeType(contentResolver.getType(uri)) ?: "media"
-                    val file = File(store.media, "import-${uid()}.$ext")
-                    files.add(file)
-                    contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
-                    val clip = ProjectStore.inspect(file)
-                    ui.post { panels.progress("Importing ${uris.size} items…", (index + 1f) / uris.size, null) }
-                    clip
+                        .getExtensionFromMimeType(contentResolver.getType(uri))?.takeIf { it.all(Char::isLetterOrDigit) } ?: "media"
+                    val file=File(working,"${index+1}.$ext")
+                    val descriptor=contentResolver.openAssetFileDescriptor(uri,"r",signal) ?: error("Cannot open the selected media")
+                    descriptor.use { asset -> asset.createInputStream().use { input ->
+                        val size=asset.length
+                        val storage=MediaStorage()
+                        storage.requireSpace(working,"Not enough storage to import",size.coerceAtLeast(0))
+                        java.io.FileOutputStream(file).use { out ->
+                            val buffer=ByteArray(128*1024)
+                            var copied=0L
+                            while (true) {
+                                signal.throwIfCanceled()
+                                val count=input.read(buffer)
+                                if (count<0) break
+                                storage.requireSpace(working,"Not enough storage to import",count.toLong())
+                                out.write(buffer,0,count)
+                                copied+=count
+                            }
+                            check(copied>0 && (size<0 || copied==size)) { "The selected media did not transfer completely" }
+                            out.fd.sync()
+                        }
+                    } }
+                    ProjectStore.inspect(file).also {
+                        check(it.video || it.audio) { "This file has no playable tracks" }
+                        if (target.audio) {
+                            check(it.audio) { "This file has no playable audio" }
+                            it.video=false;it.linked=false
+                        }
+                        ui.post { if (!isDestroyed) panels.updateProgress((index+1f)/uris.size) }
+                    }
                 }
                 val shape = clips.firstOrNull { it.video }?.let { ProjectStore.shape(it.path) }
+                signal.throwIfCanceled()
+                store.publishMedia(working,destination)
+                val imported=clips.map { clip -> clip.copy(path=File(destination,File(clip.path).name).absolutePath) }
+                if (!signal.isCanceled) for (clip in imported) store.registerMedia(projectId,clip.path)
                 ui.post {
-                    panels.close()
-                    if (editor.project != expected) {
-                        files.forEach { it.delete() }
-                        message("Import cancelled because the project changed")
-                    } else try {
-                        for (file in files) store.registerMedia(target.project, file.path)
-                        editor.insertBatch(clips, target.at, target.layer, shape)
-                        playback.refresh()
-                    } catch (e: Exception) { message(e.message ?: "Cannot import these items") }
+                    var saving=false
+                    try {
+                        if (isDestroyed || isFinishing) return@post
+                        panels.close()
+                        if (signal.isCanceled) return@post
+                        check(editor.project==expected) { "Import cancelled because the project changed" }
+                        val base=if (newProject!=null) EditSession(newProject) else editor.session()
+                        val draft=Editor(base.project.duplicate()).apply {
+                            load(project,base)
+                            insertBatch(imported,if (asProject) 0.0 else target.at,target.layer,shape)
+                        }
+                        val session=draft.session()
+                        saving=true
+                        store.save(session)
+                        File(destination,marker).delete()
+                        editor.load(session.project,session)
+                        editor.cursor=draft.cursor
+                        editor.selected.addAll(draft.selected)
+                        if (asProject) showEditor()
+                        playback.seek(editor.cursor)
+                    } catch (e: Exception) {
+                        message(e.message ?: "Cannot import these items")
+                    } finally {
+                        if (!saving) destination.deleteRecursively()
+                        ProjectAssets.end(working,destination)
+                    }
                 }
             } catch (e: Exception) {
-                files.forEach { it.delete() }
-                ui.post { panels.close(); message(e.message ?: "Cannot import these items") }
+                working.deleteRecursively()
+                destination.deleteRecursively()
+                ProjectAssets.end(working,destination)
+                ui.post { if (!isDestroyed) { panels.close();if (!signal.isCanceled) message(e.message ?: "Cannot import these items") } }
             }
         }
     }
 
-    private fun importUri(uri: Uri, image: Boolean, target: MediaImport? = null) {
-        val project = target?.project ?: editor.project.id
+    private fun importImageUri(uri: Uri) {
+        val project = editor.project.id
+        val callback=imageCallback
+        imageCallback=null
         panels.progress("Importing…", 0f, null)
         worker.execute {
             var file: File? = null
@@ -1322,29 +1418,10 @@ class MainActivity : Activity() {
                     imported.outputStream().use { input.copyTo(it) }
                 }
                 store.registerMedia(project, imported.absolutePath)
-                val clip = if (!image) ProjectStore.inspect(imported) else null
-                if (target?.audio == true) {
-                    require(clip?.audio == true) { "This file has no playable audio" }
-                    clip.video = false
-                    clip.linked = false
-                }
                 ui.post {
-                    panels.close()
-                    if (image) {
-                        imageCallback?.invoke(imported.absolutePath)
-                        imageCallback = null
-                    } else if (clip != null) {
-                        if (project != editor.project.id) {
-                            imported.delete()
-                            message("Import cancelled because the project changed")
-                            return@post
-                        }
-                        if (clip.video && editor.project.clips.none { it.video }) setProjectFormat(clip)
-                        if (target?.layer == true) editor.addLayer(clip, target.at)
-                        else editor.insert(clip)
-                        editor.scale = if (editor.project.duration < 10) 10.0 else editor.scale
-                        playback.refresh()
-                    }
+                    if (!isDestroyed && project==editor.project.id && callback!=null) {
+                        panels.close();callback(imported.absolutePath)
+                    } else imported.delete()
                 }
             } catch (e: Exception) {
                 file?.delete()
@@ -1395,9 +1472,14 @@ class MainActivity : Activity() {
         return uri
     }
 
-    private fun movieFinished(uri: Uri, file: File, sound: Boolean) {
+    private fun movieFinished(uri: Uri, movie: MovieExports.Movie) {
+        val file=movie.file
         panels.close(); message("Saved to Movies/MyRec")
-        choose("Video exported",listOf("Play video","Share video","Save to file","Done")) { action ->
+        val warning=movie.editedAudioPeak?.let { peak ->
+            val db=20*kotlin.math.log10(peak)
+            "Video exported\nEdited audio peaks %.1f dB above full scale".format(db)
+        }
+        choose(warning ?: "Video exported",listOf("Play video","Share video","Save to file","Done")) { action ->
             try {
                 when (action) {
                     0 -> startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri,"video/mp4")
@@ -1408,7 +1490,7 @@ class MainActivity : Activity() {
                 }
             } catch (e: ActivityNotFoundException) { message("No app is available to open this video") }
         }
-        if (sound) {
+        if (!movie.reused) {
             ExportSound.play()
             root.performHapticFeedback(if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY)
         }
@@ -1431,7 +1513,7 @@ class MainActivity : Activity() {
                 ui.post {
                     exporting = null
                     exportCanPause = false
-                    if (!isFinishing && !isDestroyed) movieFinished(uri,ready.file,!ready.reused)
+                    if (!isFinishing && !isDestroyed) movieFinished(uri,ready)
                 }
             } catch (e: Exception) {
                 val completed = movie
@@ -1475,10 +1557,11 @@ class MainActivity : Activity() {
         val snapshot = editor.project.duplicate()
         exportJob("Exporting", resumable = fps != null) { job ->
             if (fps == null) movieExports.movie(store,snapshot,width,height,color,cancelled = { job.cancelled },
-                progress = { progress -> ui.post { panels.updateProgress(progress) } }) { target,progress ->
+                progress = { progress -> ui.post { panels.updateProgress(progress) } },editedAudioPeak={ job.editedAudioPeak }) { target,progress ->
                 job.run(snapshot,target,width,height,color,progress)
             } else movieExports.resumable(store, snapshot, width, height, color, fps,
-                cancelled = { job.cancelled || job.paused }, progress = { value -> ui.post { panels.updateProgress(value) } }
+                cancelled = { job.cancelled || job.paused }, progress = { value -> ui.post { panels.updateProgress(value) } },
+                editedAudioPeak={ job.editedAudioPeak }
             ) { target, checkpoint, progress ->
                 job.render(snapshot, target, width, height, color, fps, checkpoint, progress)
             }
@@ -1567,6 +1650,7 @@ class MainActivity : Activity() {
 
     override fun onConfigurationChanged(config: Configuration) {
         super.onConfigurationChanged(config)
+        if (!::editorView.isInitialized) { updateBars(); return }
         choices?.dismiss()
         editorView.invalidate()
         updateBars()
@@ -1594,7 +1678,7 @@ class MainActivity : Activity() {
         voiceDraft?.pause()
         originalReview?.pause()
         super.onPause()
-        playback.pause()
+        if (::playback.isInitialized) playback.pause()
         capture?.suspendCamera()
         if (::editor.isInitialized) saveProject()
     }
@@ -1606,6 +1690,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Platform back support")
     override fun onBackPressed() {
+        if (!::panels.isInitialized) return
         when {
             choices?.isShowing == true -> choices?.dismiss()
             panels.isOpen -> panels.cancel()
@@ -1629,8 +1714,8 @@ class MainActivity : Activity() {
         importDialog?.dismiss()
         linkDialog?.dismiss()
         choices?.dismiss()
-        playback.close()
-        mediaIndex.close()
+        if (::playback.isInitialized) playback.close()
+        if (::mediaIndex.isInitialized) mediaIndex.close()
         capture?.destroy()
         exporting?.let { if (!it.paused) it.cancelled = true }
         worker.shutdown()

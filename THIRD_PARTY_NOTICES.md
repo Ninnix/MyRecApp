@@ -11,6 +11,7 @@ MIT; its name and icon are reserved as branding. The complete upstream license
 at revision `faf1815e82e1f2d5f03034a583363d3c3af464a2` is retained in
 `app/src/main/assets/licenses/YouRec.txt`. MyRec uses a separate name and new
 hippopotamus artwork.
+The single-title presets also use the [YouRec title designs](https://github.com/antirez/YouRecApp/blob/dadc258/YouRec/TitleDesign.swift).
 
 Application source is Kotlin and C11. Android framework APIs provide camera, decoding, encoding, audio routing, drawing, and storage. No Android UI or media library is bundled.
 
@@ -40,7 +41,7 @@ Runtime revisions and file hashes are recorded in `runtimes.json` and `data/mode
 ## Title fonts
 
 The title editor bundles Atkinson Hyperlegible Next, Barlow Condensed, Archivo
-Black, Source Serif 4, Fraunces, IBM Plex Mono, and Caveat from YouRec's title
+Black, Bodoni Moda, Source Serif 4, Fraunces, IBM Plex Mono, Unbounded, and Caveat from YouRec's title
 font distribution. Each family is licensed under the SIL Open Font License 1.1.
 Its copyright notice and full license accompany the fonts under
 `app/src/main/assets/title-fonts/` and `app/src/main/assets/licenses/Title-*.txt`.

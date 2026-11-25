@@ -4,6 +4,7 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.media.AudioDeviceInfo
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
@@ -31,6 +32,30 @@ object ReliabilityTests {
             }
             "save-arm" -> saveArm(i, a, main)
             "save-check" -> test("restart restores the committed edit and attaches the sealed recording exactly once") { saveCheck(a) }
+            "capture-arm" -> onCapture(a,main) { capture ->
+                waitFor("Camera did not start") {
+                    main { if (capture.readyToRecord && !capture.recording) capture.start() }
+                    capture.elapsedSeconds()>4
+                }
+                val journals=a.store.media.listFiles().orEmpty().filter { it.name.endsWith(".samples") }
+                check(journals.size==2 && journals.all { it.length()>4096 })
+                check(a.store.needsRecordingRemux())
+                armed(i,"capture-arm")
+            }
+            "capture-check" -> test("an active take survives process death with decodable picture and sound and attaches once") {
+                waitFor("Interrupted capture remux timed out") { a.startupComplete }
+                val saved=a.store.currentSession()
+                val take=saved.originals.single()
+                check(take.audio && take.video && take.duration>3.0)
+                check(saved.project.clips.single().id==take.id)
+                check(a.store.recoverCaptures()==0)
+                VideoDecoder(take.path).use { decoder -> checkNotNull(decoder.frame(take.duration-.25,96,54)).recycle() }
+                val pcm=a.audioCache.get(take.path)
+                check(pcm.length()>3*48000*8)
+            }
+            "bluetooth" -> test("a Bluetooth microphone disconnects during recording and reconnects without taking over the fallback route") {
+                bluetooth(i,a,main)
+            }
             "export-arm", "publish-arm" -> exportArm(i, a, phase)
             "export-check" -> test("two export kills preserve the old movie and retry reuses every verified section") { exportCheck(a) }
             else -> error("Unknown reliability test phase")
@@ -286,5 +311,48 @@ object ReliabilityTests {
         }
         try { block(capture) }
         finally { main { if (capture.recording) capture.stop(); capture.suspendCamera() } }
+    }
+
+    private fun bluetooth(i: Instrumentation,a: MainActivity,main: (() -> Unit) -> Unit) = onCapture(a,main) { capture ->
+        fun external(device: AudioDeviceInfo?) = device?.type in setOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO,AudioDeviceInfo.TYPE_BLE_HEADSET)
+        fun waitForRoute(message: String, seconds: Int = 15, condition: ()->Boolean) {
+            val deadline=SystemClock.uptimeMillis()+seconds*1000L
+            var ready=false
+            do {
+                main { ready=condition() }
+                if (ready) return
+                Thread.sleep(80)
+            } while (SystemClock.uptimeMillis()<deadline)
+            error("$message · ${a.lastMessage}")
+        }
+        lateinit var headset: AudioDeviceInfo
+        main {
+            headset=capture.microphoneDevices().firstOrNull(::external) ?: error("No Bluetooth microphone is connected")
+            check(capture.selectMicrophone(headset)) { "Android refused the Bluetooth microphone" }
+        }
+        waitForRoute("The headset never supplied input samples") { external(capture.microphoneInput) && capture.microphoneReceiving }
+        waitForRoute("The Bluetooth take did not start") {
+            if (capture.readyToRecord && !capture.recording) capture.start()
+            capture.recording && capture.elapsedSeconds()>2.0 && external(capture.microphoneInput)
+        }
+        i.sendStatus(0,Bundle().apply { putString("stream","READY bluetooth-disconnect\n") })
+        waitForRoute("The headset is still connected",60) { capture.microphoneDevices().none(::external) }
+        waitForRoute("The built-in microphone did not take over") {
+            capture.microphoneInput!=null && !external(capture.microphoneInput) && capture.microphoneReceiving
+        }
+        main { if (capture.paused) capture.pause() }
+        waitForRoute("The take could not continue with the built-in microphone") { capture.recording && !capture.paused }
+        i.sendStatus(0,Bundle().apply { putString("stream","READY bluetooth-reconnect\n") })
+        waitForRoute("The headset did not reconnect",60) { capture.microphoneDevices().any(::external) }
+        Thread.sleep(1500)
+        main {
+            check(capture.recording && capture.microphoneReceiving && !external(capture.microphoneInput)) {
+                "The reconnected headset replaced the fallback during a take"
+            }
+            capture.stop()
+        }
+        val take=a.store.open(a.editor.project.id).originals.single()
+        check(take.video && take.audio && take.duration>3)
+        VideoDecoder(take.path).use { decoder -> checkNotNull(decoder.frame(take.duration-.25,96,54)).recycle() }
     }
 }

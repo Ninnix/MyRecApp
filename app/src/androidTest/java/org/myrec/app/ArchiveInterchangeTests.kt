@@ -28,6 +28,90 @@ object ArchiveInterchangeTests {
         editor.applyEffect(Effect(kind="Color LUTs",values=mutableMapOf("lut" to "Natural","strength" to ".7")));editor.undo()
         store.save(editor,false);val archive=File(root,"yourec.zip")
         try {
+            test("current native archive retains timed grades and framing with the export settings and undo history") {
+                val clip=fixture("scoped-native.mp4")
+                val project=Editor(Project(clips=mutableListOf(clip),movieSettings=MovieSettings(
+                    ExportResolution.HD,24,ExportColor.SDR_HEVC)))
+                project.change {
+                    clip.effects.add(Effect(kind="Color LUTs",from=.5,to=1.5,
+                        values=mutableMapOf("lut" to "Mono","strength" to "1","balanceModel" to "2")))
+                    clip.effects.add(Effect(kind="Mirror",from=1.0,to=2.0,values=mutableMapOf("horizontal" to "1")))
+                }
+                store.save(project,false)
+                val file=File(root,"scoped.zip")
+                YouRecArchive.export(store,project.project,file,{ false },{})
+                val entries=ZipFile(file).use { zip ->
+                    zip.entries().asSequence().associate { it.name to zip.getInputStream(it).readBytes() }.toMutableMap()
+                }
+                val header=JSONObject(entries.getValue("project.json").decodeToString())
+                check(header.getInt("schemaVersion")==15)
+                check(header.getJSONObject("exportSettings").getString("codec")=="H.265")
+                val snapshots=header.getJSONArray("snapshotFiles")
+                val native=JSONArray()
+                for (index in 0 until snapshots.length()) {
+                    val bytes=entries.remove("History/"+snapshots.getString(index))!!
+                    native.put(JSONObject(bytes.decodeToString()).apply { remove("myrec") })
+                }
+                header.remove("snapshotFiles");header.remove("myrecSession")
+                native.getJSONObject(native.length()-1).getJSONObject("state").remove("outputSize")
+                entries["project.json"]=header.put("snapshots",native).toString().encodeToByteArray()
+                write(file,entries)
+                val restored=store.editor(ProjectArchive.restore(store,file).project)
+                check(restored.project.movieSettings==project.project.movieSettings && restored.project.fps==project.project.fps)
+                check((restored.project.width to restored.project.height)==ProjectStore.shape(clip.path))
+                val ranged=restored.project.clips.single { it.video }.effects.associateBy { it.kind }
+                check(ranged.getValue("Color LUTs").let { it.from==.5 && it.to==1.5 })
+                check(ranged.getValue("Mirror").let { it.from==1.0 && it.to==2.0 })
+                restored.undo()
+                check(restored.project.clips.all { it.effects.isEmpty() })
+                restored.redo()
+                check(restored.project.clips.single { it.video }.effects.size==2)
+                header.remove("snapshots")
+                header.put("history",JSONArray((0 until native.length()).map { native.getJSONObject(it).getJSONObject("state") }))
+                entries["project.json"]=header.toString().encodeToByteArray()
+                write(file,entries)
+                val older=store.editor(ProjectArchive.restore(store,file).project)
+                check(older.project.clips.single { it.video }.effects.size==2 && older.canUndo)
+                older.undo()
+                check(older.project.clips.all { it.effects.isEmpty() } && older.canRedo)
+                header.put("schemaVersion",17)
+                entries["project.json"]=header.toString().encodeToByteArray()
+                write(file,entries)
+                check(runCatching { ProjectArchive.restore(store,file) }.exceptionOrNull()?.message?.contains("newer reader")==true)
+            }
+            test("schema 16 reopens a grouped title and disjoint framing without cutting its source") {
+                val clip=fixture("framing-variants.mp4")
+                val title=Effect(kind="Text",from=.5,to=2.5,values=(TitleStyle.defaults+mapOf(
+                    "grouped" to "true","label" to "Rome","text" to "Morning","headline.face" to "bodonimoda",
+                    "card.label.x" to ".25")).toMutableMap())
+                val rootMirror=Effect(kind="Mirror",from=0.0,to=1.0,values=mutableMapOf("horizontal" to "1"))
+                val localMirror=Effect(kind="Mirror",from=1.0,to=2.0,values=mutableMapOf("vertical" to "1"))
+                clip.effects.addAll(listOf(title,rootMirror,localMirror,
+                    rootMirror.copy(id=uid(),from=2.0,to=3.0,values=(rootMirror.values+("nativeFramingId" to rootMirror.id)).toMutableMap())))
+                val project=Project(clips=mutableListOf(clip))
+                clip.effects[1].values["nativeFramingId"]=rootMirror.id
+                val source=uid()
+                val header=JSONObject().put("id",project.id).put("title",project.name).put("sources",JSONArray().put(
+                    JSONObject().put("id",source).put("filename",clip.path).put("duration",clip.sourceOut)))
+                val snapshot=YouRecDocument.snapshot(project,mapOf(clip.path to source),0)
+                check(YouRecDocument.schema(snapshot)==16)
+                val restored=YouRecDocument.project(snapshot,header,mapOf(clip.path to clip.path))
+                val picture=restored.clips.single { it.video }
+                check(picture.effects.single { it.kind=="Text" }.let { TitleCard.enabled(it) &&
+                    it.values["label"]=="Rome" && it.values["headline.face"]=="bodonimoda" && it.number("card.label.x")==.25f })
+                for ((at,horizontal) in listOf(.5 to 1f,1.5 to 0f,2.5 to 1f))
+                    check(picture.effects.single { it.kind=="Mirror" && it.active(at) }.number("horizontal")==horizontal)
+                check(store.encode(restored).getInt("version")==16)
+                val result=YouRecDocument.snapshot(restored,mapOf(clip.path to source),0)
+                check(YouRecDocument.schema(result)==16)
+                Frames().use { frames ->
+                    val image=frames.render(restored,1.5,240,135)
+                    val comparison=frames.render(restored.duplicate().also {
+                        it.clips.single { c -> c.video }.effects.removeAll { fx -> fx.kind=="Text" }
+                    },1.5,240,135)
+                    try { check(!image.sameAs(comparison)) } finally { image.recycle();comparison.recycle() }
+                }
+            }
             test("native video keys retain identities and strobe phase across a source trim") {
                 val fx=Effect.create("RGB Offset").apply { parameter("redX")!!.setKeyframe(2.0,EffectValue.Number(.2));parameter("redX")!!.setKeyframe(4.0,EffectValue.Number(.4)) }
                 val strobe=Effect.create("Negative Strobe").apply { phase=EffectPhase(0.0,.4,listOf(EffectTimePoint(0.0,0.0),EffectTimePoint(4.0,4.0))) }
@@ -151,7 +235,7 @@ object ArchiveInterchangeTests {
                 loaded.redo();check(loaded.project.clips.flatMap { it.effects }.any { it.kind=="Color LUTs" })
             }
             test("independent native snapshots replay later captures and retain unused originals") {
-                val id=uid();val source=uid();val owner=uid();val occurrence=uid();val bytes=File(editor.project.clips.first().path).readBytes()
+                val id=uid();val source=uid();val owner=uid();val bytes=File(editor.project.clips.first().path).readBytes()
                 val duration=editor.project.clips.first().sourceOut
                 val body=JSONObject().put("id",owner).put("sourceID",source).put("start",0).put("end",duration)
                 val empty=JSONObject("""{"timeline":{"video":[],"audio":[],"links":[],"bookmarks":[],"placements":[],"transitions":[],"generated":[]},"outputSize":[640,360]}""")
@@ -163,6 +247,7 @@ object ArchiveInterchangeTests {
                     "integrity.json" to JSONObject().put("version",1).put("sha256",JSONObject().put("take.mp4",hash(bytes))).toString().toByteArray()))
                 val restored=ProjectArchive.restore(store,file);val loaded=store.editor(restored.project)
                 check(loaded.project.clips.count { it.video }==1 && loaded.project.clips.count { it.audio }==1 && loaded.session().originals.size==1)
+                check(loaded.project.clips.all { it.link==owner && it.occurrence==owner })
                 check(kotlin.math.abs(loaded.project.duration-duration)<.00001)
             }
             test("untranslatable processing leaves the original project and archive target intact") {

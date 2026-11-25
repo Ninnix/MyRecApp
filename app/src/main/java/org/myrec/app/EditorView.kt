@@ -35,6 +35,7 @@ class EditorView(
     var fullscreen = false
     val inspection = PreviewViewport()
     var onInspection: (Float) -> Unit = {}
+    var onCopyFrame: (Bitmap) -> Unit = {}
     private var previewGesture = false
     private var panAnchored = false
     private var panX = 0f
@@ -56,7 +57,13 @@ class EditorView(
     private var longPressed = false
     private val longPress = Runnable {
         val clip = gestureClip
-        if (!moved && !moving && timeline.contains(downX,downY) && downY<timeline.top+16) {
+        if (!moved && !moving && previewBounds.contains(downX,downY)) {
+            bitmap?.let {
+                longPressed=true
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onCopyFrame(it)
+            }
+        } else if (!moved && !moving && timeline.contains(downX,downY) && downY<timeline.top+16) {
             longPressed=true;performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);action("bookmarks")
         } else if (!moved && !moving && clip != null && editor.range == null && editor.mark == null) {
             longPressed = true
@@ -765,11 +772,12 @@ class EditorView(
                         val tw = max(1f, (bottom - top) * list.first().width / list.first().height)
                         var x = TimelineLayout.thumbnailStart(left, timeline.left, tw)
                         while (x < min(right, timeline.right)) {
-                            val at =
-                                clip.sourceTime(start + (x - timeline.left) / timeline.width() * span)
+                            val timelineTime=start+(x+tw/2-timeline.left)/timeline.width()*span
+                            val at=clip.sourceTime(timelineTime)
                             val total = max(clip.sourceOut, indexedDuration(clip.path))
                             val image =
-                                list[(at / total * list.size).toInt().coerceIn(0, list.size - 1)]
+                                index.editedFrame(editor.project,clip,timelineTime)
+                                    ?: list[(at / total * list.size).toInt().coerceIn(0, list.size - 1)]
                             c.save()
                             c.clipRect(clipR)
                             p.color = Color.WHITE
@@ -797,7 +805,7 @@ class EditorView(
                     val wave = index.waves[clip.path]
                     p.color = cyan
                     p.strokeWidth = 0.8f
-                    val gain = 10f.pow(clip.gainDb / 20)
+                    val gain = if (clip.gainDb<=-60f) 0f else 10f.pow(clip.gainDb / 20)
                     var x = max(left, timeline.left)
                     while (x < min(right, timeline.right)) {
                         val source =
@@ -810,9 +818,16 @@ class EditorView(
                             else -1
                         val amplitude =
                             if (i >= 0)
-                                min(1f, sqrt(wave!![i]) * gain) * (clipR.bottom - audioTop) / 2
+                                min(1f, sqrt(wave!![i]*gain)) * (clipR.bottom - audioTop) / 2
                             else 0.6f
-                        c.drawLine(x, mid - amplitude, x, mid + amplitude, p)
+                        val signed=if (span<=2.0 && wave?.isNotEmpty()==true) index.waveDetail(clip.path,source) else null
+                        if (signed==null) c.drawLine(x,mid-amplitude,x,mid+amplitude,p)
+                        else {
+                            val height=(clipR.bottom-audioTop)/2
+                            val low=sqrt((-signed.first*gain).coerceIn(0f,1f))*height
+                            val high=sqrt((signed.second*gain).coerceIn(0f,1f))*height
+                            c.drawLine(x,mid-high,x,mid+low,p)
+                        }
                         x += 1f
                     }
                     val labelLeft = max(left, timeline.left)
@@ -1128,7 +1143,9 @@ class EditorView(
                 downLaneScroll = laneScroll
                 longPressed = false
                 removeCallbacks(longPress)
-                if (timeline.contains(x, y) && !moving) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+                if (!moving && (timeline.contains(x,y) || previewGesture &&
+                        hits.none { (rect,id) -> id!="preview" && rect.contains(x,y) }))
+                    postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 downGain = gestureClip?.gainDb ?: 0f
                 rangeHandle = 0
                 editor.range?.let { r ->
@@ -1144,7 +1161,7 @@ class EditorView(
                 if (previewGesture && inspection.zoom > 1.001f) {
                     if (panAnchored) inspection.pan(x - panX, y - panY)
                     panAnchored = true; panX = x; panY = y
-                    if (abs(x - downX) + abs(y - downY) > 3) moved = true
+                    if (abs(x - downX) + abs(y - downY) > 3) { moved=true;removeCallbacks(longPress) }
                     invalidate()
                     return true
                 }
@@ -1395,6 +1412,7 @@ class EditorView(
         super.onInitializeAccessibilityNodeInfo(info)
         for ((i, label) in listOf("Zoom in preview", "Zoom out preview", "Reset preview zoom").withIndex())
             info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000101 + i, label))
+        if (bitmap!=null) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction(0x02000104,"Copy frame"))
         val reading = "%.2f× preview".format(java.util.Locale.US, inspection.zoom)
         if (android.os.Build.VERSION.SDK_INT >= 30) info.stateDescription = reading else info.text = reading
     }
@@ -1404,6 +1422,7 @@ class EditorView(
             0x02000101 -> inspection.scale(1.5f)
             0x02000102 -> inspection.scale(1 / 1.5f)
             0x02000103 -> inspection.reset()
+            0x02000104 -> { onCopyFrame(bitmap ?: return false);return true }
             else -> return super.performAccessibilityAction(action, arguments)
         }
         onInspection(inspection.zoom)

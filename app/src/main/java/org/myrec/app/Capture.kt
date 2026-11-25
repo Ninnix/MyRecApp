@@ -176,7 +176,7 @@ class Capture(
     private var zoom = 1f
     private var requestedZoom: Float? = null
     private var zoomRange = Range(1f, 8f)
-    private var zoomSeconds = prefs.getFloat("zoomSeconds", 1f)
+    private var zoomSeconds = prefs.getFloat("zoomSeconds", 0f)
     private var zoomAnimator: ValueAnimator? = null
     private var zoomMenu = false
     private val effectFaces=CameraFaceTarget()
@@ -232,8 +232,6 @@ class Capture(
             liveEffects.any { it.enabled && it.kind in BackgroundEffect.kinds }) updateLiveFrame()
     }
     private var failedEffectGeneration=Long.MIN_VALUE
-    private var lastZoomTap = 0L
-    private var lastZoom = 0f
     private val audioDevices =
         object : AudioDeviceCallback() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
@@ -993,19 +991,27 @@ class Capture(
     }
 
     internal fun setZoom(value: Float, instant: Boolean = false) {
+        animateZoom(value, if (instant) 0f else zoomSeconds)
+    }
+
+    private fun animateZoom(value: Float, seconds: Float) {
         val to = value.coerceIn(zoomRange.lower, zoomRange.upper)
         zoomAnimator?.cancel()
-        if (instant || zoomSeconds == 0f) {
+        if (seconds == 0f) {
             zoom = to
             rememberLens()
             updateRequest()
             return
         }
         zoomAnimator =
-            ValueAnimator.ofFloat(zoom, to).apply {
-                duration = (zoomSeconds * 1000).toLong()
+            ValueAnimator.ofFloat(0f, 1f).apply {
+                val from=zoom
+                duration = (seconds * 1000).toLong()
+                interpolator = android.view.animation.LinearInterpolator()
                 addUpdateListener {
-                    zoom = it.animatedValue as Float
+                    val t=it.animatedFraction
+                    val progress=t*t*t*(10f+t*(-15f+6f*t))
+                    zoom=from*(to/from).pow(progress)
                     updateRequest()
                     overlay.invalidate()
                 }
@@ -1015,6 +1021,15 @@ class Capture(
                 start()
             }
     }
+
+    private fun zoomDuration(seconds: Float) {
+        zoomSeconds=(seconds.coerceIn(0f,30f)*2f).roundToInt()/2f
+        prefs.edit().putFloat("zoomSeconds",zoomSeconds).apply()
+        overlay.invalidate()
+    }
+
+    private fun zoomDurationLabel(seconds: Float) =
+        if (seconds==0f) "Instant" else if (seconds%1f==0f) "${seconds.toInt()} s" else "$seconds s"
 
     private fun choosePriority() { resolveMicrophone() }
 
@@ -1056,6 +1071,7 @@ class Capture(
         microphoneRecheck = null
         val devices = microphoneDevices()
         val inputs = devices.map { MicrophoneInput(it) }
+        val previousName = micName()
         val actual = microphone.actual?.let { MicrophoneInput(it).key }
         val saved = prefs.getString("priorities","").orEmpty().split(',').filter { it.isNotEmpty() }
         val canonical = saved.map { key ->
@@ -1080,7 +1096,7 @@ class Capture(
         }
         if (decision.disconnected!=null) {
             val old = prefs.getString("microphoneName."+decision.disconnected,"Microphone")
-            activity.message("$old disconnected. Using ${micName()}.")
+            activity.message("$old disconnected. Using $previousName.")
         }
         if (decision.failed!=null) {
             val desired = prefs.getString("microphoneName."+decision.failed,"the selected microphone")
@@ -1990,18 +2006,27 @@ class Capture(
                 priority(devices)
                 return@choose
             }
-            val previous = selectedMicrophone()
-            if (recording) microphoneRecoveryAt=System.nanoTime()
-            if (!routeMicrophone(devices[i])) {
-                previous?.let { routeMicrophone(it) }
+            if (!selectMicrophone(devices[i])) {
                 activity.message("The selected microphone is unavailable")
-                return@choose
             }
-            microphoneRoute.select(MicrophoneInput(devices[i]).key)
-            resolveMicrophone()
-            overlay.invalidate()
         }
     }
+
+    internal fun selectMicrophone(input: AudioDeviceInfo): Boolean {
+        val previous=selectedMicrophone()
+        if (recording) microphoneRecoveryAt=System.nanoTime()
+        if (!routeMicrophone(input)) {
+            previous?.let { routeMicrophone(it) }
+            return false
+        }
+        microphoneRoute.select(micKey(input))
+        resolveMicrophone()
+        overlay.invalidate()
+        return true
+    }
+
+    internal val microphoneInput get() = microphone.actual
+    internal val microphoneReceiving get() = microphone.readings.arriving(System.nanoTime())
 
     private fun priority(devices: List<AudioDeviceInfo>) {
         val inputs=devices.map { MicrophoneInput(it) }
@@ -2671,11 +2696,40 @@ class Capture(
         private var h = 294f
         private val glyphs = mutableMapOf<Pair<String, Int>, Glyph>()
         private val accessible = EditorAccessibility(this) {
-            if (recording || closed) emptyList() else destinations.mapNotNull { (id, label) ->
-                bounds(id)?.let { area ->
-                    val rect = Rect().also(area::roundOut)
-                    EditorAccessibility.Item(id, label, rect, click = { openDestination(id) })
+            if (closed) emptyList() else hits.map { it.second }.distinct().mapNotNull { id ->
+                if (id=="dualDivider") return@mapNotNull null
+                val rect=Rect().also { bounds(id)?.roundOut(it) }
+                if (!rect.intersect(0,0,width,height)) return@mapNotNull null
+                val label=destinations[id] ?: when {
+                    id.startsWith("z:") -> "${id.substringAfter(':')} times zoom"
+                    else -> when (id) {
+                        "record" -> if (recording) "Stop recording" else "Start recording"
+                        "pause" -> if (paused) "Resume recording" else "Pause recording"
+                        "mark" -> "Add recording bookmark"
+                        "mic" -> "Recording microphone"
+                        "camera" -> "Select camera"
+                        "flip" -> if (dualCamera!=null) "Swap cameras" else "Switch front or rear camera"
+                        "focus" -> "Focus mode"
+                        "zoom" -> "Zoom presets"
+                        "zoomTime" -> "Zoom transition duration"
+                        "effects" -> "Live video effects"
+                        "settings" -> "Camera settings"
+                        "light" -> "Front light settings"
+                        "dual" -> "Two-camera layout"
+                        "new" -> "Start new project"
+                        else -> id.replace(Regex("([a-z])([A-Z])"),"$1 $2").replaceFirstChar { it.uppercase() }
+                    }
                 }
+                val value=when (id) {
+                    "focus" -> if (!focusAdjustable && !CameraFocus.canLock(focusMode)) "Fixed" else if (focusLocked) "Locked" else "Auto"
+                    "zoomTime" -> zoomDurationLabel(zoomSeconds)
+                    "zoom" -> "%.1f times".format(zoom)
+                    else -> null
+                }
+                EditorAccessibility.Item(id,label,rect,value,click={ activateControl(id,fromAccessibility=true) },
+                    longClick=if (id=="focus") ({ toggleFocusPeaking() }) else null,
+                    range=if (id=="zoomTime") 0f..30f else null,progress=zoomSeconds,
+                    adjust=if (id=="zoomTime") ::zoomDuration else null,increment=.5f)
             }
         }
 
@@ -3102,7 +3156,7 @@ class Capture(
                 c.restore()
                 text(
                     c,
-                    if (zoomSeconds == 0f) "Instant" else "${zoomSeconds.toInt()} s",
+                    zoomDurationLabel(zoomSeconds),
                     left + 24,
                     y + 27,
                     7f,
@@ -3183,6 +3237,22 @@ class Capture(
         private var downX = 0f
         private var downY = 0f
         private var focusTouch = false
+        private var zoomTimeTouch = false
+        private var zoomTimeStart = 0f
+        private var zoomPreset: Float? = null
+        private var zoomPresetCamera = ""
+        private val singleZoomTap = Runnable {
+            val preset=zoomPreset
+            zoomPreset=null
+            if (preset!=null && isAttachedToWindow && cameraId==zoomPresetCamera && device!=null && !closed)
+                animateZoom(preset,zoomSeconds)
+        }
+
+        override fun onDetachedFromWindow() {
+            removeCallbacks(singleZoomTap)
+            zoomPreset=null
+            super.onDetachedFromWindow()
+        }
         private var focusStart = 1f
         private var draggingDivider=false
         private var pictureSlot: Int?=null
@@ -3216,6 +3286,8 @@ class Capture(
                 draggingDivider=bounds("dualDivider")?.contains(e.x,e.y)==true
                 focusTouch = bounds("focus")?.contains(e.x, e.y) == true
                 focusStart = focusPosition
+                zoomTimeTouch=bounds("zoomTime")?.contains(e.x,e.y)==true
+                zoomTimeStart=zoomSeconds
                 val free = hits.none { it.first.contains(e.x / s, e.y / s) }
                 val margin = 14 * resources.displayMetrics.density
                 val inset = insetBounds()?.apply { inset(-margin, -margin) }
@@ -3279,10 +3351,20 @@ class Capture(
                 resizingLight = false
                 composing = false
                 focusTouch = false
+                if (zoomTimeTouch && zoomSeconds!=zoomTimeStart) zoomDuration(zoomTimeStart)
+                zoomTimeTouch=false
                 return true
             }
             if (e.actionMasked == MotionEvent.ACTION_MOVE && hypot(e.x - downX, e.y - downY) > slop)
                 moved = true
+            if (zoomTimeTouch) {
+                if (e.actionMasked==MotionEvent.ACTION_MOVE && moved && e.pointerCount==1 && abs(e.y-downY)>abs(e.x-downX)) {
+                    val steps=((downY-e.y)/(14*resources.displayMetrics.density)).toInt()
+                    zoomDuration(zoomTimeStart+steps*.5f)
+                    return true
+                }
+                if (e.actionMasked==MotionEvent.ACTION_UP) zoomTimeTouch=false
+            }
             if (draggingDivider) {
                 if (e.actionMasked==MotionEvent.ACTION_MOVE) {
                     composition?.divider(if (dualLayout==1) (e.x-texture.left)/texture.width else (e.y-texture.top)/texture.height)
@@ -3354,13 +3436,27 @@ class Capture(
                     tapPreview(e.x, e.y)
                 return true
             }
+            activateControl(id)
+            performClick()
+            return true
+        }
+
+        private fun activateControl(id: String,fromAccessibility: Boolean=false) {
             when {
                 id.startsWith("z:") -> {
                     val z = id.substringAfter(':').toFloat()
-                    val instant = e.eventTime - lastZoomTap < 300 && lastZoom == z
-                    setZoom(z, instant)
-                    lastZoomTap = e.eventTime
-                    lastZoom = z
+                    if (fromAccessibility) { animateZoom(z,zoomSeconds);return }
+                    val quick=zoomPreset==z && zoomPresetCamera==cameraId
+                    removeCallbacks(singleZoomTap)
+                    if (quick) {
+                        zoomPreset=null
+                        animateZoom(z,1f)
+                    } else {
+                        singleZoomTap.run()
+                        zoomPreset=z
+                        zoomPresetCamera=cameraId
+                        postDelayed(singleZoomTap,android.view.ViewConfiguration.getDoubleTapTimeout().toLong())
+                    }
                 }
                 else ->
                     when (id) {
@@ -3371,7 +3467,7 @@ class Capture(
                         "mic" -> recordingAudioControls()
                         "camera" -> cameras()
                         "flip" -> {
-                            if (dualCamera!=null) { swapCameras(); return true }
+                            if (dualCamera!=null) { swapCameras(); return }
                             val facing =
                                 if (front) CameraCharacteristics.LENS_FACING_BACK
                                 else CameraCharacteristics.LENS_FACING_FRONT
@@ -3384,18 +3480,14 @@ class Capture(
                                 ?.let { switchCamera(it) }
                         }
                         "zoom" -> zoomMenu = !zoomMenu
-                        "zoomTime" ->
-                            activity.choose(
-                                "Zoom duration",
-                                listOf("Instant", "1 second", "2 seconds", "3 seconds", "5 seconds"),
-                            ) {
-                                zoomSeconds = listOf(0f, 1f, 2f, 3f, 5f)[it]
-                                prefs.edit().putFloat("zoomSeconds", zoomSeconds).apply()
-                            }
+                        "zoomTime" -> {
+                            val durations=(listOf(0f,.5f,1f,2f,3f,5f,10f,15f,30f)+zoomSeconds).distinct().sorted()
+                            activity.choose("Zoom duration",durations.map(::zoomDurationLabel)) { zoomDuration(durations[it]) }
+                        }
                         "focus" -> {
                             if (!CameraFocus.canLock(focusMode)) {
                                 activity.message("This camera has fixed focus")
-                                return true
+                                return
                             }
                             previewFocus = null
                             focusLocked = !focusLocked
@@ -3429,8 +3521,6 @@ class Capture(
                     }
             }
             invalidate()
-            performClick()
-            return true
         }
 
         override fun performClick(): Boolean {

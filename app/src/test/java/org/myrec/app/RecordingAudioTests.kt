@@ -39,6 +39,16 @@ object RecordingAudioTests {
             check(meter.arriving(2_100_000_000) && meter.peakDB==-160f)
             meter.reset(); check(!meter.arriving(2_100_000_000))
         }
+        test("microphone sample time survives backward and future hardware timestamps") {
+            val clock=MicrophoneClock()
+            check(clock.block(480,1_020_000_000,1_000_000_000)==1_000_000_000L)
+            check(clock.block(480,1_030_000_000,1_010_500_000)==1_010_500_000L)
+            check(clock.block(480,1_040_000_000,900_000_000)==1_020_500_000L)
+            check(clock.block(480,1_050_000_000,2_000_000_000)==1_030_500_000L)
+            check(clock.block(480,1_060_000_000,null)==1_040_500_000L)
+            check(clock.block(480,1_070_000_000,1_051_000_000)==1_051_000_000L)
+            check(clock.block(480,1_500_000_000,null)==1_340_000_000L)
+        }
         test("microphone priority preserves disconnected inputs and never upgrades an active take") {
             val order=listOf("dji","headset","phone")
             check(RecordingMicrophoneRoute.priority(order,listOf("phone","usb"),"phone")==order+"usb")
