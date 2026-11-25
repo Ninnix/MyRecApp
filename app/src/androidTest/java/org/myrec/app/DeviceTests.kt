@@ -53,6 +53,20 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
+        if (suite == "editor-performance") {
+            var activity: MainActivity? = null
+            try {
+                val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
+                    .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
+                activity = a
+                EditorPerformanceTests.run(this,a,::onMain,::test)
+                finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })
+            } catch (e: Throwable) {
+                finish(Activity.RESULT_CANCELED, Bundle().apply { putString("stream", report.toString() + "FAIL " + e.stackTraceToString()) })
+            } finally { activity?.let { onMain { it.finish() } } }
+            return
+        }
         if (suite == "hdr-playback" || suite == "capture-cadence" || suite == "transition-parity" || suite == "zoom-cadence" || suite == "reliability" || suite == "background-performance" || suite == "recorded-backgrounds" || suite == "remaining-parity" || suite == "hdr-color-parity" || suite == "text" || suite == "existing-effects" || suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {

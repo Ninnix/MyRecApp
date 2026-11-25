@@ -5,8 +5,8 @@ import android.media.*
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Surface
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.*
 
 class Playback(
@@ -16,6 +16,9 @@ class Playback(
     private val onTick: () -> Unit,
     private val onError: (String) -> Unit,
     private val onAnalysis: (Float?) -> Unit = {},
+    private val outputSurface: () -> Surface? = { null },
+    private val onSurfaceFrame: (Surface, Long) -> Unit = { _, _ -> },
+    private val hideSurface: () -> Unit = {},
 ) {
     private val ui = Handler(Looper.getMainLooper())
     private val video = Executors.newSingleThreadExecutor()
@@ -23,8 +26,15 @@ class Playback(
     @Volatile private var preparationEpoch = 0
     private var activePreparationEpoch = 0
     private val frames = Frames(cancelled = { closed || activePreparationEpoch != preparationEpoch }) { progress -> ui.post { onAnalysis(progress) } }
-    private val rendering = AtomicBoolean(false)
+    private var rendering = false
     private var pendingRender: Pair<Project, Double>? = null
+    private var scrubbing = false
+    private var resumeAfterScrub: Double? = null
+    private data class DirectKey(val surface: Surface, val path: String, val clip: String, val width: Int, val height: Int)
+    private var directDecoder: VideoDecoder? = null
+    private var directKey: DirectKey? = null
+    private var failedDirect: DirectKey? = null
+    private var directRequested = false
     @Volatile private var closed = false
     @Volatile
     var playing = false
@@ -52,6 +62,7 @@ class Playback(
                     (Studio.signature(before) != Studio.signature(after) ||
                         before.clips.map { it.id } != after.clips.map { it.id }))
             field = value
+            if (value != null) hideSurface()
             if (restart) {
                 val end = until
                 pause()
@@ -71,6 +82,7 @@ class Playback(
     fun inspect(zoom: Float) {
         if (inspectionZoom == zoom) return
         inspectionZoom = zoom
+        if (zoom > 1f) hideSurface()
         ui.removeCallbacks(refreshInspection)
         ui.postDelayed(refreshInspection, 85)
     }
@@ -95,17 +107,19 @@ class Playback(
         }
 
     fun refresh(project: Project = previewProject ?: editor.project) {
-        enqueue(project.duplicate(), editor.cursor)
+        enqueue(project, editor.cursor)
     }
 
     fun cancelPreparation() { preparationEpoch++ }
 
-    private fun enqueue(snapshot: Project, position: Double) {
+    private fun enqueue(project: Project, position: Double) {
         if (closed) return
-        if (!rendering.compareAndSet(false, true)) {
-            pendingRender = snapshot to position
+        if (rendering) {
+            pendingRender = project to position
             return
         }
+        val snapshot = project.duplicate()
+        rendering = true
         val ratio = snapshot.width.toDouble() / snapshot.height
         val edge = if (playing && inspectionZoom<=1f) playbackEdge else if (inspectionZoom <= 1f) 768 else
             (768 * inspectionZoom).roundToInt().coerceAtMost(min(4096, max(snapshot.width, snapshot.height)))
@@ -115,14 +129,47 @@ class Playback(
         val original = originalStabilization
         val live=playing && inspectionZoom<=1f
         val ticket=generation
+        val clip=if (live && previewProject==null && project===editor.project &&
+            snapshot.transitions.none { position>=it.begin && position<=it.end } && snapshot.subtitleCues(position).isEmpty())
+            snapshot.active(position).singleOrNull()?.takeIf { !it.photo && it.frozen==null && it.rate==1.0 && it.pauses==null &&
+                it.effects.none { fx -> fx.enabled && fx.kind !in Effects.audio } }
+            else null
+        val direct=clip?.let { source -> outputSurface()?.let { DirectKey(it,source.path,source.id,snapshot.width,snapshot.height) } }
+        directRequested=direct!=null
         video.execute {
             try {
                 activePreparationEpoch = preparation
                 val start=SystemClock.elapsedRealtimeNanos()
+                if (direct!=null && direct!=failedDirect && ticket==generation) {
+                    val frame=try {
+                        if (directKey!=direct) {
+                            closeDirect()
+                            directDecoder=VideoDecoder(direct.path,surface=direct.surface,surfaceAspect=ratio)
+                            directKey=direct
+                        }
+                        directDecoder?.draw(clip.sourceTime(position)) { closed || ticket!=generation || preparation!=preparationEpoch }
+                    } catch (_: Exception) {
+                        failedDirect=direct
+                        null
+                    }
+                    if (frame!=null) {
+                        ui.post {
+                            if (!closed && playing && ticket==generation && preparation==preparationEpoch && inspectionZoom<=1f)
+                                onSurfaceFrame(direct.surface,frame)
+                        }
+                        return@execute
+                    }
+                    if (ticket!=generation || preparation!=preparationEpoch || closed) return@execute
+                    failedDirect=direct
+                }
+                closeDirect()
                 val bitmap = frames.render(snapshot, position, w, h,originalStabilization = original,preview=true)
                 val elapsed=(SystemClock.elapsedRealtimeNanos()-start)/1e6
                 ui.post {
-                    if (!closed && preparation==preparationEpoch) onFrame(bitmap) else bitmap.recycle()
+                    if (!closed && preparation==preparationEpoch) {
+                        hideSurface()
+                        onFrame(bitmap)
+                    } else bitmap.recycle()
                     if (live && playing && ticket==generation) {
                         slowFrames=if (elapsed>33) slowFrames+1 else 0
                         if (slowFrames>=3) {
@@ -135,7 +182,7 @@ class Playback(
                 if (!closed && preparation == preparationEpoch) ui.post { onError(e.message ?: "Cannot render video") }
             } finally {
                 ui.post {
-                    rendering.set(false)
+                    rendering = false
                     val pending = pendingRender
                     pendingRender = null
                     if (pending != null && !closed) {
@@ -144,6 +191,12 @@ class Playback(
                 }
             }
         }
+    }
+
+    private fun closeDirect() {
+        runCatching { directDecoder?.close() }
+        directDecoder=null
+        directKey=null
     }
 
     fun toggle() {
@@ -248,6 +301,8 @@ class Playback(
     }
 
     fun pause() {
+        scrubbing = false
+        resumeAfterScrub = null
         playing = false
         onAnalysis(null)
         generation++
@@ -256,17 +311,34 @@ class Playback(
             track?.pause()
             track?.flush()
         } catch (_: Exception) {}
+        if (directRequested && !closed) {
+            directRequested=false
+            refresh()
+        }
         onTick()
     }
 
     fun seek(t: Double) {
-        val wasPlaying = playing
+        val resume = if (playing) until else resumeAfterScrub
         pause()
         cancelPreparation()
         editor.cursor = t.coerceIn(0.0, editor.project.duration)
         refresh()
         onTick()
-        if (wasPlaying) play()
+        if (resume != null && editor.cursor < resume) play(resume)
+    }
+
+    fun scrub(t: Double) {
+        if (!scrubbing) {
+            val resume = until.takeIf { playing }
+            pause()
+            cancelPreparation()
+            scrubbing = true
+            resumeAfterScrub = resume
+        }
+        editor.cursor = t.coerceIn(0.0, editor.project.duration)
+        refresh()
+        onTick()
     }
 
     fun close() {
@@ -274,7 +346,8 @@ class Playback(
         ui.removeCallbacks(refreshInspection)
         pendingRender = null
         pause()
-        video.execute { frames.close() }
+        hideSurface()
+        video.execute { closeDirect();frames.close() }
         video.shutdown()
         audio.shutdown()
     }

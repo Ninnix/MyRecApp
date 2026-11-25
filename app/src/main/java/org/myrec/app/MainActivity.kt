@@ -166,6 +166,8 @@ class MainActivity : Activity() {
         mediaIndex = MediaIndex(audioCache) { editorView.invalidate() }
         mediaIndex.editChanged(editor.project)
         editorView = EditorView(this, editor, mediaIndex, ::action) { playback.seek(it) }
+        val direct = DirectPreview(this) { editorView.invalidate() }
+        editorView.directPreview = direct
         editor.onSnapChange = {
             editorSettings.edit().putBoolean("snapToCuts", it).apply()
             editorView.invalidate()
@@ -189,14 +191,24 @@ class MainActivity : Activity() {
                     editorView.invalidate()
                     panels.invalidatePreview()
                 },
+                outputSurface = {
+                    if (panels.isOpen || editorView.visibility != View.VISIBLE) null else {
+                        if (direct.parent == null) root.addView(direct, 0, FrameLayout.LayoutParams(-1, -1))
+                        direct.surface
+                    }
+                },
+                onSurfaceFrame = direct::present,
+                hideSurface = direct::hide,
             )
         panels = Panels(this)
+        editorView.onScrub = playback::scrub
         editorView.onInspection = { if (!panels.isOpen) playback.inspect(it) }
         editorView.onCopyFrame = ::copyFrame
         root.addView(editorView, FrameLayout.LayoutParams(-1, -1))
         editor.onChange = {
             saveProject()
             mediaIndex.editChanged(editor.project)
+            playback.cancelPreparation()
             editorView.resetScroll()
             editorView.invalidate()
             playback.refresh()

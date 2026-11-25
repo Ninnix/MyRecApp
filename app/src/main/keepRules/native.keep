@@ -1,0 +1,7 @@
+# Native effects and audio processing look up this callback by name.
+-keepclassmembers interface org.myrec.app.Native$AudioProgress {
+    public boolean step(long, long);
+}
+-keepclassmembers class * implements org.myrec.app.Native$AudioProgress {
+    public boolean step(long, long);
+}

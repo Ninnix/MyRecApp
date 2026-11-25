@@ -2,12 +2,14 @@ package org.myrec.app
 
 import android.graphics.Bitmap
 import android.media.*
+import android.view.Surface
 import java.io.Closeable
 import java.io.File
 import kotlin.math.*
 
 class VideoDecoder(path: String, private val rawColor: Boolean = false, private val linear: Boolean = false,
-    private val tenBit: Boolean = false, softwareOnly: Boolean = false) : Closeable {
+    private val tenBit: Boolean = false, softwareOnly: Boolean = false, private val surface: Surface? = null,
+    surfaceAspect: Double = 0.0) : Closeable {
     private val mirrored = SourceMirror.enabled(path)
     private val extractor = MediaExtractor()
     private val codec: MediaCodec
@@ -16,6 +18,7 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
     private var inputDone = false
     private var outputDone = false
     private var lastTime = -1L
+    private var surfaceTime = 0L
     private var last: Bitmap? = null
     private val rotation: Int
     private var standard = MediaFormat.COLOR_STANDARD_BT709
@@ -30,30 +33,47 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
         }
 
     init {
-        extractor.setDataSource(path)
-        val track =
+        val format = try {
+            extractor.setDataSource(path)
+            val track =
             (0 until extractor.trackCount).firstOrNull {
                 extractor
                     .getTrackFormat(it)
                     .getString(MediaFormat.KEY_MIME)
                     ?.startsWith("video/") == true
             } ?: error("No video track")
-        val format = extractor.getTrackFormat(track)
+            extractor.selectTrack(track)
+            extractor.getTrackFormat(track)
+        } catch (e: Exception) {
+            extractor.release()
+            throw e
+        }
         rotation =
             if (format.containsKey(MediaFormat.KEY_ROTATION))
                 format.getInteger(MediaFormat.KEY_ROTATION)
             else 0
-        format.setInteger(MediaFormat.KEY_ROTATION, 0)
-        format.setInteger(
-            MediaFormat.KEY_COLOR_FORMAT,
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
-        )
+        if (surface == null) {
+            format.setInteger(MediaFormat.KEY_ROTATION, 0)
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+        }
         if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER))
             transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
         sourceHdr = transfer in listOf(MediaFormat.COLOR_TRANSFER_HLG, MediaFormat.COLOR_TRANSFER_ST2084)
         if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD))
             standard = format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
-        if (
+        if (surface != null) {
+            val w = format.getInteger(MediaFormat.KEY_WIDTH)
+            val h = format.getInteger(MediaFormat.KEY_HEIGHT)
+            val aspect = if (rotation % 180 == 0) w.toDouble() / h else h.toDouble() / w
+            fun pixelRatio(key: String) = if (format.containsKey(key)) format.getInteger(key) else 1
+            if (transfer != MediaFormat.COLOR_TRANSFER_SDR_VIDEO || mirrored || primaries != 0 ||
+                standard == MediaFormat.COLOR_STANDARD_BT2020 || abs(aspect / surfaceAspect - 1) > .001 ||
+                pixelRatio("sar-width") != pixelRatio("sar-height")) {
+                extractor.release()
+                throw IllegalArgumentException("This video requires composition")
+            }
+        }
+        if (surface == null &&
             (linear || android.os.Build.VERSION.SDK_INT >= 31) &&
                 transfer in
                     listOf(MediaFormat.COLOR_TRANSFER_HLG, MediaFormat.COLOR_TRANSFER_ST2084)
@@ -63,7 +83,6 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010,
             )
         configuredFormat = format
-        extractor.selectTrack(track)
         try {
             codec = VideoCodecs.decoder(format, softwareOnly)
         } catch (e: Exception) {
@@ -72,8 +91,9 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
         }
         try {
             try {
-                codec.configure(format, null, null, 0)
+                codec.configure(format, surface, null, 0)
             } catch (e: IllegalArgumentException) {
+                if (surface != null) throw e
                 format.setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
@@ -88,11 +108,19 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
         }
     }
 
-    fun frame(time: Double, width: Int, height: Int): Bitmap? {
+    fun draw(time: Double, cancelled: () -> Boolean): Long? {
+        check(surface != null)
+        frame(time, 0, 0, cancelled)
+        return surfaceTime.takeIf { it != 0L && !cancelled() }
+    }
+
+    fun frame(time: Double, width: Int, height: Int, cancelled: () -> Boolean = { false }): Bitmap? {
         val target = (time.coerceAtLeast(0.0) * 1_000_000).toLong()
         if (last != null && target in lastTime - 2..lastTime)
             return last!!.copy(last!!.config!!, true)
-        if (lastTime >= 0 && (target < lastTime - 2 || target > lastTime + 750000)) {
+        if (surface != null && target in lastTime - 100000..lastTime) return null
+        if (lastTime >= 0 && (target < lastTime - 2 && surface == null || target > lastTime + 750000) ||
+            surface != null && (lastTime < 0 && target > 750000 || lastTime >= 0 && target < lastTime - 100000)) {
             extractor.seekTo(target, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             // Some Main10 decoders stop producing images after flush. Restart with the
             // stream headers at the keyframe; sequential playback keeps the same codec.
@@ -104,9 +132,10 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
             inputDone = false
             outputDone = false
             lastTime = -1
+            surfaceTime = 0
         }
         val deadline = System.nanoTime() + 10_000_000_000L
-        while (!outputDone && System.nanoTime() < deadline) {
+        while (!outputDone && !cancelled() && System.nanoTime() < deadline) {
             if (!inputDone) {
                 val index = codec.dequeueInputBuffer(0)
                 if (index >= 0) {
@@ -135,6 +164,16 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
                 outputDone = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                 val wanted =
                     info.size > 0 && (info.presentationTimeUs >= target - 1000 || outputDone)
+                if (surface != null) {
+                    if (wanted && !cancelled()) {
+                        lastTime = info.presentationTimeUs
+                        surfaceTime = System.nanoTime()
+                        codec.releaseOutputBuffer(index, surfaceTime)
+                        return null
+                    }
+                    codec.releaseOutputBuffer(index, false)
+                    continue
+                }
                 if (wanted) {
                     val image = codec.getOutputImage(index)
                     if (image != null) {

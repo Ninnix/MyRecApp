@@ -36,6 +36,8 @@ class EditorView(
     val inspection = PreviewViewport()
     var onInspection: (Float) -> Unit = {}
     var onCopyFrame: (Bitmap) -> Unit = {}
+    var onScrub: (Double) -> Unit = seek
+    internal var directPreview: DirectPreview? = null
     private var previewGesture = false
     private var panAnchored = false
     private var panX = 0f
@@ -61,7 +63,8 @@ class EditorView(
             bitmap?.let {
                 longPressed=true
                 performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                onCopyFrame(it)
+                val picture=directPreview?.takeIf { it.showing }?.snapshot(it.width,it.height)
+                try { onCopyFrame(picture ?: it) } finally { picture?.recycle() }
             }
         } else if (!moved && !moving && timeline.contains(downX,downY) && downY<timeline.top+16) {
             longPressed=true;performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);action("bookmarks")
@@ -198,10 +201,10 @@ class EditorView(
         (x - timeline.left) / timeline.width() * downSpan
         else downCursor - (x - downX) / timeline.width() * downSpan
 
-    private fun finishScrub() {
+    private fun finishScrub(time: Double = editor.cursor) {
         if (!scrubbing) return
         scrubbing = false
-        seek(editor.snapTime(editor.cursor, timeline.width() / downSpan))
+        seek(editor.snapTime(time.coerceIn(0.0, editor.project.duration), timeline.width() / downSpan))
         invalidate()
     }
 
@@ -441,7 +444,6 @@ class EditorView(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.BLACK)
         landscape = width > height
         bw = if (landscape) 640f else 294f
         bh = if (landscape) 294f else 640f
@@ -454,14 +456,34 @@ class EditorView(
             ox = safe.left/unit + ((width-safe.left-safe.right)/unit-294f)/2
             oy = safe.top/unit-40f
         }
+        previewBounds = when {
+            fullscreen -> RectF(0f, 0f, bw, bh - 38)
+            landscape -> RectF(46f, 0f, 309f, 127f)
+            else -> RectF(0f, 74f, 294f, 350f)
+        }
+        val surface = directPreview?.takeIf { it.showing && canvas.isHardwareAccelerated }
+        if (surface != null) {
+            val r = previewBounds
+            val ratio = min(r.width()/editor.project.width, r.height()/editor.project.height)
+            val x = ratio*editor.project.width/2
+            val y = ratio*editor.project.height/2
+            val picture = RectF((r.centerX()+ox-x)*unit,(r.centerY()+oy-y)*unit,
+                (r.centerX()+ox+x)*unit,(r.centerY()+oy+y)*unit)
+            surface.position(picture)
+            canvas.save()
+            canvas.clipOutRect(picture)
+            canvas.drawColor(Color.BLACK)
+            canvas.restore()
+        } else canvas.drawColor(Color.BLACK)
         canvas.save()
         canvas.scale(unit, unit)
         canvas.translate(ox, oy)
         hits.clear()
         hitLabels.clear()
         if (fullscreen) {
-            previewBounds = RectF(0f, 0f, bw, bh - 38)
-            drawPreview(canvas, previewBounds)
+            index.beginFilmstrip()
+            index.endFilmstrip()
+            drawPreview(canvas, previewBounds, surface != null)
             rect(canvas, RectF(0f, bh - 38, bw, bh), Color.rgb(15, 15, 16))
             transport(canvas, RectF(20f, bh - 36, bw - 20, bh - 6))
             text(canvas, "Done", bw - 10, 20f, 10f, Color.WHITE, Paint.Align.RIGHT)
@@ -470,8 +492,7 @@ class EditorView(
             return
         }
         if (landscape) {
-            previewBounds = RectF(46f, 0f, 309f, 127f)
-            drawPreview(canvas, previewBounds)
+            drawPreview(canvas, previewBounds, surface != null)
             rect(canvas, RectF(309f, 11f, 594f, 118f), Color.rgb(15, 15, 16))
             transport(canvas, RectF(317f, 12f, 586f, 43f))
             controls(canvas, 318f, 47f, 268f)
@@ -480,8 +501,7 @@ class EditorView(
             text(canvas, "‹", 12f, 66f, 23f)
             hit(RectF(0f, 40f, 34f, 80f), "projects")
             text(canvas, editor.project.name, 38f, 64f, 10f)
-            previewBounds = RectF(0f, 74f, 294f, 350f)
-            drawPreview(canvas, previewBounds)
+            drawPreview(canvas, previewBounds, surface != null)
             rect(canvas, RectF(0f, 350f, 294f, 383f), Color.rgb(15, 15, 16))
             transport(canvas, RectF(8f, 350f, 286f, 380f))
             controls(canvas, 8f, 536f, 278f)
@@ -540,13 +560,12 @@ class EditorView(
         canvas.restore()
     }
 
-    private fun drawPreview(c: Canvas, r: RectF) {
-        rect(c, r, Color.BLACK)
+    private fun drawPreview(c: Canvas, r: RectF, direct: Boolean) {
         hit(RectF(r), "preview")
-        bitmap?.let { b ->
-            val before = inspection.zoom
-            inspection.configure(r.width(), r.height(), editor.project.width.toFloat(), editor.project.height.toFloat())
-            if (inspection.zoom != before) onInspection(inspection.zoom)
+        val before = inspection.zoom
+        inspection.configure(r.width(), r.height(), editor.project.width.toFloat(), editor.project.height.toFloat())
+        if (inspection.zoom != before) onInspection(inspection.zoom)
+        if (!direct) bitmap?.let { b ->
             val ratio = min(r.width() / b.width, r.height() / b.height) * inspection.zoom
             val dest =
                 RectF(
@@ -717,6 +736,7 @@ class EditorView(
     }
 
     private fun drawTimeline(c: Canvas) {
+        index.beginFilmstrip()
         span = max(1.0, if (editor.wholeProject) editor.move?.base?.duration ?: editor.project.duration else editor.scale)
         start = TimelineLayout.start(editor.cursor, span, editor.wholeProject)
         val draft = editor.move
@@ -762,6 +782,7 @@ class EditorView(
                 }) {
                 val top = timeline.top + lane.top
                 val bottom = timeline.top + lane.bottom
+                if (bottom <= timeline.top || top >= timeline.bottom) continue
                 val clipR = RectF(left, top, right, bottom)
                 c.save()
                 c.clipPath(Path().apply { addRoundRect(clipR, 3f, 3f, Path.Direction.CW) })
@@ -769,22 +790,34 @@ class EditorView(
                 if (!lane.audio) {
                     val list = index.thumbnails[clip.path]
                     if (!list.isNullOrEmpty()) {
-                        val tw = max(1f, (bottom - top) * list.first().width / list.first().height)
-                        var x = TimelineLayout.thumbnailStart(left, timeline.left, tw)
-                        while (x < min(right, timeline.right)) {
-                            val timelineTime=start+(x+tw/2-timeline.left)/timeline.width()*span
-                            val at=clip.sourceTime(timelineTime)
-                            val total = max(clip.sourceOut, indexedDuration(clip.path))
+                        val preferred = max(1f, (bottom - top) * list.first().width / list.first().height)
+                        val fps = max(1, editor.project.fps)
+                        val total = max(clip.sourceOut, indexedDuration(clip.path))
+                        val grid = TimelineLayout.filmstripGrid(clip, preferred * span / timeline.width(), fps)
+                        val refine = list.size > 1 && grid.step * clip.rate < total / list.size
+                        var tile = grid.slot(max(start, interval.start))
+                        val end = min(start + span, interval.endInclusive)
+                        while (tile < end) {
+                            val first = max(tile, interval.start)
+                            val last = min(tile + grid.step, interval.endInclusive)
+                            val timelineTime = (tile + grid.step / 2).coerceIn(first, max(first, last - .000001))
                             val image =
-                                index.editedFrame(editor.project,clip,timelineTime)
-                                    ?: list[(at / total * list.size).toInt().coerceIn(0, list.size - 1)]
+                                index.editedFrame(editor.project,clip,timelineTime,refine)
+                                    ?: list[(clip.sourceTime(timelineTime) / total * list.size).toInt().coerceIn(0, list.size - 1)]
+                            val x = xFor(tile)
+                            val next = xFor(tile + grid.step)
+                            val center = (x + next) / 2
+                            val scale = max((next - x) / image.width, (bottom - top) / image.height)
+                            val halfWidth = image.width * scale / 2
+                            val halfHeight = image.height * scale / 2
+                            val middle = (top + bottom) / 2
                             c.save()
-                            c.clipRect(clipR)
+                            c.clipRect(max(x,left),top,min(next,right),bottom)
                             p.color = Color.WHITE
                             p.alpha = 255
-                            c.drawBitmap(image, null, RectF(x, top, x + tw, bottom), p)
+                            c.drawBitmap(image, null, RectF(center-halfWidth,middle-halfHeight,center+halfWidth,middle+halfHeight), p)
                             c.restore()
-                            x += tw
+                            tile += grid.step
                         }
                     } else rect(c, clipR, Color.rgb(31, 35, 37))
                     rect(
@@ -944,6 +977,7 @@ class EditorView(
             )
         }
         c.restore()
+        index.endFilmstrip()
     }
 
     private fun indexedDuration(path: String) =
@@ -1191,13 +1225,13 @@ class EditorView(
                         editor.updateMove(downMoveOffset + dx / timeline.width() * span, timeline.width() / span)
                         if (editor.move?.snap != null && editor.move?.snap != before)
                             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    } else if (abs(dy) > abs(dx) * 1.4f && laneScrollMax > 0 &&
+                    } else if (!scrubbing && abs(dy) > abs(dx) * 1.4f && laneScrollMax > 0 &&
                         (gestureClip == null || !audioGesture || moving)) {
                         scrubbing = false
                         laneScroll = (downLaneScroll - dy).coerceIn(0f, laneScrollMax)
                         invalidate()
                     } else if (
-                        !moving && abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
+                        !scrubbing && !moving && abs(dy) > abs(dx) * 1.4f && audioGesture && gestureClip?.audio == true
                     ) {
                         scrubbing = false
                         if (!gainChanged) {
@@ -1208,7 +1242,7 @@ class EditorView(
                         invalidate()
                     } else {
                         scrubbing = true
-                        seek(scrubTime(x))
+                        onScrub(scrubTime(x))
                         invalidate()
                     }
                 }
@@ -1230,8 +1264,7 @@ class EditorView(
                     return true
                 }
                 if (scrubbing) {
-                    seek(scrubTime(x))
-                    finishScrub()
+                    finishScrub(scrubTime(x))
                     return true
                 }
                 if (moved) return true
@@ -1281,7 +1314,7 @@ class EditorView(
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
-                scrubbing = false
+                finishScrub()
                 if (moving && moved && gestureClip?.id in editor.selected)
                     editor.updateMove(downMoveOffset, timeline.width() / span, snapping = false)
             }

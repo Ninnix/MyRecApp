@@ -3,6 +3,7 @@ package org.myrec.app
 import android.graphics.*
 import android.media.MediaMetadataRetriever
 import java.io.Closeable
+import java.io.InterruptedIOException
 import kotlin.math.*
 
 object Effects {
@@ -223,6 +224,8 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
     private val failed = mutableSetOf<String>()
     private val photoPaths = mutableMapOf<String, Boolean>()
     private val photos = linkedMapOf<String, Bitmap>()
+    private val overlayImages = OverlayImages()
+    private var previewImages = false
     private var preserveHdr = false
     private val readers = linkedMapOf<String, MediaMetadataRetriever>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -256,14 +259,13 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
                         if (decoders.size >= 4) decoders.remove(decoders.keys.first())?.close()
                         VideoDecoder(path, rawColor, extended, tenBit)
                     }
-                decoder.frame(time, width, height)?.let {
-                    return it
-                }
+                decoder.frame(time, width, height, cancelled)?.let { return it }
             } catch (e: Exception) {
                 android.util.Log.w("MyRec", "Video decoder failed", e)
                 decoders.remove(key)?.close()
                 failed.add(failure)
             }
+        if (cancelled()) throw InterruptedIOException("Frame render cancelled")
         check(!rawColor) { "Cannot read unmanaged Log values from this source" }
         check(!extended || !WorkingColor.hdr(path)) { "Cannot preserve this source's HDR samples with the available decoder" }
         return stillFrame(path, time, width, height)?.let { input ->
@@ -292,6 +294,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
     fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false,
         originalStabilization: Boolean = false, frameRate: Int = project.fps, preview: Boolean = false): Bitmap {
         this.originalStabilization = originalStabilization
+        previewImages = preview
         fps = project.fps.coerceAtLeast(1)
         tenBit = keepLinear
         preserveHdr = keepLinear
@@ -806,12 +809,12 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             }
             if (e.kind == "Image") {
                 val path=e.values["path"] ?: continue
-                val overlay=if (e.values["geometry"]=="center") PhotoSource.frame(path,width,height) else BitmapFactory.decodeFile(path) ?: continue
+                val overlay=overlayImages.get(path,e,width,height,previewImages) ?: continue
+                val r=ArchiveGeometry.image(e,overlay.width.toDouble(),overlay.height.toDouble(),width.toDouble(),height.toDouble())
+                paint.alpha=(255*e.number("opacity",1f).coerceIn(0f,1f)).roundToInt()
                 try {
-                    val r=ArchiveGeometry.image(e,overlay.width.toDouble(),overlay.height.toDouble(),width.toDouble(),height.toDouble())
-                    paint.alpha=(255*e.number("opacity",1f).coerceIn(0f,1f)).roundToInt()
-                    canvas.drawBitmap(overlay,null,RectF(r.x.toFloat(),r.y.toFloat(),(r.x+r.width).toFloat(),(r.y+r.height).toFloat()),paint)
-                } finally { overlay.recycle();paint.alpha=255 }
+                    canvas.drawBitmap(overlay.bitmap,null,RectF(r.x.toFloat(),r.y.toFloat(),(r.x+r.width).toFloat(),(r.y+r.height).toFloat()),paint)
+                } finally { paint.alpha=255 }
             }
         }
     }
@@ -874,6 +877,7 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
 
     override fun close() {
         cadences.clear()
+        overlayImages.close()
         if (backgroundDelegate.isInitialized()) backgrounds.close()
         photos.values.forEach { it.recycle() }
         photos.clear(); photoPaths.clear()

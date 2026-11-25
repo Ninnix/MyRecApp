@@ -37,6 +37,9 @@ and confirm its package, version and supported ABI before publishing. Increment 
 for each release and keep `versionName` in Gradle and the alternative builder
 in sync.
 
+Keep `app/build/outputs/mapping/release/mapping.txt` with the matching release
+artifacts for retracing crash reports. Test JNI callbacks with the optimized APK.
+
 Keep the key and a secure backup for future updates. Debug and release builds
 have different signing identities. Export projects as ZIP archives before
 switching an existing development installation to the release build; Android

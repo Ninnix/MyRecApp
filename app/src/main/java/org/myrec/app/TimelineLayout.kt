@@ -2,8 +2,11 @@ package org.myrec.app
 
 import kotlin.math.abs
 import kotlin.math.floor
+import kotlin.math.log2
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.round
 
 data class TimelineLane(val ids: Set<String>, val audio: Boolean, val row: Int,
                         val top: Float, val bottom: Float)
@@ -11,6 +14,16 @@ data class TimelineLane(val ids: Set<String>, val audio: Boolean, val row: Int,
 object TimelineLayout {
     fun thumbnailStart(clipLeft: Float, viewportLeft: Float, width: Float): Float =
         clipLeft + floor(max(0f, viewportLeft - clipLeft) / width) * width
+
+    data class FilmstripGrid(val origin: Double, val step: Double) {
+        fun slot(time: Double): Double = origin + floor((time - origin) / step + 1e-8) * step
+    }
+
+    fun filmstripGrid(clip: Clip, seconds: Double, fps: Int): FilmstripGrid {
+        val rate = clip.playbackSpans.singleOrNull()?.rate?.takeIf { clip.frozen == null } ?: return FilmstripGrid(0.0, seconds)
+        val frames = 2.0.pow(round(log2(max(1.0, seconds * rate * fps))))
+        return FilmstripGrid(clip.start - clip.sourceIn / rate, frames / (fps * rate))
+    }
 
     fun interval(project: Project, clip: Clip, foldTransitions: Boolean = true): ClosedFloatingPointRange<Double> {
         if (!foldTransitions) return clip.start..clip.end

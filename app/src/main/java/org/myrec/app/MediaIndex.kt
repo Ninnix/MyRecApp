@@ -9,9 +9,12 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToLong
 
 class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit) {
     private val worker = Executors.newFixedThreadPool(2)
@@ -24,56 +27,104 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
     private val waveTiles=LinkedHashMap<WaveTile,FloatArray>(64,.75f,true)
     private val waveRequests=mutableSetOf<WaveTile>()
     private val detail=Executors.newSingleThreadExecutor()
-    private val filmstrip=Executors.newSingleThreadExecutor()
+    private val filmstrip=Executors.newSingleThreadScheduledExecutor()
     private data class FilmFrame(val path: String,val time: Long,val recipe: List<Effect>,val canvas: Pair<Int,Int>,
-                                 val composition: Long)
+                                 val scope: String?,val composition: Long)
+    private class FilmWork {
+        @Volatile var cancelled=false
+        var future: Future<*>?=null
+        fun cancel() { cancelled=true;future?.cancel(false) }
+    }
     private val filmFrames=LinkedHashMap<FilmFrame,Bitmap>(128,.75f,true)
-    private val filmRequests=mutableSetOf<FilmFrame>()
+    private val filmRequests=mutableMapOf<FilmFrame,FilmWork>()
+    private val visibleFilm=mutableSetOf<FilmFrame>()
+    private var filmRegions=emptyList<ClosedFloatingPointRange<Double>>()
+    private var filmProject: Project?=null
+    private var filmRenderer: Frames?=null
+    private var filmIdle: Future<*>?=null
+    private var filmWork: FilmWork?=null
     @Volatile private var editGeneration=1L
-    private var compositeFilmstrip=false
-    private var closed=false
+    @Volatile private var closed=false
+
+    fun beginFilmstrip() { visibleFilm.clear() }
+
+    fun endFilmstrip() {
+        val removed=filmRequests.entries.removeAll { (key, work) ->
+            (key !in visibleFilm).also { if (it) work.cancel() }
+        }
+        if (removed && !closed) changed()
+    }
 
     fun editChanged(project: Project) {
         editGeneration++
-        compositeFilmstrip=project.transitions.isNotEmpty() || project.clips.any { clip ->
-            clip.effects.any { it.enabled && (it.kind=="Placement" || it.subtitle!=null) }
+        filmProject=null
+        filmRequests.entries.removeAll { (key, work) ->
+            (key.composition!=0L).also { if (it) work.cancel() }
         }
+        val regions=project.transitions.map { it.begin..it.end } + project.clips.flatMap { clip ->
+            clip.effects.filter { it.enabled && (it.kind=="Placement" || it.subtitle!=null) }
+                .map { max(clip.start,clip.start+it.from)..min(clip.end,clip.start+it.to) }
+        }
+        val merged=mutableListOf<ClosedFloatingPointRange<Double>>()
+        for (range in regions.sortedBy { it.start }) {
+            if (range.isEmpty()) continue
+            val last=merged.lastOrNull()
+            if (last!=null && range.start<=last.endInclusive) merged[merged.lastIndex]=last.start..max(last.endInclusive,range.endInclusive)
+            else merged.add(range)
+        }
+        filmRegions=merged
     }
 
-    fun editedFrame(project: Project,clip: Clip,position: Double): Bitmap? {
+    fun editedFrame(project: Project,clip: Clip,position: Double, refine: Boolean = false): Bitmap? {
         val at=position.coerceIn(clip.start,max(clip.start,clip.end-.000001))
         val effects=clip.effects.filter { it.active(at-clip.start) && it.kind !in Effects.audio }
-        if (!compositeFilmstrip && effects.isEmpty()) return null
-        val theEdit=editGeneration
+        val region=filmRegions.binarySearchBy(at) { it.start }.let { if (it>=0) it else -it-2 }
+        val composite=region>=0 && at in filmRegions[region]
+        if (!composite && effects.isEmpty() && (!refine || clip.photo)) return null
         val sourceTime=clip.sourceTime(at)
-        val exact=compositeFilmstrip || clip.frozen!=null || effects.any { it.motion!=null || it.phase!=null || it.parameters.any { p -> p.keyframes.isNotEmpty() } }
-        val key=FilmFrame(clip.path,if (exact) (at*240000).toLong() else (sourceTime*4).toLong(),
-            if (exact) emptyList() else effects.map { it.copyEffect().apply { from=0.0;to=Double.MAX_VALUE } },
-            project.width to project.height,if (exact) theEdit else 0)
+        val exact=composite || clip.frozen!=null || effects.any { it.kind !in stillFilmEffects || it.motion!=null ||
+            it.phase!=null || it.number("animate")!=0f || it.parameters.any { p -> p.keyframes.isNotEmpty() } }
+        val recipe=if (exact) emptyList() else effects.map { it.copyEffect().copy(id="",from=0.0,to=Double.MAX_VALUE) }
+        val key=FilmFrame(clip.path,((if (exact) at else sourceTime)*240000).roundToLong(), recipe,
+            project.width to project.height,if (exact && !composite) clip.id else null,if (exact) editGeneration else 0)
+        visibleFilm.add(key)
         filmFrames[key]?.let { return it }
-        if (closed || filmRequests.size>=6 || !filmRequests.add(key)) return null
-        val snapshot=if (compositeFilmstrip) project.duplicate() else project.copy(
+        if (closed || filmRequests.size>=6 || key in filmRequests) return null
+        val work=FilmWork()
+        filmRequests[key]=work
+        val snapshot=if (composite) filmProject ?: project.duplicate().also { filmProject=it } else project.copy(
             clips=mutableListOf(clip.duplicate()),transitions=mutableListOf())
-        filmstrip.execute {
+        work.future=filmstrip.submit {
+            filmIdle?.cancel(false)
+            filmWork=work
             val frame=runCatching {
+                if (closed || work.cancelled) return@runCatching null
                 val edge=max(snapshot.width,snapshot.height)
                 val w=max(2,144*snapshot.width/edge)
                 val h=max(2,144*snapshot.height/edge)
-                Frames(cancelled={ editGeneration!=theEdit }).use { it.render(snapshot,at,w,h) }
+                val renderer=filmRenderer ?: Frames(cancelled={ closed || filmWork?.cancelled==true }).also { filmRenderer=it }
+                renderer.render(snapshot,at,w,h,preview=true)
             }.getOrNull()
+            filmWork=null
+            if (!closed) runCatching { filmIdle=filmstrip.schedule(::closeFilmRenderer,500,TimeUnit.MILLISECONDS) }
             ui.post {
-                filmRequests.remove(key)
+                if (filmRequests[key] === work) filmRequests.remove(key)
                 if (frame!=null) {
-                    if (closed || editGeneration!=theEdit) frame.recycle()
+                    if (closed || work.cancelled) frame.recycle()
                     else {
                         filmFrames[key]=frame
                         if (filmFrames.size>128) filmFrames.remove(filmFrames.keys.first())?.recycle()
                     }
                 }
-                if (!closed && (frame!=null || editGeneration!=theEdit)) changed()
+                if (!closed && frame!=null && !work.cancelled) changed()
             }
         }
         return null
+    }
+
+    private fun closeFilmRenderer() {
+        runCatching { filmRenderer?.close() }
+        filmRenderer=null
     }
 
     fun waveDetail(path: String,source: Double): Pair<Float,Float>? {
@@ -198,11 +249,17 @@ class MediaIndex(private val cache: AudioCache, private val changed: () -> Unit)
 
     fun close() {
         closed=true
-        editGeneration++
-        filmstrip.shutdownNow()
+        filmRequests.values.forEach(FilmWork::cancel)
+        filmRequests.clear()
+        filmstrip.execute(::closeFilmRenderer)
+        filmstrip.shutdown()
         filmFrames.values.forEach(Bitmap::recycle)
         filmFrames.clear()
         detail.shutdownNow()
         worker.shutdown()
+    }
+
+    private companion object {
+        val stillFilmEffects=setOf("Color LUTs","Crop","Mirror","Rotation","Zoom","Image")
     }
 }
