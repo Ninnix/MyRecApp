@@ -290,20 +290,23 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         }
 
     fun render(project: Project, at: Double, width: Int, height: Int, keepLinear: Boolean = false,
-        originalStabilization: Boolean = false, frameRate: Int = project.fps): Bitmap {
+        originalStabilization: Boolean = false, frameRate: Int = project.fps, preview: Boolean = false): Bitmap {
         this.originalStabilization = originalStabilization
         fps = project.fps.coerceAtLeast(1)
         tenBit = keepLinear
         preserveHdr = keepLinear
-        val hasHdr = project.clips.any { it.video && WorkingColor.hdr(it.path) }
-        extended = keepLinear || hasHdr || project.clips.any { it.video && it.effects.any { fx -> fx.enabled &&
+        val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
+        val active=project.active(t)
+        // An ungraded cut can tone-map directly into the display bitmap in the decoder.
+        val directPreview=preview && !keepLinear && active.size==1 && active.single().effects.none { it.enabled } &&
+            project.transitions.none { t>=it.begin && t<=it.end } && project.subtitleCues(t).isEmpty()
+        val hasHdr = !directPreview && project.clips.any { it.video && WorkingColor.hdr(it.path) }
+        extended = keepLinear || hasHdr || !directPreview && project.clips.any { it.video && it.effects.any { fx -> fx.enabled &&
             (ExistingEffects.modern(fx) && (fx.kind in ExistingEffects.noIntensity || fx.number("intensity",1f)>0 || fx.parameter("intensity")?.keyframes?.any { (it.value as? EffectValue.Number)?.value?.let { it>0 }==true }==true) || fx.kind == "Step Printing" || fx.kind == "Color LUTs" && fx.values["source"] in listOf("Apple Log", "Apple Log 2", "O-Log")) } }
         val output = if (extended) WorkingColor.bitmap(width, height) else Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
-        val t = at.coerceIn(0.0, max(0.0, project.duration - 0.001))
-        val active=project.active(t)
         placementMembers=active.map(ArchiveGeometry::owner).toSet()
         presentationFrame = floor(t * fps + .000001).toLong()
         data class Layer(

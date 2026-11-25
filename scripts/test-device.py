@@ -37,9 +37,11 @@ suite.add_argument('--capture-controls',action='store_true')
 suite.add_argument('--capture-compatibility',action='store_true')
 suite.add_argument('--capture-endurance',action='store_true')
 suite.add_argument('--zoom-cadence',action='store_true')
+suite.add_argument('--capture-cadence',action='store_true')
 suite.add_argument('--capture-focus',action='store_true')
 suite.add_argument('--showcase',action='store_true')
 suite.add_argument('--hdr-scene',action='store_true')
+suite.add_argument('--hdr-playback',action='store_true')
 suite.add_argument('--hdr-color',action='store_true')
 suite.add_argument('--live-rotation',action='store_true')
 suite.add_argument('--playback',action='store_true')
@@ -119,10 +121,12 @@ if args.tool_workspaces:command+=['-e','suite','tool-workspaces']
 if args.capture_controls:command+=['-e','suite','capture-controls']
 if args.capture_compatibility:command+=['-e','suite','capture-compatibility']
 if args.capture_endurance:command+=['-e','suite','capture-endurance']
+if args.capture_cadence:command+=['-e','suite','capture-cadence']
 if args.zoom_cadence:command+=['-e','suite','zoom-cadence']
 if args.capture_focus:command+=['-e','suite','capture-focus']
 if args.showcase:command+=['-e','suite','showcase']
 if args.hdr_scene:command+=['-e','suite','hdr-scene']
+if args.hdr_playback:command+=['-e','suite','hdr-playback']
 if args.hdr_color:command+=['-e','suite','hdr-color']
 if args.live_rotation:command+=['-e','suite','live-rotation']
 if args.playback:command+=['-e','suite','playback']
@@ -147,7 +151,7 @@ process=subprocess.Popen(command,text=True,stdout=subprocess.PIPE,stderr=subproc
 try:
  output,_=process.communicate(timeout=6)
 except subprocess.TimeoutExpired:
- if args.remaining_parity or args.hdr_color_parity or args.text or args.existing_effects or args.effect_audit or args.background_effects or args.camera_assistance or args.microphone or args.responsive_layout or args.stabilization or args.media_editing or args.tool_workspaces or args.live_rotation or args.capture_endurance or args.originals or args.covers or args.movie_exports or args.capture_focus or args.capture_compatibility or args.showcase or args.camera_preview or args.capture_controls or args.hdr_full or args.scene or args.restoration or args.time_effects or args.hdr_pipeline or args.audio_editing or args.preview or args.effect_contracts or args.storage_ui or args.references or args.exports or args.studio:
+ if args.remaining_parity or args.hdr_color_parity or args.text or args.existing_effects or args.effect_audit or args.background_effects or args.camera_assistance or args.microphone or args.responsive_layout or args.stabilization or args.media_editing or args.tool_workspaces or args.live_rotation or args.capture_cadence or args.capture_endurance or args.originals or args.covers or args.movie_exports or args.capture_focus or args.capture_compatibility or args.showcase or args.camera_preview or args.capture_controls or args.hdr_full or args.scene or args.restoration or args.time_effects or args.hdr_pipeline or args.audio_editing or args.preview or args.effect_contracts or args.storage_ui or args.references or args.exports or args.studio:
   def shell(*words):return subprocess.run([adb,'shell',*words],text=True,stdout=subprocess.PIPE,check=True).stdout
   awake='mWakefulness=Awake' in shell('dumpsys','power')
   unlocked='showing=false' in shell('dumpsys','window','policy')
@@ -166,6 +170,8 @@ settings_unchanged=capture_settings()==original_capture_settings
 if settings_unchanged:print('Normal recording preferences unchanged',flush=True)
 else:print('FAIL Normal recording preferences changed during the isolated test',flush=True)
 name='capture-endurance-test.txt' if args.capture_endurance else 'originals-test.txt' if args.originals else 'covers-test.txt' if args.covers else 'movie-exports-test.txt' if args.movie_exports else 'capture-focus-test.txt' if args.capture_focus else 'showcase-test.txt' if args.showcase else 'capture-compatibility-test.txt' if args.capture_compatibility else 'hdr-full-test.txt' if args.hdr_full else 'scene-test.txt' if args.scene else 'restoration-test.txt' if args.restoration else 'time-effects-test.txt' if args.time_effects else 'hdr-pipeline-test.txt' if args.hdr_pipeline else 'audio-editing-test.txt' if args.audio_editing else 'preview-test.txt' if args.preview else 'effect-contracts-test.txt' if args.effect_contracts else 'storage-ui-test.txt' if args.storage_ui else 'archives-test.txt' if args.archives else 'storage-test.txt' if args.storage else 'tool-workspaces-test.txt' if args.tool_workspaces else 'media-editing-test.txt' if args.media_editing else 'capture-controls-test.txt' if args.capture_controls else 'live-rotation-test.txt' if args.live_rotation else 'playback-test.txt' if args.playback else 'camera-preview-test.txt' if args.camera_preview else 'references-test.txt' if args.references else 'hdr-scene-test.txt' if args.hdr_scene else 'hdr-color-test.txt' if args.hdr_color else 'new-ui-test.txt' if args.new_ui else 'composition-test.txt' if args.composition else 'camera-gaps-test.txt' if args.camera_gaps else 'gaps-test.txt' if args.gaps else 'timeline-test.txt' if args.timeline else 'orientation-test.txt' if args.orientation else 'speech-test.txt' if args.speech else 'export-test.txt' if args.exports else 'parity-test.txt' if args.parity else 'studio-test.txt' if args.studio else 'device-test.txt'
+if args.capture_cadence:name='capture-cadence-test.txt'
+if args.hdr_playback:name='hdr-playback-test.txt'
 if args.remaining_parity:name='remaining-parity-test.txt'
 elif args.hdr_color_parity:name='hdr-color-parity-test.txt'
 elif args.text:name='text-test.txt'
@@ -181,7 +187,10 @@ if args.hdr_graphics:name='hdr-graphics-test.txt'
 if args.stabilization:name='stabilization-test.txt'
 (root/'artifacts'/name).write_text(result.stdout)
 if not settings_unchanged or result.returncode or any(text in result.stdout for text in ['FAIL ', 'Process crashed', 'INSTRUMENTATION_FAILED']) or 'PASS ' not in result.stdout:sys.exit(1)
-if args.parity:
+if args.capture_cadence or args.hdr_playback:
+ report='capture-cadence.json' if args.capture_cadence else 'hdr-playback.json'
+ subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/'+report,str(root/'artifacts'/report)],check=True)
+elif args.parity:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/parity-screens/.',str(root/'artifacts/parity/android')],check=True)
 elif not args.background_performance and not args.recorded_backgrounds and not args.remaining_parity and not args.hdr_color_parity and not args.text and not args.existing_effects and not args.effect_audit and not args.background_effects and not args.camera_assistance and not args.microphone and not args.hdr_graphics and not args.responsive_layout and not args.stabilization and not args.capture_endurance and not args.originals and not args.covers and not args.movie_exports and not args.capture_focus and not args.showcase and not args.capture_compatibility and not args.hdr_full and not args.scene and not args.restoration and not args.time_effects and not args.hdr_pipeline and not args.audio_editing and not args.preview and not args.effect_contracts and not args.storage_ui and not args.archives and not args.storage and not args.media_editing and not args.tool_workspaces and not args.capture_controls and not args.live_rotation and not args.playback and not args.camera_preview and not args.references and not args.hdr_scene and not args.hdr_color and not args.new_ui and not args.composition and not args.camera_gaps and not args.gaps and not args.speech and not args.exports and not args.studio and not args.orientation and not args.timeline:
  subprocess.run([adb,'pull','/sdcard/Android/data/org.myrec.app/files/test-screens/.',str(root/'artifacts/screens')],check=True)

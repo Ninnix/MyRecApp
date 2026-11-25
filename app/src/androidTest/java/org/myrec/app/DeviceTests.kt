@@ -53,14 +53,16 @@ class DeviceTests : Instrumentation() {
     }
 
     override fun onStart() {
-        if (suite == "transition-parity" || suite == "zoom-cadence" || suite == "reliability" || suite == "background-performance" || suite == "recorded-backgrounds" || suite == "remaining-parity" || suite == "hdr-color-parity" || suite == "text" || suite == "existing-effects" || suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
+        if (suite == "hdr-playback" || suite == "capture-cadence" || suite == "transition-parity" || suite == "zoom-cadence" || suite == "reliability" || suite == "background-performance" || suite == "recorded-backgrounds" || suite == "remaining-parity" || suite == "hdr-color-parity" || suite == "text" || suite == "existing-effects" || suite == "effect-audit" || suite == "background-effects" || suite == "camera-assistance" || suite == "microphone" || suite == "responsive-layout" || suite == "stabilization" || suite == "hdr-full" || suite == "scene" || suite == "restoration" || suite == "time-effects" || suite == "hdr-pipeline" || suite == "storage-ui" || suite == "effect-contracts" || suite == "preview" || suite == "audio-editing" || suite == "movie-exports" || suite == "covers" || suite == "originals") {
             var activity: MainActivity? = null
             try {
                 val a = startActivitySync(Intent(targetContext, MainActivity::class.java)
                     .putExtra("testSession", true).putExtra("testSessionId", testSessionId)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) as MainActivity
                 activity = a
-                if (suite=="transition-parity") TransitionParityTests.run(this,a,::onMain,::test)
+                if (suite=="hdr-playback") HdrPlaybackTest.run(a,::onMain,::test)
+                else if (suite=="capture-cadence") CaptureCadenceTests.run(a,::onMain,::test)
+                else if (suite=="transition-parity") TransitionParityTests.run(this,a,::onMain,::test)
                 else if (suite=="zoom-cadence") test("recording follows camera cadence through repeated zoom changes") { ZoomCadenceTest.run(a,allowCadenceDrops,::onMain) }
                 else if (suite=="reliability") ReliabilityTests.run(this,a,reliabilityPhase,::onMain,::test)
                 else if (suite=="background-performance") BackgroundPerformanceTests.run(this,a,::onMain,::test)
@@ -105,7 +107,7 @@ class DeviceTests : Instrumentation() {
             }
             return
         }
-        if (suite == "hdr-scene") {
+        if (suite == "hdr-scene" || suite == "hdr-front-scene") {
             hdrScene()
             return
         }
@@ -2395,12 +2397,40 @@ class DeviceTests : Instrumentation() {
                     .map { a.root.getChildAt(it) }
                     .filterIsInstance<Capture>()
                     .single()
-            val folder =
-                File(targetContext.getExternalFilesDir(null), "hdr-scene").apply { mkdirs() }
+            val front=suite=="hdr-front-scene"
+            if (front) {
+                val manager=a.getSystemService(android.hardware.camera2.CameraManager::class.java)
+                val id=manager.cameraIdList.first { manager.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)==android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT }
+                check(HdrRecorder.supported(manager,id)) { "The front camera does not support native HLG" }
+                onMain { capture.switchCamera(id); capture.setMirrorPreview(false) }
+                Thread.sleep(1500)
+            }
+            val folder = File(targetContext.getExternalFilesDir(null),suite).apply { mkdirs() }
             for (hdr in listOf(false, true)) test(
-                "${if(hdr) "HDR" else "SDR"} rear camera scene is recorded and rendered"
+                "${if(hdr) "HDR" else "SDR"} ${if(front) "front" else "rear"} camera scene is recorded and rendered"
             ) {
-                onMain { capture.setHdr(hdr) }
+                val updates=mutableListOf<Long>()
+                var start=0L; var returned=0L
+                onMain {
+                    start=System.nanoTime()
+                    capture.previewTimeObserver={ if (updates.size<6) updates.add(it) }
+                    capture.setHdr(hdr)
+                    returned=System.nanoTime()
+                }
+                var ready=0L; var count=0
+                while ((ready==0L || count<4) && System.nanoTime()-start<12_000_000_000L) {
+                    onMain {
+                        if (ready==0L && capture.readyToRecord) ready=System.nanoTime()
+                        count=updates.size
+                    }
+                    Thread.sleep(10)
+                }
+                onMain { capture.previewTimeObserver=null }
+                check(count>=4 && ready>0) { "The camera did not resume after the color switch" }
+                val timing=org.json.JSONObject().put("request_ms",(returned-start)/1e6)
+                    .put("ready_ms",(ready-start)/1e6).put("first_update_ms",(updates.first()-start)/1e6)
+                    .put("fourth_update_ms",(updates[3]-start)/1e6)
+                File(folder,if (hdr) "to-hdr.json" else "to-sdr.json").writeText(timing.toString(2))
                 Thread.sleep(2000)
                 val name = if (hdr) "hdr" else "sdr"
                 val preview =
@@ -2466,7 +2496,7 @@ class DeviceTests : Instrumentation() {
             }
             onMain { capture.suspendCamera() }
             Thread.sleep(400)
-            test("direct HLG camera reference bypasses the compositor") {
+            if (!front) test("direct HLG camera reference bypasses the compositor") {
                 DirectHdrTest.run(a, folder)
             }
             onMain {

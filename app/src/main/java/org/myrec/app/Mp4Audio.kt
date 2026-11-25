@@ -93,6 +93,17 @@ object Mp4Audio {
             (duration(header).toDouble() / ticks).takeIf { it.isFinite() && it > 0 }
         }
     }.getOrNull()
+    internal fun trackDurations(file: File): Map<String,Double> = RandomAccessFile(file,"r").use { io ->
+        val boxes=children(movie(io).second,8)
+        val ticks=scale(boxes.single { it.type=="mvhd" })
+        require(ticks>0)
+        boxes.filter { it.type=="trak" }.associate { track ->
+            val parts=children(track.bytes,8)
+            val media=children(parts.single { it.type=="mdia" }.bytes,8)
+            val handler=media.single { it.type=="hdlr" }.bytes
+            String(handler,16,4,Charsets.US_ASCII) to duration(parts.single { it.type=="tkhd" }).toDouble()/ticks
+        }
+    }
     fun trim(file: File, skipFrames: Int, duration: Double) {
         RandomAccessFile(file, "rw").use { io ->
             val (location, original) = movie(io)

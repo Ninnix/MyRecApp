@@ -15,7 +15,11 @@ static inline float yr_smooth(float lo, float hi, float v) {
 }
 
 static inline void yr_tone(float c[4]) {
-    float y = fmaxf(1e-6f, yr_luma(c)), mapped = y <= .75f ? y : .75f + .25f * (1 - expf(-(y - .75f) / .25f));
+    // Preserve contrast through the whole 1000-nit HLG range on an SDR display.
+    // The shoulder joins 18% grey at unit slope and reaches white at the HDR peak.
+    const float knee = .18f, peak = 1000.f / 203.f;
+    float y = fmaxf(1e-6f, yr_luma(c)), head = fmaxf(0, y - knee);
+    float mapped = fminf(1, fminf(y,knee) + head / (1 + head * (1 / (1 - knee) - 1 / (peak - knee))));
     float delta[3], fit = 1;
     for (int i = 0; i < 3; i++) {
         c[i] *= mapped / y; delta[i] = c[i] - mapped;

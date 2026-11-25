@@ -98,6 +98,10 @@ object HdrPipelineTests {
             Native.yuv(y, u, v, width * 2, width * 2, width * 2, 4, 4, 0, 0, width, height, 0,
                 MediaFormat.COLOR_STANDARD_BT2020, true, direct, 10, MediaFormat.COLOR_TRANSFER_HLG, 0)
             for (x in 0 until width) check(abs(Color.red(display.getPixel(x, 0)) - Color.red(direct.getPixel(x, 0))) <= 1)
+            val highlights=listOf(.75,.85,.95,1.0).map { Color.red(display.getPixel((1023*it).roundToInt(),0)) }
+            check(highlights.zipWithNext().all { (a,b) -> b-a>=6 } && highlights.last()==255) {
+                "The SDR monitor lost separation between bright HLG patches: $highlights"
+            }
             display.recycle(); direct.recycle(); output.recycle()
         }
         test("an inactive HDR clip cannot tone map ordinary SDR layers elsewhere in the project") {
@@ -122,7 +126,7 @@ object HdrPipelineTests {
                 }
             } finally { source.delete(); hdr.delete() }
         }
-        test("actual Main10 HLG source preserves the decoder precision contract or rejects 8 bit output") {
+        test("actual Main10 HLG source decodes at ten bits or reports an unsupported decoder") {
             val source = File(a.cacheDir, "hdr-source-${uid()}.mp4")
             try {
                 instrumentation.context.assets.open("hdr-colors.mp4").use { input -> source.outputStream().use { input.copyTo(it) } }
@@ -134,7 +138,8 @@ object HdrPipelineTests {
                         finally { image.recycle() }
                     }
                 }.exceptionOrNull()
-                if (failure != null) check(failure.message.orEmpty().contains("10-bit HDR samples")) { failure.toString() }
+                if (failure != null) check(!requireFull && (failure is VideoCodecs.UnsupportedFormat ||
+                    failure.message.orEmpty().contains("10-bit HDR samples"))) { failure.toString() }
                 instrumentation.sendStatus(0, android.os.Bundle().apply { putString("stream",
                     "HDR source decoder: ${failure?.message ?: "native 10-bit samples"}\n") })
             } finally { source.delete() }

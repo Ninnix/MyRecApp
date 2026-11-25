@@ -77,11 +77,19 @@ wide end; dual capture follows within each region's existing crop. Brief face
 loss keeps the last framing. Panning a picture manually turns following off.
 Following is unavailable when the active cameras do not report face detection.
 
-Level horizon uses gravity, with coherent scene edges refining small corrections.
-It applies to rear cameras and needs a motion sensor. Max angle selects a limit
+Stabilize uses electronic or optical stabilization when the lens provides it.
+For single-camera takes on other lenses, MyRec attaches an editable stabilization
+effect to the affected part of the clip. Its correction appears in the editor and export.
+
+Level horizon applies to rear cameras. It uses gravity, a rotation vector or a
+filtered accelerometer, with scene edges refining small corrections. Without a
+motion sensor it follows consistent scene edges and holds neutral framing when
+it cannot establish an angle. Max angle selects a limit
 from 0.5° to 10° in half-degree steps. Its fixed crop avoids changing zoom as the
 phone tilts. Large tilts fade back toward normal framing. The angle panel previews
-the crop before enabling the setting. Preview and saved footage use the same
+the crop before enabling the setting. Both Camera settings and Max angle let
+you turn leveling on, including during a take. With only the selfie camera open,
+the switch arms leveling for the next rear-camera view. Preview and saved footage use the same
 framing. The guides and controls are not added to the movie.
 
 ## Use the light
@@ -107,8 +115,11 @@ light while its front camera is visible. The border is not recorded.
 Enable Use two cameras in Camera settings. The lower camera strip then shows
 Swap and Layout. Layout offers rectangular or round picture in picture, side
 by side, top/bottom, and diagonal layouts. First and Second choose among the
-camera combinations Android reports. Layout changes become part of the saved
-composition.
+camera combinations. When Android lists no concurrent pairs, MyRec tries the
+selected pair before recording, starting at the smallest common supported size
+among 480p, 720p and 1080p. Both inputs must deliver matched frames. If the
+driver refuses the pair, MyRec reopens one camera. You can still switch lenses
+during a take. Layout changes become part of the saved composition.
 
 Swap exchanges views. Start both fingers inside one picture to pan or zoom it;
 crossing a divider keeps control of that picture. While Layout is
@@ -125,20 +136,41 @@ keeps the chosen recording size.
 
 ## Record HDR
 
-Choose SDR or HDR under Camera settings → Recording color before recording.
-HDR needs Android 13, an HLG camera output, HEVC Main10 encoding, and a compatible
+Choose SDR, HDR, or Software HDR under Camera settings → Recording color
+before recording. Native HDR needs Android 13, an HLG camera output, HEVC Main10 encoding, and a compatible
 10-bit EGL surface with `EGL_EXT_gl_colorspace_bt2020_hlg`. When the driver cannot
 sample HDR camera textures directly, the compositor uses the camera's ten-bit
 P010 buffers. This path retains framing, rotation, mirroring and camera layouts;
 it also requires a supported P010 capture size. Camera settings checks graphics
-and encoder support before closing a working SDR camera. A failed HDR compositor
-returns to SDR. Recording stores 10-bit BT.2020 HLG; preview is tone mapped.
+and encoder support before closing a working SDR camera. Native HDR records
+10-bit BT.2020 HLG. Live monitoring, the
+editor and conversion to SDR use a gradual highlight shoulder from middle
+grey to the nominal 1000-nit HLG peak.
 
-The app checks the camera's RGB primaries by comparing registered SDR and HLG
-frames. Keep the camera still briefly when enabling HDR. A clear match may
-select BT.709 or Display P3 interpretation rather than the declared BT.2020.
-Ambiguous scenes keep the current profile. The choice is stored per camera and
-Android build. Confirmed input is converted to BT.2020 before encoding.
+Software HDR is offered when native HDR is unavailable and the selected
+cameras support negative exposure compensation. It lowers auto-exposure
+by about 0.85 stops to preserve highlights. A small GPU luminance map adjusts
+the tone curve for bright and shaded parts of the picture. The map is smoothed
+over time and limits the lift near black. Preview and recording use the same
+map, and the saved video uses H.264 SDR.
+Detail clipped by the sensor or camera pipeline cannot be recovered.
+For single-camera SDR on lenses with exposure compensation, Protect highlights
+in SDR lowers the requested exposure by about two-thirds of a stop. The file
+retains its ordinary SDR format.
+
+On a camera without a known color profile, the app compares registered SDR
+and HLG frames in the background. Holding the camera still briefly on the
+first switch helps it identify the primaries. A clear match can select
+BT.709 or Display P3. If recording has already started, the result applies
+the next time the camera opens. Profiles are stored per camera and Android
+build. Confirmed input is converted to BT.2020 before encoding.
+On OnePlus 15 firmware `B.R4T3.50a3663-29f0eba-29fce1c`, both cameras start with
+their measured BT.709 input primaries and a luminance correction matched to
+the SDR camera response. The correction retains a 1000-nit HLG peak and
+compensates midtones for the camera's highlight-protection exposure bias.
+Protect HDR highlights lowers auto-exposure by about two-thirds
+of a stop on both cameras on this firmware. Dual HDR uses each camera's
+setting. You can change it in Camera settings with the lens selected.
 
 The editor can also read an optional `.primaries` sidecar for an older file:
 0 means declared, 1 means BT.709, and 2 means Display P3. It changes interpretation

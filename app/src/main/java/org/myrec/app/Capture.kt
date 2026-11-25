@@ -27,12 +27,22 @@ import kotlin.math.*
 class Capture(
     private val activity: MainActivity,
     private val store: ProjectStore,
-    private val onClip: (Clip) -> Unit,
+    private val onClip: (Clip, Double?) -> Unit,
     private val onEdit: () -> Unit,
 ) : FrameLayout(activity) {
     private val texture = TextureView(activity)
+    private var previewBuffer: Size?=null
     private val overlay = CaptureOverlay()
     private val manager = activity.getSystemService(CameraManager::class.java)
+    private val cameraPairs by lazy { CameraPairs(manager) }
+    internal var previewTimeObserver: ((Long)->Unit)? = null
+    @Volatile internal var sensorTimeObserver: ((String, Long) -> Unit)? = null
+    internal fun setStabilization(enabled: Boolean) {
+        if (recording && !paused) return
+        prefs.edit().putBoolean("stabilization",enabled).apply()
+        updateStabilizationRange()
+        updateRequest()
+    }
     private val displays = activity.getSystemService(DisplayManager::class.java)
     private var displayRotation = activity.windowManager.defaultDisplay.rotation
     private val displayListener =
@@ -84,9 +94,32 @@ class Capture(
     private var request: CaptureRequest.Builder? = null
     @Volatile private var recorder: CaptureRecorder? = null
     private var hdr = false
+    @Volatile internal var softwareHdr = false
+        private set
+    private fun highlightStep(chars: CameraCharacteristics) = SoftwareHdr.exposureSteps(chars,.67)
+    private fun colorCameras(): List<String> =
+        if (dualLayout==4) listOf(cameraId).filter(String::isNotEmpty) else selectedPair().orEmpty()
+    private fun softwareHdrAvailable(ids: List<String>) = ids.isNotEmpty() &&
+        ids.all { SoftwareHdr.exposureSteps(manager.getCameraCharacteristics(it))<0 }
+    private fun softwareHdrStrength(ids: List<String>): Map<String,Float> =
+        if (softwareHdr) ids.associateWith { SoftwareHdr.strength(manager.getCameraCharacteristics(it)) } else emptyMap()
     private val hdrColor = HdrColor(activity)
+    private fun protectExposure(id: String,chars: CameraCharacteristics): Int {
+        if (softwareHdr) return SoftwareHdr.exposureSteps(chars)
+        val enabled=if (hdr) prefs.getBoolean("protectHdrHighlights.$id",hdrColor.protectsHighlights(id))
+            else dualLayout==4 && prefs.getBoolean("protectHighlights",false)
+        return if (enabled) highlightStep(chars) else 0
+    }
+    private fun applyCameraColor(renderer: CameraComposition,index: Int,id: String) {
+        val profile=hdrColor.profile(id)
+        val gain=if (hdrColor.matchesSdrResponse(id) && profile==1) {
+            val chars=manager.getCameraCharacteristics(id)
+            val ev=chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble() ?: 0.0
+            2.0.pow(-ev*protectExposure(id,chars)).toFloat()
+        } else 0f
+        renderer.primaries(index,profile,hdrColor.warmGain(id,profile),gain)
+    }
     private var colorGeneration = 0
-    private var matchingColor = false
     private var recordingSurface: CameraRecordingSurface? = null
     private var composition: CameraComposition? = null
     private var dualCamera: DualCamera? = null
@@ -193,6 +226,16 @@ class Capture(
     private var trackedBounds=floatArrayOf(.5f,.5f,.2f,.2f)
     private var liveEffects = mutableListOf<Effect>()
     private val effectHistory = mutableListOf<Effect>()
+    private var stabilizationMode=CameraStabilization.Editor
+    private var softwareStabilization: Effect?=null
+    private val useEditorStabilization get()=dualLayout==4 && stabilizationMode==CameraStabilization.Editor && prefs.getBoolean("stabilization",true)
+    private fun updateStabilizationRange() {
+        if (!recording || useEditorStabilization==(softwareStabilization!=null)) return
+        val at=elapsedSeconds()
+        softwareStabilization?.let { if (at>it.from) { it.to=at; effectHistory.add(it) } }
+        softwareStabilization=if (useEditorStabilization) Effect.create("Stabilize").apply { from=at } else null
+        checkpointReceipt()
+    }
     private var effectSince = 0.0
     private var strobePreviewSince = 0L
     private var strobePreviewUntil = 0L
@@ -322,7 +365,7 @@ class Capture(
                     return true
                 }
 
-                override fun onSurfaceTextureUpdated(s: SurfaceTexture) {}
+                override fun onSurfaceTextureUpdated(s: SurfaceTexture) { previewTimeObserver?.invoke(System.nanoTime()) }
             }
         audioManager.registerAudioDeviceCallback(audioDevices, ui)
         audioManager.registerAudioRecordingCallback(recordingCallback, ui)
@@ -391,6 +434,8 @@ class Capture(
     }
 
     private fun lensState(chars: CameraCharacteristics) {
+        stabilizationMode=CameraStabilization.mode(chars)
+        updateStabilizationRange()
         val modes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
         focusMode = CameraFocus.mode(modes)
         tapFocusMode = if (CaptureRequest.CONTROL_AF_MODE_AUTO in modes) CaptureRequest.CONTROL_AF_MODE_AUTO else focusMode
@@ -437,7 +482,7 @@ class Capture(
         val level=(horizonEnabled || previewHorizonAngle) && horizonUsesRear && !closed
         horizon.configure(level)
         composition?.assists(faceFollowEnabled,if (level) horizonDegrees else null,prefs.getBoolean("stabilization",true),zoom.toDouble(),
-            assistBaseZoom.toDouble(),assistInputZoom!=null)
+            assistBaseZoom.toDouble(),assistInputZoom!=null,sceneOnly=!horizon.active)
     }
 
     internal fun setFaceFollow(enabled: Boolean,manualPan: Boolean=false) {
@@ -475,22 +520,19 @@ class Capture(
         updateRequest(); updateAssistance(); overlay.invalidate()
     }
     internal fun setHorizonEnabled(enabled: Boolean) {
-        if (recording && !paused) return
-        if (enabled && (!horizon.available || !horizonUsesRear)) return
         horizonEnabled=enabled; prefs.edit().putBoolean("levelHorizon",enabled).apply()
         updateAssistance(); overlay.invalidate()
     }
     internal fun setHorizonDegrees(value: Double) {
-        if (recording && !paused) return
         horizonDegrees=HorizonFraming.degrees(value)
         prefs.edit().putFloat("levelHorizonDegrees",horizonDegrees.toFloat()).apply()
         updateAssistance(); overlay.invalidate()
     }
     private fun selectedPair(): List<String>? {
-        val pairs=DualCamera.pairs(manager)
+        val pairs=cameraPairs.candidates
         val desired=dualIds ?: prefs.getString("dualPair",null)?.split('|')
         return desired?.takeIf { ids -> ids.size==2 && pairs.any { it.toSet()==ids.toSet() } }?.also { dualIds=it }
-            ?: DualCamera.pair(manager)?.also { dualIds=it }
+            ?: pairs.firstOrNull()?.sortedBy { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING)==CameraCharacteristics.LENS_FACING_FRONT }?.also { dualIds=it }
     }
     private fun rememberLayout() {
         val g=composition?.layoutState() ?: geometry.copy()
@@ -522,7 +564,7 @@ class Capture(
     }
 
     private fun tapPreview(x: Float, y: Float) {
-        if (closed || paused || pendingStart || matchingColor ||
+        if (closed || paused || pendingStart ||
             x < texture.left || x >= texture.right || y < texture.top || y >= texture.bottom) return
         val px = (x - texture.left).toDouble() / texture.width
         val py = (y - texture.top).toDouble() / texture.height
@@ -591,8 +633,15 @@ class Capture(
         cameraId = id
         try {
             val chars = manager.getCameraCharacteristics(id)
+            if (softwareHdr && SoftwareHdr.exposureSteps(chars)==0) softwareHdr=false
             lensState(chars)
-            if (hdr && !HdrRecorder.supported(manager, id)) hdr = false
+            if (hdr && !HdrRecorder.supported(manager, id)) {
+                colorGeneration++
+                composition?.close()
+                composition=null
+                hdr=false
+                softwareHdr=SoftwareHdr.exposureSteps(chars)<0
+            }
             val sizes =
                 chars
                     .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -662,20 +711,24 @@ class Capture(
 
     private fun createSession() {
         val camera = device ?: return
-        val st = texture.surfaceTexture ?: return
+        if (texture.surfaceTexture==null) return
+        val generation=colorGeneration
         try {
             previewFocus = null
             session?.close()
+            session=null
             previewSurface?.release()
             if (composition==null) composition=newComposition()
             composition!!.clearInputs()
             val chars=manager.getCameraCharacteristics(cameraId)
+            composition!!.softwareHdr=softwareHdrStrength(listOf(cameraId))
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             val rate = cameraFrameRate(chars) ?: builder.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
             val surfaces=mutableListOf(composition!!.input(captureSize.width,captureSize.height,
                 chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,front,hdrColor.profile(cameraId),cameraId,
                 Build.VERSION.SDK_INT<33 && chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)==CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                 (assistInputZoom ?: zoom).toDouble(),maximumFps = rate?.upper ?: 30))
+            if (hdr) applyCameraColor(composition!!,0,cameraId)
             updateAssistance()
             recordingSurface?.let {
                 val chars = manager.getCameraCharacteristics(cameraId)
@@ -701,7 +754,7 @@ class Capture(
             val callback =
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(s: CameraCaptureSession) {
-                        if (device !== camera) {
+                        if (device !== camera || generation!=colorGeneration || request!==builder) {
                             s.close()
                             return
                         }
@@ -737,15 +790,8 @@ class Capture(
 
                     override fun onConfigureFailed(s: CameraCaptureSession) {
                         ui.post {
-                            if (device!==camera) { s.close(); return@post }
-                            if (hdr && !recording) {
-                                closeCamera()
-                                hdr = false
-                                openDefault()
-                            }
-                            activity.message(
-                                "This camera does not support the selected recording format"
-                            )
+                            if (device!==camera || generation!=colorGeneration || request!==builder) { s.close(); return@post }
+                            cameraFormatFailure("This camera does not support the selected recording format")
                         }
                     }
                 }
@@ -781,13 +827,8 @@ class Capture(
             } else camera.createCaptureSession(surfaces, callback, ui)
         } catch (e: Exception) {
             ui.post {
-                if (device!==camera) return@post
-                if (hdr && !recording) {
-                    closeCamera()
-                    hdr = false
-                    openDefault()
-                }
-                activity.message(e.message ?: "Cannot start camera preview")
+                if (device!==camera || generation!=colorGeneration) return@post
+                cameraFormatFailure(e.message ?: "Cannot start camera preview")
             }
         }
     }
@@ -844,12 +885,9 @@ class Capture(
                     CaptureRequest.FLASH_MODE_TORCH
                 else CaptureRequest.FLASH_MODE_OFF,
             )
-            r.set(
-                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                if (prefs.getBoolean("stabilization", true))
-                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
-                else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-            )
+            CameraStabilization.apply(characteristics,r,prefs.getBoolean("stabilization",true))
+            if (highlightStep(characteristics)!=0)
+                r.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,protectExposure(cameraId,characteristics))
             if (Build.VERSION.SDK_INT >= 30) r.set(CaptureRequest.CONTROL_ZOOM_RATIO, inputZoom)
             else
                 manager
@@ -902,6 +940,7 @@ class Capture(
                     ) {
                         if (session !== this@Capture.session) return
                         latestResult = result
+                        sensorTimeObserver?.let { observe -> result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { observe(session.device.id,it) } }
                         focusState = result.get(CaptureResult.CONTROL_AF_STATE)
                         val tap = request.tag as? PreviewFocus
                         if (tap != null && (focusState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
@@ -921,8 +960,16 @@ class Capture(
         }
     }
 
+    private fun previewBufferSize(): Size {
+        val w=texture.width.coerceAtLeast(1); val h=texture.height.coerceAtLeast(1)
+        val scale=if (hdr) min(1.0,1280.0/max(w,h)) else 1.0
+        val size=Size((w*scale).roundToInt().coerceAtLeast(1),(h*scale).roundToInt().coerceAtLeast(1))
+        if (size!=previewBuffer) texture.surfaceTexture?.let { it.setDefaultBufferSize(size.width,size.height); previewBuffer=size }
+        return size
+    }
     private fun transform() {
         composition?.let {
+            val buffer=previewBufferSize()
             texture.setTransform(Matrix())
             it.mirrors(mirrorPreview, mirrorRecording)
             it.configure(
@@ -930,7 +977,7 @@ class Capture(
                 dualSwapped,
                 activity.windowManager.defaultDisplay.rotation * 90,
                 texture.width,
-                texture.height,
+                texture.height,buffer.width,buffer.height,
             )
             return
         }
@@ -1340,9 +1387,13 @@ class Capture(
         releaseMicrophoneRoute()
     }
 
-    internal val readyToRecord get() = !matchingColor && (device != null && session!=null || dualReady)
+    internal val readyToRecord get() = device != null && session!=null || dualReady
+
+    internal var finalizing = false
+        private set
 
     fun start() {
+        if (finalizing) { activity.message("Saving the last take…"); return }
         if (recording) return
         if (!mediaStorage.fits(store.media)) {
             activity.message("Free up storage before recording.")
@@ -1352,11 +1403,7 @@ class Capture(
             activity.message("Let the device cool before recording.")
             return
         }
-        if (matchingColor) {
-            activity.message("Preparing HDR")
-            return
-        }
-        if (device == null && !dualReady) {
+        if (!readyToRecord) {
             activity.message("Waiting for camera")
             return
         }
@@ -1400,7 +1447,8 @@ class Capture(
                 for (id in listOf("targetX","targetY")) fx.parameter(id)?.keyframes?.clear()
             }
             bindRecordedBackground(liveEffects)
-            receipt=store.beginCapture(activity.editor.project,file,liveEffects.filter { it.kind !in setOf("Dolly Zoom","Crash Zoom") },activity.recordingInsertion())
+            softwareStabilization=if (useEditorStabilization) Effect.create("Stabilize") else null
+            receipt=store.beginCapture(activity.editor.project,file,liveEffects.filter { it.kind !in setOf("Dolly Zoom","Crash Zoom") }+listOfNotNull(softwareStabilization),activity.recordingInsertion())
             recordingDisplayRotation=activity.windowManager.defaultDisplay.rotation
             recordingOrientation=cameraOrientation()
             val r=CaptureRecorder(file,videoSize.width,videoSize.height,prefs.getInt("fps",30),recordingOrientation,hdr,activity.audioCache) { error ->
@@ -1436,39 +1484,57 @@ class Capture(
         overlay.invalidate()
     }
 
+    private fun nativeHdrReason(ids: List<String>): String? {
+        if (ids.isEmpty() || ids.any { !HdrRecorder.supported(manager,it) })
+            return "HDR recording is unavailable for this camera setup"
+        HdrGraphics.support.reason?.let { return it }
+        val fps=if (dualLayout==4) prefs.getInt("fps",30) else 30
+        if (HlgEncoder.name(videoSize.width,videoSize.height,fps)==null)
+            return "No ten-bit HEVC encoder supports this size and frame rate"
+        if (HdrGraphics.support.planar && dualLayout==4 &&
+            !HdrRecorder.planarSupported(manager.getCameraCharacteristics(cameraId),captureSize.width,captureSize.height))
+            return "This camera does not expose ten-bit P010 at the selected size"
+        return null
+    }
+
+    private fun cameraFormatFailure(message: String) {
+        if (!hdr || recording) {
+            activity.message(message)
+            return
+        }
+        val fallback=softwareHdrAvailable(colorCameras())
+        closeCamera()
+        hdr=false
+        softwareHdr=fallback
+        openDefault()
+        activity.message(if (fallback) "This setup cannot start native HDR. Using Software HDR." else message)
+    }
+
     internal fun setHdr(enabled: Boolean) {
+        if (enabled==(hdr || softwareHdr)) return
         if (recording) {
             activity.message("Stop recording to change HDR")
             return
         }
-        if (
-            enabled &&
-                (!HdrRecorder.supported(manager, cameraId) ||
-                    (dualLayout != 4 &&
-                        selectedPair()?.all { HdrRecorder.supported(manager, it) } !=
-                            true))
-        ) {
-            activity.message("HDR recording is unavailable for this camera combination")
+        val ids=colorCameras()
+        val reason=if (enabled) nativeHdrReason(ids) else null
+        if (reason!=null && !softwareHdrAvailable(ids)) {
+            activity.message(reason)
             return
         }
-        if (enabled && HlgEncoder.name(videoSize.width,videoSize.height,prefs.getInt("fps",30))==null) {
-            activity.message("No ten-bit HEVC encoder supports this size and frame rate")
+        if (!hdr && (softwareHdr || reason!=null)) {
+            softwareHdr=enabled
+            composition?.softwareHdr=softwareHdrStrength(ids)
+            updateRequest()
+            overlay.invalidate()
             return
         }
-        if (enabled) HdrGraphics.support.reason?.let {
-            activity.message(it)
-            return
-        }
-        if (enabled && HdrGraphics.support.planar && dualLayout==4 && !HdrRecorder.planarSupported(manager.getCameraCharacteristics(cameraId),captureSize.width,captureSize.height)) {
-            activity.message("This camera does not expose ten-bit P010 at the selected size")
-            return
-        }
-        val ids = if (dualCamera != null) selectedPair().orEmpty() else listOf(cameraId)
         val references =
             if (enabled && !hdr) {
                 val w = 256
                 val h = (w * texture.height / texture.width.coerceAtLeast(1)).coerceAtLeast(64)
                 ids.indices.map { index ->
+                    if (hdrColor.calibrated(ids[index])) return@map null
                     try {
                         if (composition != null) composition?.snapshot(index, w, h)
                         else cameraFrame(w, h)
@@ -1477,18 +1543,22 @@ class Capture(
                     }
                 }
             } else emptyList()
-        closeCamera()
-        hdr = enabled
         try {
-            openDefault()
-        } catch (e: Exception) {
-            hdr = false
             closeCamera()
+            hdr=enabled
             openDefault()
-            activity.message(e.message ?: "HDR is unavailable on this graphics driver")
+            // Build the next EGL context while Camera2 is opening the lens.
+            // Reconfiguring the live device serialized both operations on the OnePlus.
+            val generation=colorGeneration
+            if (dualLayout==4 && opening) ui.post {
+                if (closed || generation!=colorGeneration || composition!=null || !texture.isAvailable) return@post
+                try { composition=newComposition() }
+                catch (_: Exception) { /* Session setup retries and handles unsupported HDR. */ }
+            }
+        } catch (e: Exception) {
+            cameraFormatFailure(e.message ?: "HDR is unavailable on this graphics driver")
         }
         if (hdr && references.any { it != null }) {
-            matchingColor = true
             matchHdrColor(ids, references, colorGeneration)
         } else references.forEach { it?.recycle() }
         overlay.invalidate()
@@ -1523,7 +1593,6 @@ class Capture(
                     if (attempt < 20) matchHdrColor(ids, references, generation, attempt + 1)
                     else {
                         references.forEach { it?.recycle() }
-                        matchingColor = false
                     }
                     return@postDelayed
                 }
@@ -1533,14 +1602,14 @@ class Capture(
                             val reference = references[index]
                             val sample = samples[index]
                             try {
-                                if (reference == null || sample == null) -1
+                                if (reference == null || sample == null) null
                                 else {
                                     val result = HdrColor.detect(reference, sample)
                                     android.util.Log.i(
                                         "MyRec-HDR",
                                         "Camera ${ids[index]} colour match: ${result.toList()}",
                                     )
-                                    result[0].toInt()
+                                    result
                                 }
                             } catch (e: Exception) {
                                 android.util.Log.w(
@@ -1548,7 +1617,7 @@ class Capture(
                                     "Cannot compare camera colour profiles",
                                     e,
                                 )
-                                -1
+                                null
                             } finally {
                                 reference?.recycle()
                                 sample?.recycle()
@@ -1556,13 +1625,16 @@ class Capture(
                         }
                     ui.post {
                         if (generation == colorGeneration && composition === renderer) {
-                            profiles.forEachIndexed { index, profile ->
-                                if (profile >= 0) {
-                                    hdrColor.remember(ids[index], profile)
-                                    renderer.primaries(index, profile)
-                                }
+                            profiles.forEachIndexed { index, result ->
+                                if (result==null) return@forEachIndexed
+                                val id=ids[index]
+                                val profile=result[0].toInt()
+                                if (profile>=0) hdrColor.remember(id,profile)
+                                val current=hdrColor.profile(id)
+                                val gain=result[6+current]
+                                if (gain>0) hdrColor.rememberWarm(id,current,gain)
+                                if (!recording) applyCameraColor(renderer,index,id)
                             }
-                            matchingColor = false
                         }
                     }
                 }
@@ -1647,65 +1719,85 @@ class Capture(
         session = null
         pendingStart = false
         val r = recorder
+        r?.clock?.stop(System.nanoTime())
         finishEffectRange(elapsedSeconds())
+        softwareStabilization?.let { if (elapsedSeconds()>it.from) { it.to=elapsedSeconds(); effectHistory.add(it) } }
+        softwareStabilization=null
         recording = false
         paused = false
         // Detach the camera before closing the encoder surface.
-        runCatching { composition?.record(null) }
-        var stopFailure: Exception?=null
-        try {
-            r?.stop()
-        } catch (e: Exception) {
-            stopFailure=e
-            android.util.Log.w("MyRec","Capture stopped before merging",e)
-            // Probe any completed media below even when the encoder reports failure.
-        } finally {
-            recorder = null
-            runCatching { closeRecordingSurface() }.onFailure { android.util.Log.w("MyRec", "Cannot close recording surface", it) }
-            runCatching { r?.close() }.onFailure { android.util.Log.w("MyRec", "Cannot release recorder", it) }
-        }
+        recorder = null
+        runCatching { closeRecordingSurface() }.onFailure { android.util.Log.w("MyRec","Cannot close recording surface",it) }
         val file = recordingFile
         recordingFile = null
-        try { recordedBackground?.finish(file) }
-        catch (error: Exception) { activity.message("Recorded mask recovery: ${error.message}") }
-        finally { recordedBackground=null }
-        for (fx in effectHistory+liveEffects) if (fx.values["matteJournal"]?.let { !File(it).isFile }==true) {
-            fx.values.remove("matteJournal");fx.values.remove("matteTrack")
-        }
+        val background=recordedBackground
+        recordedBackground=null
         val completed = receipt
         receipt = null
-        if (file != null && file.length() > 0)
-            try {
-                val inspected = ProjectStore.inspect(file)
-                val clip = if (completed == null) inspected else inspected.copy(id = completed.id, group = completed.id, occurrence = completed.id)
-                clip.marks.addAll(recordingMarks.filter { it < clip.sourceOut })
-                effectHistory.forEach { clip.effects.add(it.copyEffect(true)) }
-                if (completed != null) store.finishCapture(completed, clip)
-                if (completed == null || completed.project == activity.editor.project.id) onClip(clip)
-                else {
-                    val target = store.editor(Project(id = completed.project))
-                    if (completed.insertion == null) target.appendRecording(clip)
-                    else target.insertBatch(listOf(clip), completed.insertion, completed.layer)
-                    store.save(target, false)
-                    activity.message("Take saved in ${target.project.name}")
-                }
-                if (completed != null) store.acknowledgeCapture(completed)
-                val project = completed?.project ?: activity.editor.project.id
-                receiptWorker.execute {
-                    try { store.registerMedia(project, clip.path) }
-                    catch (e: Exception) {
-                        store.problems["checksum:$project"] = "Source verification could not finish: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                activity.message("Recording kept for recovery: ${e.message}")
+        val marks=recordingMarks.toList()
+        val effects=effectHistory.map { it.copyEffect() }
+        fun publish(stopFailure: Exception?) {
+            if (activity.isDestroyed || activity.isFinishing) return
+            for (fx in effects+liveEffects) if (fx.values["matteJournal"]?.let { !File(it).isFile }==true) {
+                fx.values.remove("matteJournal");fx.values.remove("matteTrack")
             }
-        else {
-            file?.delete()
-            completed?.let { runCatching { store.abandonCapture(it) } }
-            val kept = r?.storedBytes?.let { it > 0 } == true
-            activity.message(if (kept) "Unfinished recording kept for recovery." else stopFailure?.message ?: "Recording was too short to save")
+            if (file != null && file.length() > 0)
+                try {
+                    val inspected = ProjectStore.inspect(file)
+                    val clip = if (completed == null) inspected else inspected.copy(id = completed.id, group = completed.id, occurrence = completed.id)
+                    clip.marks.addAll(marks.filter { it < clip.sourceOut })
+                    effects.forEach { clip.effects.add(it.copyEffect(true)) }
+                    if (completed != null) store.finishCapture(completed, clip)
+                    if (completed == null || completed.project == activity.editor.project.id) onClip(clip,completed?.insertion)
+                    else {
+                        val target = store.editor(Project(id = completed.project))
+                        if (completed.insertion == null) target.appendRecording(clip)
+                        else target.insertBatch(listOf(clip), completed.insertion, completed.layer)
+                        store.save(target, false)
+                        activity.message("Take saved in ${target.project.name}")
+                    }
+                    if (completed != null) store.acknowledgeCapture(completed)
+                    val project = completed?.project ?: activity.editor.project.id
+                    if (!receiptWorker.isShutdown) receiptWorker.execute {
+                        try { store.registerMedia(project, clip.path) }
+                        catch (e: Exception) {
+                            store.problems["checksum:$project"] = "Source verification could not finish: ${e.message}"
+                        }
+                    }
+                } catch (e: Exception) {
+                    activity.message("Recording kept for recovery: ${e.message}")
+                }
+            else {
+                file?.delete()
+                completed?.let { runCatching { store.abandonCapture(it) } }
+                val kept = r?.storedBytes?.let { it > 0 } == true
+                activity.message(if (kept) "Unfinished recording kept for recovery." else stopFailure?.message ?: "Recording was too short to save")
+            }
         }
+        fun seal(): Exception? {
+            return try { r?.stop(); null } catch (e: Exception) {
+                android.util.Log.w("MyRec","Capture stopped before merging",e)
+                e
+            } finally {
+                runCatching { r?.close() }.onFailure { android.util.Log.w("MyRec","Cannot release recorder",it) }
+                runCatching { background?.finish(file) }.onFailure { error -> ui.post { activity.message("Recorded mask recovery: ${error.message}") } }
+            }
+        }
+        // Remuxing a large journal can take a minute on older flash storage.
+        if (r!=null && r.storedBytes>=32L*1024*1024) {
+            finalizing=true
+            activity.message("Saving recording…")
+            if (completed!=null) runCatching { store.checkpoint(completed,marks,effects) }
+                .onFailure { android.util.Log.w("MyRec","Could not checkpoint final recording edits",it) }
+            ProjectStore.captureWork.execute {
+                val failure=seal()
+                val published=java.util.concurrent.CountDownLatch(1)
+                ui.post {
+                    try { publish(failure) } finally { finalizing=false; published.countDown() }
+                }
+                published.await()
+            }
+        } else publish(seal())
         activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         if (dualLayout == 4 && dualCamera != null) {
             closeCamera()
@@ -1717,6 +1809,12 @@ class Capture(
     }
 
     internal fun switchCamera(id: String, preset: Float? = null) {
+        if (recording && hdr && !HdrRecorder.supported(manager,id)) {
+            activity.message("This camera cannot record HDR"); return
+        }
+        if (recording && softwareHdr && !softwareHdrAvailable(listOf(id))) {
+            activity.message("This camera cannot protect highlights in Software HDR"); return
+        }
         if (dualCamera != null || dualLayout != 4) {
             val pair = selectedPair() ?: return
             if (id !in pair) {
@@ -1746,7 +1844,8 @@ class Capture(
     }
 
     private fun newComposition(): CameraComposition {
-        texture.surfaceTexture?.setDefaultBufferSize(texture.width, texture.height)
+        previewBuffer=null; previewBufferSize()
+        if (Build.VERSION.SDK_INT>=35) texture.requestedFrameRate=prefs.getInt("fps",30).toFloat()
         val generation=colorGeneration
         val result=CameraComposition(
             Surface(texture.surfaceTexture),
@@ -1757,10 +1856,10 @@ class Capture(
             ui.post {
                 if (closed || generation!=colorGeneration) return@post
                 if (recording) stop()
-                if (hdr) { closeCamera();hdr=false;openDefault() }
-                activity.message(it.message ?: "Camera composition failed")
+                cameraFormatFailure(it.message ?: "Camera composition failed")
             }
         }
+        result.softwareHdr=softwareHdrStrength(colorCameras())
         result.analysisFrame=recordedBackground?.let { it::offer }
         if (recording) recorder?.let { result.record(it.surface,videoSize.width,videoSize.height,recordingOrientation,prefs.getInt("fps",30),it::videoFrame) }
         return result
@@ -1775,6 +1874,7 @@ class Capture(
             openDefault()
             return
         }
+        if (softwareHdr && !softwareHdrAvailable(pair)) softwareHdr=false
         if (cameraId !in pair) cameraId = pair[0]
         lensState(manager.getCameraCharacteristics(cameraId))
         val sizes =
@@ -1792,16 +1892,22 @@ class Capture(
                 ?: Size(1280, 720)
         composition = newComposition()
         transform()
+        val generation = colorGeneration
         dualCamera =
             DualCamera(
                 manager,
                 cameraHandler,
                 composition!!,
                 pair,
+                cameraPairs.advertised.none { it.toSet()==pair.toSet() },
+                sensorTimeObserver,
                 hdr,
-                { hdrColor.profile(it) },
+                ::applyCameraColor,
+                ::protectExposure,
                 {
                     ui.post {
+                        if (closed || generation != colorGeneration) return@post
+                        cameraPairs.observe(pair)
                         dualReady = true
                         updateRequest()
                         startMeter()
@@ -1810,10 +1916,11 @@ class Capture(
                 },
                 { message ->
                     ui.post {
-                        if (recording) stop()
+                        if (closed || generation != colorGeneration) return@post
+                        if (recording && !paused) pause()
                         closeCamera()
                         dualLayout = 4
-                        activity.message(message)
+                        activity.message("$message. Using one camera. You can switch cameras during a take.")
                         openDefault()
                     }
                 },
@@ -1827,6 +1934,13 @@ class Capture(
         if (mode != 4 && selectedPair() == null) {
             activity.message("This phone does not support simultaneous front and rear cameras")
             return
+        }
+        if (recording && mode != 4 && selectedPair()?.let { !cameraPairs.confirmed(it) } == true) {
+            activity.message("Try this camera pair before starting a take")
+            return
+        }
+        if (recording && mode!=4 && softwareHdr && !softwareHdrAvailable(selectedPair().orEmpty())) {
+            activity.message("This camera pair cannot protect highlights in Software HDR"); return
         }
         if (recording && dualCamera != null && mode!=4) {
             dualLayout = mode
@@ -1856,9 +1970,13 @@ class Capture(
         if (recording && !paused) return
         val current=selectedPair() ?: return
         val other=current[if (dualSwapped) slot else 1-slot]
-        val candidates=DualCamera.pairs(manager).filter { id in it }
+        val candidates=cameraPairs.candidates.filter { id in it }
         val next=candidates.firstOrNull { other in it && other!=id } ?: candidates.firstOrNull { it.toSet()==current.toSet() } ?: candidates.firstOrNull() ?: return
+        if (recording && !cameraPairs.confirmed(next)) { activity.message("Try this camera pair before starting a take"); return }
         if (hdr && next.any { !HdrRecorder.supported(manager,it) }) { activity.message("This camera combination does not support HDR"); return }
+        if (recording && softwareHdr && !softwareHdrAvailable(next)) {
+            activity.message("This camera pair cannot protect highlights in Software HDR"); return
+        }
         dualSwapped=if (slot==0) next[1]==id else next[0]==id
         if (next.toSet()!=current.toSet()) {
             closeCamera(); dualIds=next; cameraId=next[if (dualSwapped) 1 else 0]
@@ -1871,7 +1989,7 @@ class Capture(
     private fun chooseDualCamera(slot: Int,done: ()->Unit) {
         val current=selectedPair() ?: return
         val first=current[if (dualSwapped) 1 else 0]
-        val ids=DualCamera.pairs(manager).filter { slot==0 || first in it }.flatten().distinct().filter { slot==0 || it!=first }
+        val ids=cameraPairs.candidates.filter { slot==0 || first in it }.flatten().distinct().filter { slot==0 || it!=first }
         val selected=current[if (dualSwapped) 1-slot else slot]
         activity.choose(if (slot==0) "First camera" else "Second camera",ids.map(::cameraName),ids.indexOf(selected)) { i -> selectDualCamera(slot,ids[i]); done() }
     }
@@ -1887,7 +2005,10 @@ class Capture(
         row.addView(u.text("Done",11f,Color.CYAN).apply { gravity=Gravity.CENTER; contentDescription="Max angle done"; setOnClickListener { horizonPopup?.dismiss() } },LinearLayout.LayoutParams(u.px(48f),u.px(44f)))
         u.add(body,row)
         val status=u.text("",9f,Color.LTGRAY)
-        fun refresh() { value.text="%.1f°".format(horizonDegrees); status.text="%.2f× framing".format(HorizonFraming.scale(horizonDegrees,videoSize.width.toDouble(),videoSize.height.toDouble()))+if (horizonEnabled) "" else " · Preview only, Level horizon is off" }
+        fun refresh() { value.text="%.1f°".format(horizonDegrees); status.text="%.2f× framing".format(HorizonFraming.scale(horizonDegrees,videoSize.width.toDouble(),videoSize.height.toDouble()))+when { !horizonUsesRear -> " · Applies to the rear camera"; horizonEnabled -> ""; previewHorizonAngle -> " · Preview only"; else -> " · Level horizon is off" } }
+        u.toggle(body,"Level horizon",horizonEnabled) { enabled ->
+            previewHorizonAngle=false; setHorizonEnabled(enabled); refresh()
+        }
         u.add(body,ReferenceSlider(activity,u.scale).apply {
             max=19; progress=((horizonDegrees-.5)*2).roundToInt(); contentDescription="Max angle"
             progressTintList=android.content.res.ColorStateList.valueOf(Color.CYAN)
@@ -2087,7 +2208,7 @@ class Capture(
             val canAssist=ready && (!recording || paused)
             val controls=listOf(
                 Triple("Stabilize","Stabilize",prefs.getBoolean("stabilization",true)),
-                Triple("Level horizon","Level horizon",horizonEnabled && horizonUsesRear),
+                Triple("Level horizon","Level horizon",horizonEnabled),
                 Triple("Follow face","Follow face",faceFollowEnabled),
                 Triple(if (front || dualLayout!=4) "Front light" else "Torch","Light",torch))
             u.grid(assistsColumn,controls.size,2,58f) { i ->
@@ -2095,12 +2216,15 @@ class Capture(
                 u.column().apply {
                     gravity=Gravity.CENTER; background=u.shape(if (active) Color.rgb(22,68,79) else Color.rgb(43,43,46))
                     contentDescription=title; isSelected=active; isFocusable=true
-                    isEnabled=when (i) { 0 -> canAssist; 1 -> canAssist && horizonUsesRear && horizon.available; 2 -> ready && canFollowFace; else -> true }
+                    isEnabled=when (i) { 0 -> canAssist; 1 -> true; 2 -> ready && canFollowFace; else -> true }
                     alpha=if (isEnabled) 1f else .4f
                     setOnClickListener {
                         when (i) {
-                            0 -> { prefs.edit().putBoolean("stabilization",!active).apply(); updateRequest() }
-                            1 -> setHorizonEnabled(!horizonEnabled)
+                            0 -> setStabilization(!active)
+                            1 -> {
+                                setHorizonEnabled(!horizonEnabled)
+                                if (horizonEnabled && !horizonUsesRear) activity.message("Level horizon will apply to the rear camera")
+                            }
                             2 -> setFaceFollow(!faceFollowEnabled)
                             else -> setTorch(!torch)
                         }
@@ -2108,7 +2232,7 @@ class Capture(
                     }
                     setOnLongClickListener {
                         activity.message(when (i) {
-                            0 -> "Camera stabilization reduces hand shake. Change it before a take or while paused."
+                            0 -> if (dualLayout==4 && stabilizationMode==CameraStabilization.Editor) "This lens uses editable stabilization after recording." else "Camera stabilization reduces hand shake. Change it before a take or while paused."
                             1 -> "Keeps small rear-camera tilts level using a fixed crop. Adjust Max angle in More settings."
                             2 -> (composition?.followStatus ?: "Looking for a face")+". Gently centers a face using the room available in the picture. If it leaves, framing holds. Panning manually turns following off."
                             else -> "The screen border lights the front view. Its bulb opens color, width and opacity controls."
@@ -2120,10 +2244,10 @@ class Capture(
             }
             u.gap(assistsColumn,6f)
             val pair=selectedPair()
-            val cameraHdr = HdrRecorder.supported(manager, cameraId) &&
-                (dualLayout == 4 || pair?.all { HdrRecorder.supported(manager, it) } == true)
-            val graphicsReason = if (cameraHdr) HdrGraphics.support.reason else null
-            val supportsHdr = cameraHdr && graphicsReason == null
+            val ids=colorCameras()
+            val hdrReason=if (hdr) null else nativeHdrReason(ids)
+            val softwareOption=softwareHdr || hdrReason!=null && softwareHdrAvailable(ids)
+            val hdrLabel=if (softwareOption) "Software HDR" else "HDR"
             u.toggle(camerasColumn, "Use two cameras", dualLayout != 4) { enabled ->
                 setDualLayout(if (enabled) lastDualLayout else 4)
                 render()
@@ -2142,28 +2266,40 @@ class Capture(
                     },42f)
                 }
                 u.add(camerasColumn,u.text("1080p · 30 fps",9f,Color.LTGRAY),22f)
-            } else if (pair==null) u.add(camerasColumn,u.text("Two-camera capture is unavailable on this device.",9f,Color.LTGRAY),if (landscape) 54f else 28f)
+            } else if (pair==null || !cameraPairs.confirmed(pair)) {
+                val detail=if (pair==null) "Use one camera at a time." else "Try both cameras before recording. If they cannot stream together, you can switch cameras during a take."
+                u.add(camerasColumn,u.text(detail,9f,Color.LTGRAY))
+            }
             u.gap(assistsColumn, 5f)
             u.add(assistsColumn, u.text("Recording color", 10f, bold = true), 26f)
             val colors = u.row().apply { background = u.shape(Color.rgb(43, 43, 46)); setPadding(u.px(3f), u.px(3f), u.px(3f), u.px(3f)) }
-            for (mode in listOf("SDR", "HDR")) {
-                val selected = hdr == (mode == "HDR")
-                val supported = mode == "SDR" || supportsHdr
+            for (mode in listOf("SDR", hdrLabel)) {
+                val highRange=mode!= "SDR"
+                val selected=(hdr || softwareHdr)==highRange
+                val supported=!highRange || hdrReason==null || softwareOption
                 colors.addView(u.text(mode, 11f, if (selected) Color.BLACK else Color.WHITE, true).apply {
                     gravity = Gravity.CENTER; contentDescription = mode; isSelected = selected
                     isEnabled = canChange && supported
                     alpha = if (isEnabled || selected) 1f else .4f
                     if (selected) background = u.shape(cyan, 6f)
-                    setOnClickListener { if (!selected) { setHdr(mode == "HDR"); render() } }
+                    setOnClickListener { if (!selected) { setHdr(highRange); render() } }
                 }, LinearLayout.LayoutParams(0, u.px(34f), 1f))
             }
             u.add(assistsColumn, colors)
+            if (!softwareHdr && dualLayout==4 && cameraId.isNotEmpty() && highlightStep(manager.getCameraCharacteristics(cameraId))<0) {
+                val key=if (hdr) "protectHdrHighlights.$cameraId" else "protectHighlights"
+                u.toggle(assistsColumn,if (hdr) "Protect HDR highlights" else "Protect highlights in SDR",prefs.getBoolean(key,hdr && hdrColor.protectsHighlights(cameraId))) { enabled ->
+                    prefs.edit().putBoolean(key,enabled).apply()
+                    if (hdr) composition?.let { applyCameraColor(it,0,cameraId) }
+                    updateRequest()
+                }
+            }
             u.add(assistsColumn, u.text(when {
                 recording -> "Stop recording to change color or the camera setup."
                 !ready -> "Recording color is available when the camera is ready."
-                !cameraHdr -> "This camera setup supports SDR only."
-                graphicsReason != null -> graphicsReason
                 hdr -> "HDR keeps more highlight and color detail."
+                softwareOption -> "Software HDR protects highlights and saves SDR video."
+                hdrReason!=null -> hdrReason
                 else -> "SDR is ready to share on any display."
             }, 9f, Color.LTGRAY), 32f)
             u.add(body, ScrollView(activity).apply { addView(content); isVerticalScrollBarEnabled = false }, if (landscape) 169f else 224f)
@@ -2178,7 +2314,7 @@ class Capture(
             var state = ""
             override fun run() {
                 if (!popup.isShowing) return
-                val next = "$opening:$dualReady:${device != null}:$hdr:$dualLayout:$front:$recording:$paused:$torch:$faceFollowEnabled:$horizonEnabled"
+                val next = "$opening:$dualReady:${device != null}:$hdr:$softwareHdr:$dualLayout:$front:$recording:$paused:$torch:$faceFollowEnabled:$horizonEnabled"
                 if (state != next) { state = next; render() }
                 ui.postDelayed(this, 250)
             }
@@ -2202,7 +2338,7 @@ class Capture(
                 "Max angle · %.1f°".format(horizonDegrees),
                 "Reset framing",
             ),
-            disabled = (if (recording) setOf(0,1,4) else emptySet()) + (if (recording && !paused || !horizon.available || !horizonUsesRear) setOf(5) else emptySet()),
+            disabled = if (recording) setOf(0,1,4) else emptySet(),
         ) { i ->
             when (i) {
                 0 ->
@@ -2536,7 +2672,7 @@ class Capture(
     private fun checkpointReceipt() {
         val take = receipt ?: return
         val marks = recordingMarks.toList()
-        val effects = effectHistory.map { it.copyEffect() } + liveEffects.filter { it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") }.map {
+        val effects = (effectHistory+listOfNotNull(softwareStabilization)).map { it.copyEffect() } + liveEffects.filter { it.enabled && it.kind!="Dolly Zoom" && (it.kind!="Crash Zoom" || it.values["triggered"]=="1") }.map {
             it.copyEffect().apply {
                 from = max(effectSince,if (kind=="Crash Zoom") values["origin"]?.toDoubleOrNull() ?: effectSince else effectSince); to = Double.MAX_VALUE
                 if (ExistingEffects.modern(this)) {
@@ -2624,19 +2760,20 @@ class Capture(
         rememberLens()
         updateLight(false)
         colorGeneration++
-        matchingColor = false
         effectGeneration++
         liveFrame?.recycle()
         liveFrame = null
         dualReady = false
         dualCamera?.close()
         dualCamera = null
-        composition?.close()
-        composition = null
         session?.close()
         session = null
         device?.close()
         device = null
+        request=null
+        latestResult=null
+        composition?.close()
+        composition = null
         previewSurface?.release()
         previewSurface = null
     }

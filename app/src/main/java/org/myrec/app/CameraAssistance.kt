@@ -185,6 +185,16 @@ data class HorizonFraming(val radians: Double,val magnification: Double) {
 }
 
 class HorizonEstimate {
+    private var sceneAngle=0.0
+    private var sceneTime=Double.NEGATIVE_INFINITY
+    private var sceneMatches=0
+    fun observeScene(line: Double?,time: Double) {
+        if (line==null) { sceneMatches=0; return }
+        if (time-sceneTime>.8 || abs(line-sceneAngle)>2*PI/180) sceneMatches=0
+        sceneAngle=if (sceneMatches==0) line else (sceneAngle+line)*.5
+        sceneTime=time; sceneMatches++
+    }
+    fun sceneRoll(time: Double)=sceneAngle.takeIf { sceneMatches>=3 && time-sceneTime in 0.0..0.8 }
     private var angle=0.0
     private var lastTime: Double?=null
     private var lastGravityTime=Double.NEGATIVE_INFINITY

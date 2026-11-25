@@ -82,6 +82,8 @@ object HdrColorTest {
                 Triple(true, true, 0),
                 Triple(true, false, 1),
                 Triple(true, false, 2),
+                Triple(true, false, 3),
+                Triple(true, false, 4),
             )) {
             val view = TextureView(activity)
             var renderer: CameraComposition? = null
@@ -101,7 +103,10 @@ object HdrColorTest {
                     CameraComposition(Surface(view.surfaceTexture), 320, 180, hdr,planar=hdr && planar) {
                         failure.set(it)
                     }
-                val input = renderer.input(320, 180, 0, false, primaries)
+                val gamut=if (primaries>=3) 1 else primaries
+                val input = renderer.input(320, 180, 0, false, gamut)
+                if (primaries==3) renderer.primaries(0,gamut,.86f)
+                if (primaries==4) renderer.primaries(0,gamut,1f,2f.pow(2f/3))
                 val raw = test.context.assets.open("hdr-colors.yuv").use { it.readBytes() }
                 val data = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 if (full) {
@@ -246,7 +251,7 @@ object HdrColorTest {
                             native,
                             10,
                             7,
-                            primaries,
+                            gamut,
                         )
                     }
                     try {
@@ -267,7 +272,7 @@ object HdrColorTest {
                                     )
                                 for (c in 0..2) {
                                     maximum = max(maximum, abs(sample[c] - encoded[c]))
-                                    check(abs(converted[c] - encoded[c]) <= 4) {
+                                    check(abs(converted[c] - displayColor(colors.getJSONArray(i),gamut)[c]) <= 4) {
                                         "Editor P010 colour error: ${converted.toList()} vs $encoded"
                                     }
                                 }
@@ -419,7 +424,7 @@ object HdrColorTest {
         val b = linear(rgb.getDouble(2))
         val target =
             when (primaries) {
-                1 -> doubleArrayOf(r, g, b)
+                1,3,4 -> doubleArrayOf(r, g, b)
                 2 ->
                     doubleArrayOf(
                         1.224745 * r - .224904 * g,
@@ -434,14 +439,30 @@ object HdrColorTest {
                     )
             }
         val luminance = when (primaries) {
-            1 -> .2126 * r + .7152 * g + .0722 * b
+            1,3,4 -> .2126 * r + .7152 * g + .0722 * b
             2 -> .2289746 * r + .6917385 * g + .0792869 * b
             else -> .2627 * r + .678 * g + .0593 * b
+        }
+        if (primaries==3) {
+            fun ramp(a: Double,b: Double,x: Double): Double {
+                val t=((x-a)/(b-a)).coerceIn(0.0,1.0)
+                return t*t*(3-2*t)
+            }
+            val sum=target.sum().coerceAtLeast(.0001)
+            val red=target[0]/sum; val warmth=(target[1]-target[2])/sum
+            val weight=ramp(.38,.46,red)*(1-ramp(.72,.82,red))*ramp(0.0,.04,warmth)*(1-ramp(.22,.30,warmth))
+            for (i in target.indices) target[i]=luminance+(target[i]-luminance)*(1-.14*weight)
         }
         val gain = max(0.0, luminance).pow(.2) * 1000 / 203
         for (i in target.indices) target[i] *= gain
         val luma = max(.000001, .2126 * target[0] + .7152 * target[1] + .0722 * target[2])
-        val mapped = if (luma <= .75) luma else .75 + .25 * (1 - exp(-(luma - .75) / .25))
+        val head=max(0.0,luma-.18)
+        val mapped=if (primaries==4) {
+            fun sdr(v: Double)=if (v<=.04045) v/12.92 else ((v+.055)/1.055).pow(2.4)
+            val y=.2126*sdr(rgb.getDouble(0))+.7152*sdr(rgb.getDouble(1))+.0722*sdr(rgb.getDouble(2))
+            val gain=2.0.pow(2.0/3)
+            y*gain/(1+(gain-1)*y)
+        } else min(1.0,min(luma,.18)+head/(1+head*(1/.82-1/(1000.0/203-.18))))
         val delta = target.map { it * mapped / luma - mapped }
         var fit = 1.0
         for (d in delta) if (d > 0) fit = min(fit, (1 - mapped) / d) else if (d < 0) fit = min(fit, -mapped / d)

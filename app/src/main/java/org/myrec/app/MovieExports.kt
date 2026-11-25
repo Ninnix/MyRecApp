@@ -104,11 +104,18 @@ class MovieExports(private val root: File) {
         } finally { extractor.release() }
         check(clip.video && clip.audio &&
             abs(clip.duration - project.duration) <= max(.12, 2.0 / fps)) { "The exported movie is incomplete" }
-        VideoDecoder(file.path).use { decoder ->
+        fun endpoints(softwareOnly: Boolean) = VideoDecoder(file.path, softwareOnly = softwareOnly).use { decoder ->
             for (time in listOf(0.0, (project.duration - 1.0 / fps).coerceAtLeast(0.0))) {
                 checkCancelled(cancelled)
                 (decoder.frame(time, 96, 54) ?: error("The exported movie cannot be decoded")).recycle()
             }
+        }
+        try {
+            endpoints(false)
+        } catch (driver: android.media.MediaCodec.CodecException) {
+            // Some hardware decoders fail while seeking a valid checkpointed movie.
+            checkCancelled(cancelled)
+            try { endpoints(true) } catch (e: Exception) { e.addSuppressed(driver); throw e }
         }
     }
     private fun find(ticket: Ticket, project: Project, width: Int, height: Int, fps: Int, cancelled: () -> Boolean): Movie? {

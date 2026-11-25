@@ -269,7 +269,8 @@ object MediaEditingTest {
                             else android.app.AlertDialog.BUTTON_POSITIVE
                         check(dialog.getButton(button).performClick())
                     }
-                    Thread.sleep(200)
+                    // AlertDialog posts the click listener that commits the linked edit.
+                    instrumentation.waitForIdleSync()
                 }
                 tap("link"); dialog("Cancel")
                 check(a.editor.project == before && !a.editor.canUndo)

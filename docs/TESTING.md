@@ -101,6 +101,8 @@ restores access, retries the save, and verifies the latest edit was retained.
 | `--references` | Project delete/restore, shared-media safety, project controls, mirror geometry, RGB offsets |
 | `--new-ui` | Live effects sheet, Clear all, Widescreen, 4:5 crop, quarter turns |
 | `--hdr-color` | Full/limited P010 patches through GL, C11, decoder, and Main10 encoder; primaries detection and sidecars |
+| `--capture-cadence` | Compares live TextureView updates, per-lens Camera2 timestamps and saved 1080p30 presentation timestamps for single, dual, HLG, Software HDR, horizon, stabilization and lens changes. Writes `artifacts/capture-cadence.json`. |
+| `--hdr-playback` | Plays and scrubs each moving HLG MP4 in `/sdcard/Android/data/org.myrec.app/files/hdr-preview-fixtures/` in the editor. Counts distinct displayed pictures during three seconds of playback and checks three separate seeks. Writes `artifacts/hdr-playback.json`. |
 | `--hdr-scene` | SDR/HDR scene comparison and a direct HDR recording bypassing the compositor |
 
 Use `--serial SERIAL` to select an attached phone. `--apk-directory DIRECTORY`

@@ -130,7 +130,10 @@ object CameraAssistanceDeviceTests {
                 waitFor("Rear camera did not become ready") { capture.readyToRecord && !capture.front }
                 val horizon=Capture::class.java.getDeclaredField("horizon").apply { isAccessible=true }.get(capture) as CameraHorizon
                 check(horizon.available)
-                tap("settings"); click("More settings"); click("Max angle")
+                tap("settings"); click("Level horizon")
+                waitFor("The camera settings tile did not enable leveling") { capture.horizonEnabled }
+                click("Level horizon"); check(!capture.horizonEnabled)
+                click("More settings"); click("Max angle")
                 var slider: android.view.accessibility.AccessibilityNodeInfo?=null
                 waitFor("Max angle slider did not open",4.0) {
                     slider=instrumentation.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Max angle")?.firstOrNull { it.rangeInfo!=null }
@@ -139,6 +142,8 @@ object CameraAssistanceDeviceTests {
                 check(slider!!.performAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id,
                     android.os.Bundle().apply { putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE,19f) }))
                 waitFor("The maximum-angle preview did not use the selected crop") { compositor().assistanceState().firstOrNull()?.get(4)?.let { it>1.25 }==true }
+                click("Level horizon"); check(capture.horizonEnabled)
+                click("Level horizon"); check(!capture.horizonEnabled)
                 click("Done")
                 waitFor("Closing Max angle left leveling enabled") { compositor().assistanceState().firstOrNull()?.get(4)==1.0 }
                 main { capture.setHorizonDegrees(9.0); capture.setHorizonEnabled(true) }

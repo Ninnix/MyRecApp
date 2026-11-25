@@ -27,12 +27,14 @@ class CameraComposition(
     private val planar: Boolean = hdr && HdrGraphics.support.planar,
     private val failure: (Throwable) -> Unit,
 ) : Closeable {
-    private val thread = HandlerThread("camera-composition").apply { start() }
+    private val thread = HandlerThread("camera-composition",android.os.Process.THREAD_PRIORITY_DISPLAY).apply { start() }
     private val handler = Handler(thread.looper)
     private var display = EGL14.EGL_NO_DISPLAY
     private var context = EGL14.EGL_NO_CONTEXT
     private var config: EGLConfig? = null
     private var window = EGL14.EGL_NO_SURFACE
+    private var previewWidth=width
+    private var previewHeight=height
     private var frameSurface=EGL14.EGL_NO_SURFACE
     private var frameWidth=0
     private var frameHeight=0
@@ -52,6 +54,8 @@ class CameraComposition(
     private var frameCopy: CameraFrameCopy? = null
     private var closed = false
     private val inputs = mutableListOf<Input>()
+    @Volatile var pairedFrames = 0L
+        private set
     private val vertices =
         ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private var layout = 1
@@ -67,7 +71,11 @@ class CameraComposition(
     private var singleFraming=CameraFraming()
     private var manualFraming=false
     private var horizonMaximum: Double?=null
+    private var sceneHorizon=false
     private var stabilized=false
+    @Volatile internal var softwareHdr = emptyMap<String, Float>()
+    private var exposureMap: CameraExposureMap? = null
+    private var exposureMapFailed = false
     @Volatile var followStatus="Looking for a face"
         private set
     private val analysis=java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -102,6 +110,9 @@ class CameraComposition(
         val frames=Array(3,::Frame)
         val pending=java.util.ArrayDeque<Frame>(frames.size-1)
         var frame=frames[0]
+        var warmGain=1f
+        var matchedExposure=0f
+        var exposureHistory: CameraExposureMap.History? = null
         var receivedTimestamp=0L
         var receivedTime=Long.MIN_VALUE
         val faces=java.util.ArrayDeque<Faces>()
@@ -233,7 +244,7 @@ class CameraComposition(
                 planar -> P010Texture.shader
                 retained -> "uniform highp sampler2D image;"
                 else -> "uniform __samplerExternal2DY2YEXT image;"
-            }} uniform float tone; uniform float fullRange; uniform float primaries;
+            }} uniform float tone; uniform float fullRange; uniform float primaries; uniform float warmGain; uniform float matchedExposure;
             vec3 linearHLG(vec3 x){return mix(x*x/3.,(exp((x-.55991073)/.17883277)+.28466892)/12.,step(vec3(.5),x));}
             vec3 encodeHLG(vec3 x){return mix(sqrt(3.*max(x,vec3(0.))),.17883277*log(max(12.*x-.28466892,vec3(.000001)))+.55991073,step(vec3(1./12.),x));}
             vec3 srgb(vec3 x){return mix(12.92*x,1.055*pow(max(x,vec3(0.)),vec3(1./2.4))-.055,step(vec3(.0031308),x));}
@@ -246,21 +257,38 @@ class CameraComposition(
                 yuv/=fullRange>.5 ? vec3(1023.) : vec3(876.,896.,896.);
                 vec3 c=vec3(yuv.x+1.4746*yuv.z,yuv.x-.164553*yuv.y-.571353*yuv.z,yuv.x+1.8814*yuv.y);
                 c=clamp(c,0.,1.);
-                if(tone>=0. && primaries>.5){
+                if(tone>=0. && (tone>.5 || primaries>.5 || warmGain<.999)){
                     vec3 s=linearHLG(c);
-                    if(primaries<1.5)s=vec3(.6274*s.r+.3293*s.g+.0433*s.b,
+                    if(primaries>.5 && primaries<1.5)s=vec3(.6274*s.r+.3293*s.g+.0433*s.b,
                         .0691*s.r+.9195*s.g+.0114*s.b,.0164*s.r+.0880*s.g+.8956*s.b);
-                    else s=vec3(.753833*s.r+.198597*s.g+.047570*s.b,
+                    else if(primaries>1.5)s=vec3(.753833*s.r+.198597*s.g+.047570*s.b,
                         .045744*s.r+.941777*s.g+.012479*s.b,-.001211*s.r+.017602*s.g+.983609*s.b);
-                    c=encodeHLG(clamp(s,0.,1.));
+                    s=clamp(s,0.,1.);
+                    if(matchedExposure>0.){
+                        // This camera's HLG code values track its SDR response. Match diffuse
+                        // luminance while reserving the full 1000 nit range for highlights.
+                        vec3 ref=mix(c/12.92,pow((c+.055)/1.055,vec3(2.4)),step(vec3(.04045),c));
+                        float y=dot(ref,vec3(.2126,.7152,.0722));
+                        y=y*matchedExposure/(1.+(matchedExposure-1.)*y);
+                        float head=max(0.,y-.18);
+                        float light=min(y,.18)+head/(1.-head*(1./.82-1./(1000./203.-.18)));
+                        s*=pow(light*(203./1000.),1./1.2)/max(.000001,dot(s,vec3(.2627,.678,.0593)));
+                    }
+                    if(warmGain<.999){
+                        vec3 rgb=vec3(dot(s,vec3(1.6605,-.5876,-.0728)),dot(s,vec3(-.1246,1.1329,-.0083)),dot(s,vec3(-.0182,-.1006,1.1187)));
+                        vec3 n=rgb/max(.0001,rgb.r+rgb.g+rgb.b);
+                        float warm=smoothstep(.38,.46,n.r)*(1.-smoothstep(.72,.82,n.r))*smoothstep(.0,.04,n.g-n.b)*(1.-smoothstep(.22,.30,n.g-n.b));
+                        s=mix(vec3(dot(s,vec3(.2627,.678,.0593))),s,mix(1.,warmGain,warm));
+                    }
+                    c=tone>.5 ? s : encodeHLG(s);
                 }
                 if(tone>.5){
-                    c=linearHLG(c);
                     c*=pow(max(dot(c,vec3(.2627,.678,.0593)),0.),.2)*(1000./203.);
                     c=vec3(1.6605*c.r-.5876*c.g-.0728*c.b,
                         -.1246*c.r+1.1329*c.g-.0083*c.b,-.0182*c.r-.1006*c.g+1.1187*c.b);
                     float y=max(1e-6,dot(c,vec3(.2126,.7152,.0722)));
-                    float mapped=y<=.75?y:.75+.25*(1.-exp(-(y-.75)/.25));c*=mapped/y;
+                    float head=max(0.,y-.18);
+                    float mapped=min(1.,min(y,.18)+head/(1.+head*(1./.82-1./(1000./203.-.18))));c*=mapped/y;
                     vec3 delta=c-mapped;float fit=1.;
                     for(int i=0;i<3;i++){if(delta[i]>0.)fit=min(fit,(1.-mapped)/delta[i]);else if(delta[i]<0.)fit=min(fit,-mapped/delta[i]);}
                     c=srgb(clamp(mapped+delta*max(0.,fit),0.,1.));
@@ -276,11 +304,14 @@ class CameraComposition(
                 """
             ${if (retained) "" else "#extension GL_OES_EGL_image_external : require"}
             precision highp float; varying vec2 v; varying vec2 world; uniform ${if (retained) "sampler2D" else "samplerExternalOES"} image; uniform float side; uniform vec4 circle; uniform float diagonalFlip; uniform vec4 separator;
+            uniform float softwareHdr;
+            ${SoftwareHdr.shader}
             void main(){if(circle.z>0. && length((world-circle.xy)/circle.zw)>1.)discard;
                 float distance=diagonalFlip>.5?world.y-world.x:world.x+world.y-1.;
                 if(side<-.5 && distance>0.)discard;
                 if(side>.5 && distance<=0.)discard;
                 vec4 pixel=texture2D(image,v);
+                if(softwareHdr>0.)pixel.rgb=recoverExposure(pixel.rgb,softwareHdr,v);
                 if(abs(side)>.5)pixel.rgb=mix(vec3(.12),pixel.rgb,clamp(abs(distance)/length(separator.zw)-.5,0.,1.));
                 if((separator.x>0. && abs(world.x-separator.x)<separator.z) ||
                     (separator.y>0. && abs(world.y-separator.y)<separator.w))pixel.rgb=vec3(.12);
@@ -366,9 +397,37 @@ class CameraComposition(
         if (paired) {
             source.pending.addLast(frame)
             if (!pairFrames()) return
+            pairedFrames++
         } else updateAssistance(source)
+        if (!hdr) updateExposureMap()
         encodeFrame()
         render()
+    }
+
+    private fun updateExposureMap() {
+        if (exposureMapFailed) return
+        val strengths = softwareHdr
+        if (strengths.isEmpty()) {
+            if (exposureMap != null) inputs.forEach { it.exposureHistory?.reset() }
+            return
+        }
+        try {
+            val map = exposureMap ?: CameraExposureMap().also { exposureMap = it }
+            for (input in inputs) {
+                if ((strengths[input.id] ?: 0f) <= 0f) {
+                    input.exposureHistory?.reset()
+                    continue
+                }
+                val history = input.exposureHistory
+                    ?: CameraExposureMap.History().also { input.exposureHistory = it }
+                val retained = input.frame.texture.name
+                map.update(history, if (retained != 0) retained else input.texture, retained != 0,input.frame.time)
+            }
+        } catch (e: Exception) {
+            // Keep the single-exposure curve available if the GPU cannot draw the guide.
+            exposureMapFailed = true
+            android.util.Log.w("MyRec-HDR","Using the global Software HDR curve",e)
+        }
     }
 
     private fun encodeFrame() {
@@ -406,7 +465,8 @@ class CameraComposition(
         return false
     }
 
-    fun configure(mode: Int, flip: Boolean, rotation: Int, w: Int, h: Int) = call {
+    fun configure(mode: Int, flip: Boolean, rotation: Int, w: Int, h: Int, bufferWidth: Int=w, bufferHeight: Int=h) = call {
+        previewWidth=bufferWidth; previewHeight=bufferHeight
         layout = mode
         swapped = flip
         displayRotation = rotation
@@ -432,7 +492,8 @@ class CameraComposition(
         render()
     }
     fun flipDiagonal()=call { geometry.diagonalFlipped=!geometry.diagonalFlipped; render() }
-    fun assists(follow: Boolean,maximum: Double?,stabilization: Boolean,zoom: Double=1.0,base: Double=1.0,owns: Boolean=false)=call {
+    fun assists(follow: Boolean,maximum: Double?,stabilization: Boolean,zoom: Double=1.0,base: Double=1.0,owns: Boolean=false,sceneOnly: Boolean=false)=call {
+        sceneHorizon=sceneOnly
         if (follow!=follows) {
             inputs.forEach { it.target=CameraFaceTarget(); it.faces.clear() }
             followStatus="Looking for a face"
@@ -502,9 +563,9 @@ class CameraComposition(
         if (maximum!=null && !source.front) {
             val sample=gravity(time)
             val roll=sample?.let { HorizonEstimate.roll(it.x,it.y,90.0) }
-            val correction=source.horizon.correction(roll,time,maximum,stabilized)
+            val correction=source.horizon.correction(roll ?: if (sceneHorizon) source.horizon.sceneRoll(time) else null,time,maximum,stabilized)
             source.level=HorizonFraming(correction,HorizonFraming.scale(maximum,sw,sh))
-            if (roll!=null && abs(roll)<13*PI/180 && !analyzing && time-source.analyzed>=.24) {
+            if ((sceneHorizon || roll!=null && abs(roll)<13*PI/180) && !analyzing && time-source.analyzed>=.24) {
                 source.analyzed=time; analyzing=true
                 val ratio=min(1.0,256/max(sw,sh))
                 val image=snapshot(index,max(32,(sw*ratio).toInt()),max(24,(sh*ratio).toInt()))
@@ -518,15 +579,21 @@ class CameraComposition(
                     } finally {
                         image.recycle()
                         val found=line
-                        handler.post { analyzing=false; if (!closed && source in inputs && source.rotation==rotation) source.horizon.observe(found,roll,time) }
+                        handler.post {
+                            analyzing=false
+                            if (!closed && source in inputs && source.rotation==rotation) {
+                                if (roll!=null) source.horizon.observe(found,roll,time)
+                                else if (sceneHorizon) source.horizon.observeScene(found,time)
+                            }
+                        }
                     }
                 }
             }
         } else source.level=null
     }
 
-    fun primaries(index: Int, value: Int) = call {
-        inputs.getOrNull(index)?.primaries = value
+    fun primaries(index: Int, value: Int, warmGain: Float=1f,matchedExposure: Float?=null) = call {
+        inputs.getOrNull(index)?.let { it.primaries=value; it.warmGain=warmGain; if (matchedExposure!=null) it.matchedExposure=matchedExposure }
         render()
     }
 
@@ -678,7 +745,7 @@ class CameraComposition(
     private fun render() {
         // The effect frame covers this surface; camera inputs and encoder draws still advance.
         if (previewCovered || !hasFrame()) return
-        draw(window, width, height, 0)
+        draw(window, previewWidth, previewHeight, 0)
     }
 
     @Volatile var analysisFrame: ((Long,()->Bitmap)->Unit)?=null
@@ -693,6 +760,7 @@ class CameraComposition(
             retainedProgram
         } else program
         GLES20.glUseProgram(program)
+        if (!hdr) GLES20.glUniform1i(GLES20.glGetUniformLocation(program,"exposureMap"),1)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"diagonalFlip"),if (geometry.diagonalFlipped) 1f else 0f)
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "tone"),
@@ -735,6 +803,20 @@ class CameraComposition(
                 GLES20.glGetUniformLocation(program, "primaries"),
                 source.primaries.toFloat(),
             )
+            if (hdr) {
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"warmGain"),source.warmGain)
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"matchedExposure"),source.matchedExposure)
+            } else {
+                val strength = if (snapshot < 0) softwareHdr[source.id] ?: 0f else 0f
+                val map = if (strength > 0f && !exposureMapFailed) source.exposureHistory?.texture ?: 0 else 0
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"softwareHdr"),strength)
+                GLES20.glUniform1f(GLES20.glGetUniformLocation(program,"useExposureMap"),if (map == 0) 0f else 1f)
+                if (map != 0) {
+                    GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,map)
+                    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                }
+            }
             val map=projection(index,rect,mirrored,worldAspect.toDouble(),snapshot>=0)
             val values=FloatArray(16)
             for (i in 0..3) {
@@ -815,6 +897,7 @@ class CameraComposition(
             it.image?.setOnFrameAvailableListener(null)
             it.surface.release()
             it.image?.release();it.pixels?.close()
+            it.exposureHistory?.close()
             it.frames.forEach { frame -> frame.texture.close() }
             GLES20.glDeleteTextures(1, intArrayOf(it.texture), 0)
         }
@@ -828,6 +911,7 @@ class CameraComposition(
             EGL14.eglMakeCurrent(display, window, window, context)
             readback.close()
             clearInputs()
+            exposureMap?.close()
             GLES20.glDeleteProgram(retainedProgram)
             GLES20.glDeleteProgram(program)
             EGL14.eglMakeCurrent(

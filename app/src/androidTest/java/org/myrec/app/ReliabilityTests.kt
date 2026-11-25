@@ -140,6 +140,7 @@ object ReliabilityTests {
     }
 
     private fun saveCheck(a: MainActivity) {
+        waitFor("Interrupted save recovery timed out") { a.startupComplete }
         val saved = a.store.currentSession()
         check(saved.project.id == "interrupted-save" && saved.project.name == SAVED)
         check(saved.project.clips.size == 2 && saved.originals.size == 2)

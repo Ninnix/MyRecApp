@@ -391,6 +391,8 @@ class ProjectStore(val root: File) {
         }
     }
 
+    internal fun hasPendingCaptures() = File(root,"pending").listFiles().orEmpty().any { it.extension=="json" }
+
     internal fun needsRecordingRemux(): Boolean = File(root,"pending").listFiles().orEmpty().any { entry ->
         if (entry.extension!="json") return@any false
         runCatching {
@@ -1079,6 +1081,7 @@ class ProjectStore(val root: File) {
 
     companion object {
         private val publishing = Any()
+        internal val captureWork = java.util.concurrent.Executors.newSingleThreadExecutor()
         private val captureRecovery = Any()
         private val abandonedSave = Regex("\\.saving-[a-f0-9-]{36}")
 

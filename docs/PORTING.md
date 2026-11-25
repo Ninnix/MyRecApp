@@ -50,6 +50,43 @@ decoded, and the largest video sample interval was 63.3 ms. The final audio
 sample was 154 ms after the final video sample. The device reported thermal
 status 0 on all 22 readings and exposed one aperture per camera.
 
+On that OnePlus firmware, a front-camera HLG frame had 8.35% nearly white
+pixels in the editor. Spreading the SDR monitor's highlight range reduced
+that to 3.50% on the identical decoded frame (luma at least 249/255).
+With the lens-specific luminance correction, two sets of registered SDR/HDR
+scene pairs had median absolute luma differences of 5.0–8.5/255 on the rear
+camera and 2.4–5.8/255 on the front, down from 20.7 and 21.3.
+On two rear and two front switches, Record became available in 161–199 ms
+instead of about 1.84 seconds. Four preview updates arrived in 449–508 ms.
+These are measurements of the tested scenes; calibration across other
+illuminants and devices remains open.
+
+The Xiaomi Mi 8 (Android 10, API 29, MIUI 12) passed archive interchange,
+media and audio editing, gallery export, and tap-to-focus on the build based
+on `8402e01`. Both cameras remained usable in SDR after an unsupported HDR
+request. In a 15.06-second rear-camera zoom test, timestamps indicated 16
+missing 30 fps intervals at the sensor and 15 in the saved video. The phone
+also recovered an active take exactly once across two restarts, reopened a
+256-clip project, and resumed an export after termination during rendering
+and again before publication. One run exposed an intermittent AVC decoder
+error during verification. Verification now retries both movie endpoints
+with a compatible software decoder. All nine transition styles fit in
+landscape at the phone's 140% system text size. An explicit legacy pair probe
+received matched live frames from both the front and rear cameras and saved
+a 1080p split recording. The first eight-second test measured 28.43 fps and
+11 missing 30 fps intervals in that file. Single-camera stabilization and
+leveling also reflected gaps in the rear camera input. The front camera
+recorded at 29.75 fps with editable stabilization and zero missing intervals.
+An eleven-minute Mi 8 take exposed a main-thread remux stall. The background
+save completed with 661.643 seconds of video and 661.646 seconds of presented
+audio. Both video endpoints decoded independently.
+
+The API 37 x86-64 emulator passed archive, layout, editing, transition and
+movie-export checks. Its final camera run could not locate the HDR control
+after a System UI hang, and the HDR pipeline test process crashed under
+ARM64 translation. The same camera fallback checks passed on the Mi 8 and
+the HDR pipeline passed on the OnePlus. Emulator camera acceptance remains open.
+
 The Nothing Ear (a) microphone passed a physical disconnect and reconnect
 during a take. The built-in microphone took over, stayed active after the
 earbuds reconnected, and the recorded picture decoded. The headset initially

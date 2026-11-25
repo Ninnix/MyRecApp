@@ -55,6 +55,15 @@ object MovieExportTests {
         fun copy(target: File, progress: (Float) -> Unit) {
             renders++; good.copyTo(target); progress(1f)
         }
+        test("software verification decodes distinct AVC pictures across a seek") {
+            VideoDecoder(source.path, softwareOnly = true).use { decoder ->
+                val first = checkNotNull(decoder.frame(0.0, 96, 54))
+                try {
+                    val later = checkNotNull(decoder.frame(5.0, 96, 54))
+                    try { check(!first.sameAs(later)) } finally { later.recycle() }
+                } finally { first.recycle() }
+            }
+        }
         test("a reopened export resumes verified HEVC sections at the selected frame rate") {
             val edited = Project(name = "Resumable export", width = 320, height = 180,
                 clips = MutableList(9) { index -> Clip(path = source.path, sourceOut = .4, start = index * .4) },

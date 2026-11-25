@@ -74,6 +74,14 @@ object CaptureEnduranceTest {
                 report.put("active_wall_seconds",wall).put("recording_clock_seconds",measured)
                 publish()
             }
+            val saveBy=SystemClock.elapsedRealtime()+180000
+            while (true) {
+                var saving=false
+                onMain { saving=capture.finalizing }
+                if (!saving) break
+                check(SystemClock.elapsedRealtime()<saveBy) { "Saving the long recording timed out" }
+                Thread.sleep(150)
+            }
             val clip = a.editor.project.clips.single(); val file = File(clip.path)
             test("long SDR take has continuous presentation timestamps bounded AV drift and decodable endpoints") {
                 check(file.isFile && clip.duration > 650 && clip.marks.size == 1)
@@ -106,8 +114,13 @@ object CaptureEnduranceTest {
                             })
                     }
                 } finally { extractor.release() }
-                val drift = abs(ends.getValue("video")-ends.getValue("audio"))
-                check(drift < 200000) { "AV end drift is $drift us" }
+                // API 29 exposes AAC priming and trailing padding in packet timestamps.
+                // The MP4 track headers describe the edited presentation on both Android versions.
+                val presented=Mp4Audio.trackDurations(file)
+                val drift=(abs(presented.getValue("vide")-presented.getValue("soun"))*1e6).toLong()
+                val packetDifference=abs(ends.getValue("video")-ends.getValue("audio"))
+                report.put("raw_packet_end_difference_us",packetDifference).put("presented_seconds",JSONObject(presented))
+                check(drift<200000 && packetDifference<500000) { "AV end drift is $drift us, raw packets differ by $packetDifference us" }
                 VideoDecoder(file.path).use { decoder ->
                     for (time in listOf(.3,clip.sourceOut-.2)) (decoder.frame(time,160,90) ?: error("A long-take endpoint is unreadable")).recycle()
                 }

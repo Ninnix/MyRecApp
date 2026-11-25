@@ -133,7 +133,7 @@ class Panels(private val a: MainActivity) {
         }
 
     private val largeEditorText get() = a.resources.configuration.fontScale > 1.15f &&
-        title in listOf("Crop", "Placement", "Image", "Transition", "Export")
+        title in listOf("Crop", "Placement", "Image", "Transition", "Transition style", "Export")
 
     private fun text(
         t: String,
@@ -4149,11 +4149,12 @@ class Panels(private val a: MainActivity) {
             val sides = px(if (landscape) 57f else 12f)
             val gap = px(8f)
             val color = Effects.color("Transition")
-            val count = when {
-                a.resources.configuration.fontScale > 1.15f -> 1
-                landscape -> 3
-                else -> 2
-            }
+            val count = if (landscape) {
+                val paint = text("", 9f).paint
+                val labelWidth = Effects.transitions.maxOf { ceil(paint.measureText(it)).toInt() }
+                val tileWidth = px(9f) * 2 + px(18f) + px(6f) + labelWidth
+                ((a.root.width - 2 * sides + gap) / (tileWidth + gap)).coerceIn(1, 3)
+            } else if (largeEditorText) 1 else 2
             content.setPadding(sides, gap, sides, gap)
             for (styles in Effects.transitions.chunked(count)) {
                 val line = row()

@@ -7,10 +7,11 @@ import java.io.File
 import kotlin.math.*
 
 class VideoDecoder(path: String, private val rawColor: Boolean = false, private val linear: Boolean = false,
-    private val tenBit: Boolean = false) : Closeable {
+    private val tenBit: Boolean = false, softwareOnly: Boolean = false) : Closeable {
     private val mirrored = SourceMirror.enabled(path)
     private val extractor = MediaExtractor()
     private val codec: MediaCodec
+    private val configuredFormat: MediaFormat
     private val info = MediaCodec.BufferInfo()
     private var inputDone = false
     private var outputDone = false
@@ -61,8 +62,14 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUVP010,
             )
+        configuredFormat = format
         extractor.selectTrack(track)
-        codec = VideoCodecs.decoder(format)
+        try {
+            codec = VideoCodecs.decoder(format, softwareOnly)
+        } catch (e: Exception) {
+            extractor.release()
+            throw e
+        }
         try {
             try {
                 codec.configure(format, null, null, 0)
@@ -87,7 +94,13 @@ class VideoDecoder(path: String, private val rawColor: Boolean = false, private 
             return last!!.copy(last!!.config!!, true)
         if (lastTime >= 0 && (target < lastTime - 2 || target > lastTime + 750000)) {
             extractor.seekTo(target, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-            codec.flush()
+            // Some Main10 decoders stop producing images after flush. Restart with the
+            // stream headers at the keyframe; sequential playback keeps the same codec.
+            if (sourceHdr) {
+                codec.stop()
+                codec.configure(configuredFormat,null,null,0)
+                codec.start()
+            } else codec.flush()
             inputDone = false
             outputDone = false
             lastTime = -1

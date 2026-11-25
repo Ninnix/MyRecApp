@@ -13,7 +13,7 @@ object BackgroundPerformanceTests {
         val settings=normal.all.toMap()
         test("camera waits for its preview surface when color mode is set before layout") {
             main {
-                val capture=Capture(a,a.store,{}, {})
+                val capture=Capture(a,a.store,{ _,_ -> }, {})
                 try {
                     capture.setHdr(false)
                     check(!Capture::class.java.getDeclaredField("opening").apply { isAccessible=true }.getBoolean(capture))

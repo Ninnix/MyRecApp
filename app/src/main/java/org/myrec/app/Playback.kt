@@ -63,6 +63,8 @@ class Playback(
                 )
         }
 
+    private var playbackEdge = 768
+    private var slowFrames = 0
     private var inspectionZoom = 1f
     private val refreshInspection = Runnable { if (!playing && !closed) refresh() }
 
@@ -105,17 +107,30 @@ class Playback(
             return
         }
         val ratio = snapshot.width.toDouble() / snapshot.height
-        val edge = if (inspectionZoom <= 1f) 768 else
+        val edge = if (playing && inspectionZoom<=1f) playbackEdge else if (inspectionZoom <= 1f) 768 else
             (768 * inspectionZoom).roundToInt().coerceAtMost(min(4096, max(snapshot.width, snapshot.height)))
         val w = if (ratio >= 1) edge else (edge * ratio).toInt().coerceAtLeast(2)
         val h = if (ratio >= 1) (edge / ratio).toInt().coerceAtLeast(2) else edge
         val preparation = preparationEpoch
         val original = originalStabilization
+        val live=playing && inspectionZoom<=1f
+        val ticket=generation
         video.execute {
             try {
                 activePreparationEpoch = preparation
-                val bitmap = frames.render(snapshot, position, w, h,originalStabilization = original)
-                ui.post { if (!closed && preparation == preparationEpoch) onFrame(bitmap) else bitmap.recycle() }
+                val start=SystemClock.elapsedRealtimeNanos()
+                val bitmap = frames.render(snapshot, position, w, h,originalStabilization = original,preview=true)
+                val elapsed=(SystemClock.elapsedRealtimeNanos()-start)/1e6
+                ui.post {
+                    if (!closed && preparation==preparationEpoch) onFrame(bitmap) else bitmap.recycle()
+                    if (live && playing && ticket==generation) {
+                        slowFrames=if (elapsed>33) slowFrames+1 else 0
+                        if (slowFrames>=3) {
+                            playbackEdge=(edge*sqrt(28/elapsed)).roundToInt().coerceIn(384,edge)
+                            slowFrames=0
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 if (!closed && preparation == preparationEpoch) ui.post { onError(e.message ?: "Cannot render video") }
             } finally {
@@ -142,6 +157,7 @@ class Playback(
         val limit = min(end, snapshot.duration)
         if (editor.cursor >= limit - 0.01) editor.cursor = 0.0
         val ticket = ++generation
+        playbackEdge=768; slowFrames=0
         val start = editor.cursor
         val speed = editor.playbackRate
         until = limit
@@ -246,6 +262,7 @@ class Playback(
     fun seek(t: Double) {
         val wasPlaying = playing
         pause()
+        cancelPreparation()
         editor.cursor = t.coerceIn(0.0, editor.project.duration)
         refresh()
         onTick()

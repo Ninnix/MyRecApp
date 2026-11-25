@@ -126,7 +126,7 @@ class MainActivity : Activity() {
             )
         store.cleanInterruptedSaves()
         store.cleanTransfers()
-        if (store.needsRecordingRemux()) {
+        if (store.hasPendingCaptures()) {
             setContentView(TextView(this).apply {
                 text="Recovering recording…"
                 gravity=Gravity.CENTER
@@ -134,7 +134,7 @@ class MainActivity : Activity() {
                 setBackgroundColor(Color.BLACK)
                 accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE
             })
-            worker.execute {
+            ProjectStore.captureWork.execute {
                 store.recoverCaptures()
                 ui.post { if (!isFinishing && !isDestroyed) finishStartup(testSession,testSessionId) }
             }
@@ -464,14 +464,13 @@ class MainActivity : Activity() {
                 Capture(
                     this,
                     store,
-                    { clip ->
-                        val insertion = recordingAt
+                    { clip, insertion ->
                         if (insertion == null) {
                             if (editor.project.clips.isEmpty()) setProjectFormat(clip)
                             editor.appendRecording(clip)
                         } else {
                             recordingAt = null
-                            editor.insertBatch(listOf(clip), insertion.at)
+                            editor.insertBatch(listOf(clip), insertion)
                             ui.post { capture?.suspendCamera(); showEditor() }
                         }
                     },

@@ -10,7 +10,19 @@ class HdrColor(context: Context) {
 
     private fun key(camera: String) = "${Build.FINGERPRINT}:$camera"
 
-    fun profile(camera: String) = prefs.getInt(key(camera), 0)
+    // Both cameras report BT.2020 but their measured input matches BT.709 on this firmware.
+    private fun measuredCamera(camera: String) = (camera=="0" || camera=="1") && Build.MODEL=="CPH2747" &&
+        Build.FINGERPRINT.contains("/B.R4T3.50a3663-29f0eba-29fce1c:")
+    fun protectsHighlights(camera: String)=measuredCamera(camera)
+    fun calibrated(camera: String)=measuredCamera(camera) || prefs.contains(key(camera))
+    fun matchesSdrResponse(camera: String)=measuredCamera(camera)
+    fun profile(camera: String) = if (measuredCamera(camera)) 1 else prefs.getInt(key(camera),0)
+    fun warmGain(camera: String,profile: Int) = if (measuredCamera(camera)) {
+        if (camera=="0" && profile==1) .86f else 1f
+    } else prefs.getFloat("${key(camera)}:$profile:warm",1f)
+    fun rememberWarm(camera: String,profile: Int,gain: Float) {
+        prefs.edit().putFloat("${key(camera)}:$profile:warm",gain).apply()
+    }
 
     fun remember(camera: String, profile: Int) {
         require(profile in 0..2)
@@ -37,9 +49,10 @@ class HdrColor(context: Context) {
                     ga.recycle()
                     gb.recycle()
                 }
-            val result = floatArrayOf(-1f, motion[4], 0f, 0f, 0f, 0f)
+            val result = floatArrayOf(-1f, motion[4], 0f, 0f, 0f, 0f, -1f, -1f, -1f)
             if (motion[4] < 12) return result
             val errors = Array(3) { mutableListOf<Float>() }
+            val warmScales=Array(3) { mutableListOf<Float>() }
             fun channel(pixel: Int, shift: Int) = ((pixel ushr shift) and 255) / 255.0
             fun linear(v: Double) = if (v <= .04045) v / 12.92 else ((v + .055) / 1.055).pow(2.4)
             fun hlg(v: Double) =
@@ -94,6 +107,17 @@ class HdrColor(context: Context) {
                     var error = 0.0
                     for (k in 0..2) error += (candidates[c][k] / sum - target[k]).pow(2)
                     errors[c].add(sqrt(error).toFloat())
+                    // Compare only similar warm midtones. Both samples must agree in hue.
+                    val v=candidates[c].map { it/sum }
+                    if (v[0] !in .45.. .73 || v[1]-v[2] !in .035.. .23 ||
+                        target[0] !in .43.. .73 || target[1]-target[2] !in .025.. .23) continue
+                    val sy=.2126*v[0]+.7152*v[1]+.0722*v[2]
+                    val ty=.2126*target[0]+.7152*target[1]+.0722*target[2]
+                    var cross=0.0; var norm=0.0; var residual=0.0
+                    for (k in 0..2) { val d=v[k]/sy-1; cross+=d*(target[k]/ty-1); norm+=d*d }
+                    val scale=cross/norm
+                    for (k in 0..2) residual+=(target[k]/ty-1-scale*(v[k]/sy-1)).pow(2)
+                    if (residual<.012 && scale in .5..1.4) warmScales[c].add(scale.toFloat())
                 }
             }
             result[5] = errors[0].size.toFloat()
@@ -102,6 +126,13 @@ class HdrColor(context: Context) {
                 errors[c].sort()
                 // A trimmed mean tolerates moving subjects and clipped colour boundaries.
                 result[c + 2] = errors[c].subList(0, errors[c].size * 4 / 5).average().toFloat()
+            }
+            for (c in 0..2) {
+                val gains=warmScales[c]
+                if (gains.size<200 || motion[4]<24) continue
+                gains.sort()
+                if (gains[gains.size*3/4]-gains[gains.size/4]>.16f) continue
+                result[6+c]=gains[gains.size/2].coerceIn(.70f,1f)
             }
             val best = (0..2).minBy { result[it + 2] }
             val next = (0..2).filter { it != best }.minOf { result[it + 2] }

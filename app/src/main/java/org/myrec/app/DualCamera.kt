@@ -16,8 +16,11 @@ class DualCamera(
     private val handler: Handler,
     private val renderer: CameraComposition,
     private val ids: List<String>,
+    private val probe: Boolean,
+    private val sensorTimeObserver: ((String,Long)->Unit)?,
     private val hdr: Boolean = false,
-    private val primaries: (String) -> Int = { 0 },
+    private val inputColor: (CameraComposition,Int,String) -> Unit,
+    private val exposure: (String,CameraCharacteristics) -> Int,
     private val ready: () -> Unit,
     private val failure: (String) -> Unit,
 ) : Closeable {
@@ -26,12 +29,16 @@ class DualCamera(
     private val requests = arrayOfNulls<CaptureRequest.Builder>(2)
     @Volatile private var closed = false
     private var configured = 0
+    private var started = false
+    private val initialPairs = renderer.pairedFrames
+    private val timeout = Runnable { if (!started) fail("Both cameras could not stream together") }
     private val focusLocks = BooleanArray(2)
     var inputSizes = emptyList<Size>()
         private set
 
     init {
         try {
+            if (probe) handler.postDelayed(timeout, 8000)
             ids.forEachIndexed { index, id ->
                 manager.openCamera(
                     id,
@@ -85,7 +92,8 @@ class DualCamera(
                 }
             var surfaces = emptyList<android.view.Surface>()
             var selected = emptyList<Size>()
-            val candidates = listOf(Size(1920, 1080), Size(1280, 720), Size(640, 480))
+            val sizes = listOf(Size(1920, 1080), Size(1280, 720), Size(640, 480))
+            val candidates = if (probe) sizes.reversed() else sizes
             // Individual lens maxima do not establish a concurrent stream combination.
             for (size in candidates) {
                 if (!supported.all { size in it }) continue
@@ -100,11 +108,11 @@ class DualCamera(
                             chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
                             chars.get(CameraCharacteristics.LENS_FACING) ==
                                 CameraCharacteristics.LENS_FACING_FRONT,
-                            primaries(ids[index]),
+                            0,
                             ids[index],
                             android.os.Build.VERSION.SDK_INT<33 && chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)==CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                             maximumFps = maximumFps,
-                        )
+                        ).also { if (hdr) inputColor(renderer,index,ids[index]) }
                     }
                 val configs =
                     ids.indices.associate { index ->
@@ -131,7 +139,7 @@ class DualCamera(
                                 }
                     }
                 if (
-                    Build.VERSION.SDK_INT >= 30 &&
+                    probe || Build.VERSION.SDK_INT >= 30 &&
                         manager.isConcurrentSessionConfigurationSupported(configs)
                 ) {
                     surfaces = inputs
@@ -174,7 +182,7 @@ class DualCamera(
                                     sessions[index] = session
                                     update(1f, false, false, 0)
                                     configured++
-                                    if (configured == 2) ready()
+                                    if (configured == 2) { if (probe) awaitFrames() else ready() }
                                 }
 
                                 override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -188,6 +196,14 @@ class DualCamera(
         } catch (e: Exception) {
             fail(e.message ?: "Cannot configure both cameras")
         }
+    }
+
+    private fun awaitFrames() {
+        if (closed) return
+        if (renderer.pairedFrames - initialPairs < 2) { handler.postDelayed(::awaitFrames, 50); return }
+        started = true
+        handler.removeCallbacks(timeout)
+        ready()
     }
 
     fun update(zoom: Float, focusLocked: Boolean, torch: Boolean, primary: Int,follow: Boolean=false,stabilize: Boolean=true) {
@@ -221,8 +237,9 @@ class DualCamera(
                 }
                 r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
                 r.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE,if (follow) CameraFaces.mode(chars) else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
-                val videoModes=chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: intArrayOf()
-                r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,if (stabilize && CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON in videoModes) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                CameraStabilization.apply(chars,r,stabilize)
+                if (chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)?.lower?.let { it<0 }==true)
+                    r.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,exposure(ids[index],chars))
                 if (Build.VERSION.SDK_INT >= 30)
                     chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let {
                         r.set(
@@ -246,6 +263,7 @@ class DualCamera(
                     ?.let { r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
                 sessions[index]!!.setRepeatingRequest(r.build(),object: CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(session: CameraCaptureSession,request: CaptureRequest,result: TotalCaptureResult) {
+                        sensorTimeObserver?.let { observe -> result.get(CaptureResult.SENSOR_TIMESTAMP)?.let { observe(ids[index],it) } }
                         if (!closed && follow) {
                             val size=inputSizes.getOrNull(index) ?: return
                             renderer.faces(ids[index],CameraFaces.boxes(chars,result,size.width,size.height),CameraFaces.time(chars,result),CameraFaces.zoom(chars,result))
@@ -261,6 +279,7 @@ class DualCamera(
 
     override fun close() {
         closed = true
+        handler.removeCallbacks(timeout)
         sessions.forEach { it?.close() }
         devices.forEach { it?.close() }
         sessions.fill(null)
