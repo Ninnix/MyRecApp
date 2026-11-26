@@ -471,8 +471,13 @@ class Capture(
             .putFloat("camera.$cameraId.focus", distance.coerceIn(0f, maximumFocusDistance)).apply()
     }
 
-    private fun trackingBase(): Float =
-        lenses.filter { it.id==cameraId && it.zoom<=zoom+.001f }.maxOfOrNull { it.zoom } ?: max(1f,zoomRange.lower)
+    private fun trackingBase(): Float {
+        // The logical camera can zoom out even when the lens picker lists ultrawide separately.
+        var base = if (zoom < 1f) zoomRange.lower else max(1f, zoomRange.lower)
+        for (lens in lenses)
+            if (lens.id == cameraId && lens.zoom > base && lens.zoom <= zoom) base = lens.zoom
+        return base
+    }
 
     internal val canFollowFace get() = activeCameraIds().any { CameraFaces.mode(manager.getCameraCharacteristics(it))!=CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF }
     internal val horizonUsesRear get() = activeCameraIds().any { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING)==CameraCharacteristics.LENS_FACING_BACK }
@@ -1049,9 +1054,8 @@ class Capture(
         val to = value.coerceIn(zoomRange.lower, zoomRange.upper)
         zoomAnimator?.cancel()
         if (seconds == 0f) {
-            zoom = to
+            updateZoom(to)
             rememberLens()
-            updateRequest()
             return
         }
         zoomAnimator =
@@ -1062,15 +1066,23 @@ class Capture(
                 addUpdateListener {
                     val t=it.animatedFraction
                     val progress=t*t*t*(10f+t*(-15f+6f*t))
-                    zoom=from*(to/from).pow(progress)
-                    updateRequest()
-                    overlay.invalidate()
+                    updateZoom(if (t == 1f) to else from * (to / from).pow(progress))
                 }
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) { rememberLens() }
                 })
                 start()
             }
+    }
+
+    private fun updateZoom(value: Float) {
+        zoom = value
+        if (assistInputZoom != null && (faceFollowEnabled || manualCameraPan)) {
+            assistBaseZoom = trackingBase()
+            assistInputZoom = assistBaseZoom
+        }
+        updateRequest()
+        overlay.invalidate()
     }
 
     private fun zoomDuration(seconds: Float) {

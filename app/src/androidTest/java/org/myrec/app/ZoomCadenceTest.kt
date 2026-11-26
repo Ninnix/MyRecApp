@@ -10,6 +10,7 @@ import android.os.SystemClock
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 object ZoomCadenceTest {
@@ -36,7 +37,7 @@ object ZoomCadenceTest {
                 Thread.sleep(4)
             }
         }
-        fun waitFor(ready: () -> Boolean) {
+        fun waitFor(message: String = "Camera or microphone was not ready", ready: () -> Boolean) {
             val until = SystemClock.uptimeMillis() + 12000
             while (SystemClock.uptimeMillis() < until) {
                 var done = false
@@ -44,7 +45,17 @@ object ZoomCadenceTest {
                 if (done) return
                 Thread.sleep(90)
             }
-            error("Camera or microphone was not ready. ${a.lastMessage}")
+            val applied = capture.latestResult?.let { CameraFaces.zoom(characteristics, it) }
+            error("$message. Selected zoom ${capture.currentZoom}×, camera zoom $applied. ${a.lastMessage}")
+        }
+        fun requireZoom(target: Float, physical: String? = null): String? {
+            waitFor("Camera did not reach ${target}× with Follow face ${capture.faceFollowEnabled}") {
+                val result = capture.latestResult
+                capture.currentZoom == target && result != null &&
+                    abs(CameraFaces.zoom(characteristics, result) - target) < .005 &&
+                    (physical == null || result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) == physical)
+            }
+            return capture.latestResult?.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
         }
         main {
             a.captureSettings.edit().putInt("fps", 30).putFloat("zoomSeconds", 1f).apply()
@@ -56,8 +67,30 @@ object ZoomCadenceTest {
             waitFor { capture.readyToRecord && capture.latestResult != null }
             main { capture.switchCamera(rear.id, 1f) }
             waitFor { capture.readyToRecord && capture.latestResult != null }
+            val wide = limit?.lower?.takeIf { it < 1f && capture.canFollowFace }
+            var widePhysical: String? = null
+            if (wide != null) {
+                val mainPhysical = requireZoom(1f)
+                main { capture.setZoom(wide) }
+                widePhysical = requireZoom(wide)
+                main { capture.setZoom(1f, true) }
+                requireZoom(1f)
+                main { capture.setFaceFollow(true); capture.setZoom(wide) }
+                requireZoom(wide, widePhysical)
+                main { capture.setZoom(1f) }
+                requireZoom(1f, mainPhysical)
+            }
             waitFor { if (!capture.recording) capture.start(); capture.recording }
             sample(2900)
+            if (wide != null) {
+                main {
+                    zooms.put(JSONObject().put("at_seconds", capture.elapsedSeconds()).put("target", wide).put("follow_face", true))
+                    capture.setZoom(wide)
+                }
+                sample(1750)
+                requireZoom(wide, widePhysical)
+                main { capture.setFaceFollow(false) }
+            }
             for (preset in listOf(.7f, 1.75f, 3.5f, 1f, 3.5f, 1f)) {
                 val desired = if (limit == null) preset.coerceAtLeast(1f) else preset.coerceIn(limit.lower, limit.upper)
                 main {
@@ -68,6 +101,7 @@ object ZoomCadenceTest {
             }
             sample(1650)
             main { check(capture.recording && !capture.paused) { a.lastMessage }; capture.stop() }
+            waitFor("Take did not finish saving") { !capture.finalizing && a.editor.project.clips.size == 1 }
             val clip = a.editor.project.clips.single()
             val extractor = MediaExtractor()
             val pictureTimes = mutableListOf<Long>()
