@@ -172,5 +172,80 @@ object PreviewTests {
                 unchanged()
             }
         }
+        test("portrait crop rotates before filling 16:9 and reopens with its saved settings") {
+            val photo = File(a.store.media, "portrait-corners.png")
+            val image = Bitmap.createBitmap(90, 160, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(image)
+            val paint = Paint()
+            canvas.drawColor(Color.WHITE)
+            for ((i, color) in listOf(Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW).withIndex()) {
+                val x = if (i % 2 == 0) 0f else 70f
+                val y = if (i < 2) 0f else 140f
+                paint.color = color
+                canvas.drawRect(x, y, x + 20f, y + 20f, paint)
+            }
+            photo.outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            image.recycle()
+            fun verify(project: Project, preview: Boolean) {
+                check(project.width == 160 && project.height == 90)
+                check(project.clips.single().effects.single().number("quarter") == 1f)
+                val rendered = Frames().use { it.render(project, .5, 160, 90, preview = preview) }
+                try {
+                    check(listOf(rendered.getPixel(8, 8), rendered.getPixel(151, 8),
+                        rendered.getPixel(8, 81), rendered.getPixel(151, 81)) ==
+                        listOf(Color.BLUE, Color.RED, Color.YELLOW, Color.GREEN)) { "Rotation cropped away the source corners" }
+                } finally { rendered.recycle() }
+            }
+            onMain {
+                a.editor.load(Project(name = "Portrait crop", width = 90, height = 160,
+                    clips = mutableListOf(ProjectStore.inspect(photo))))
+                a.panels.effect("Crop")
+                check(find(a.root, "Video shape")!!.performClick())
+            }
+            val deadline = SystemClock.uptimeMillis() + 5000
+            var choseShape = false
+            while (!choseShape && SystemClock.uptimeMillis() < deadline) {
+                val choice = instrumentation.uiAutomation.rootInActiveWindow?.findAccessibilityNodeInfosByText("16:9")?.singleOrNull()
+                choseShape = choice?.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK) == true
+                if (!choseShape) Thread.sleep(50)
+            }
+            check(choseShape) { "16:9 project shape could not be selected" }
+            Thread.sleep(180)
+            onMain { check(find(a.root, "Rotate 90 degrees")!!.performClick()) }
+            Thread.sleep(180)
+            verify(checkNotNull(a.playback.previewProject), preview = true)
+            onMain {
+                check(find(a.root, "Apply")!!.performClick())
+                a.panels.effect("Crop")
+                check(find(a.root, "90°") != null && find(a.root, "16:9") != null)
+            }
+            Thread.sleep(180)
+            verify(checkNotNull(a.playback.previewProject), preview = true)
+            verify(a.editor.project, preview = false)
+            onMain {
+                check(find(a.root, "Position")!!.performClick())
+                check(find(a.root, "Crop horizontal position")?.isEnabled == false)
+                check(find(a.root, "Crop vertical position")?.isEnabled == false)
+                val position = Bundle().apply { putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 250f) }
+                val action = android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id
+                check(find(a.root, "Crop zoom")!!.performAccessibilityAction(action, position))
+            }
+            Thread.sleep(180)
+            onMain {
+                val horizontal = find(a.root, "Crop horizontal position")!!
+                check(horizontal.isEnabled)
+                check(horizontal.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id,
+                    Bundle().apply { putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 1000f) }))
+            }
+            Thread.sleep(180)
+            check(a.playback.previewProject!!.clips.single().effects.single().number("x") > .65f)
+            onMain {
+                check(find(a.root, "Preview")!!.performClick())
+                check(find(a.root, "Play preview")?.visibility == View.VISIBLE)
+                check(find(a.root, "Crop horizontal position") == null)
+                a.panels.close()
+                verify(a.editor.project, preview = false)
+            }
+        }
     }
 }

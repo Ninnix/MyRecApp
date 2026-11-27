@@ -229,17 +229,23 @@ class Glyph(context: Context, private val kind: String, private var tint: Int) :
             }
             "Chevron up" -> path(-4f, 2f, 0f, -2f, 4f, 2f)
             "Chevron down" -> path(-4f, -2f, 0f, 2f, 4f, -2f)
+            "Chevron left" -> path(2f, -4f, -2f, 0f, 2f, 4f)
             "Chevron right" -> path(-2f, -4f, 2f, 0f, -2f, 4f)
             "Chevrons" -> {
                 path(-3f, -2f, 0f, -5f, 3f, -2f)
                 path(-3f, 2f, 0f, 5f, 3f, 2f)
             }
             "Check" -> path(-6f, 0f, -2f, 5f, 7f, -7f)
+            "Aspect ratio" -> {
+                c.drawRoundRect(-8f, -5.5f, 8f, 5.5f, 1.5f, 1.5f, p)
+                path(-5.5f, -1f, -5.5f, -3f, -3f, -3f)
+                path(3f, 3f, 5.5f, 3f, 5.5f, 1f)
+            }
             "Rotation",
             "Rotate" -> {
-                c.drawRect(-4f, -1f, 6f, 8f, p)
-                c.drawArc(-8f, -8f, 6f, 6f, 190f, 190f, false, p)
-                path(3f, -8f, 7f, -5f, 3f, -2f)
+                c.drawRoundRect(-4.5f, 0f, 4.5f, 8f, 1f, 1f, p)
+                c.drawArc(-7.07f, -7.07f, 7.07f, 7.07f, 180f, 135f, false, p)
+                path(1.5f, -5f, 5f, -5f, 5f, -8.5f)
             }
             "Animate" -> {
                 p.strokeWidth = 1.7f

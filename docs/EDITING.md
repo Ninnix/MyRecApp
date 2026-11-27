@@ -10,7 +10,7 @@ the previous position. Review speed changes playback without changing the edit.
 Pinch the preview continuously from 1× to 8× to inspect it, then drag to pan.
 Reset returns to the fitted picture. Inspection changes the view without
 changing the edit or export. Tools with draggable content offer Inspect/Edit;
-Crop uses its Frame/Inspect tabs. Playback controls return to Play when a preview
+Crop uses its Frame/Preview tabs. Playback controls return to Play when a preview
 finishes, including a draft that changes the timeline length.
 
 ## Work on the timeline
@@ -160,7 +160,7 @@ separate waveform, microphone and censor icons; captions use a cyan speech bubbl
 Fonts and Bookmarks are under Settings. Touch and hold Snap to cuts or Match
 listening levels for an explanation.
 
-Crop includes 4:5, Frame/Inspect, and quarter turns. Original restores the source
+Crop includes 4:5, Frame/Preview, and quarter turns. Original restores the source
 shape. Dissolves overlap neighboring footage; solid-color and Still holds can
 add time. Transition controls include split axis, divider and separate framing,
 fade color, wipe direction and feathering, Hitchcock brightness order, Flash Cut

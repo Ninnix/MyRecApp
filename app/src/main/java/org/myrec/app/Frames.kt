@@ -659,8 +659,15 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
         canvas.clipRect(window)
         val frame = if (placement?.number("reframe") == 1f) window else rect
         val crop = fx.lastOrNull { it.kind == "Crop" || it.kind == "Zoom" }
+        val quarter = crop?.number("quarter") ?: 0f
+        val turnsSideways = quarter % 2f != 0f
+        val angle = crop?.let { (it.number("rotation") + quarter * 90) * it.strength(local, c.duration) }
+            ?: fx.lastOrNull { it.kind == "Rotation" }?.let { it.number("rotation") * it.strength(local, c.duration) }
+            ?: 0f
         val ratio =
-            if (placement?.number("reframe") == 1f || crop != null)
+            if (turnsSideways)
+                ArchiveGeometry.rotatedFillScale(bitmap.width.toDouble(), bitmap.height.toDouble(), frame.width().toDouble(), frame.height().toDouble(), angle.toDouble()).toFloat()
+            else if (placement?.number("reframe") == 1f || crop != null)
                 max(frame.width() / bitmap.width, frame.height() / bitmap.height)
             else min(frame.width() / bitmap.width, frame.height() / bitmap.height)
         val dest =
@@ -678,18 +685,14 @@ class Frames(private val cancelled: () -> Boolean = { false }, private val onAna
             val contentZoom = placement.number("contentZoom", 1f)
             canvas.scale(contentZoom, contentZoom, frame.centerX(), frame.centerY())
         }
-        val angle =
-            crop?.let { (it.number("rotation") + it.number("quarter") * 90)*it.strength(local,c.duration) }
-                ?: fx.lastOrNull { it.kind == "Rotation" }?.let { it.number("rotation")*it.strength(local,c.duration) }
-                ?: 0f
         val radians = Math.toRadians(angle.toDouble())
         val cover =
-            max(
+            if (crop == null || turnsSideways) 1f else max(
                     abs(cos(radians)) + abs(sin(radians)) * rect.height() / rect.width(),
                     abs(cos(radians)) + abs(sin(radians)) * rect.width() / rect.height(),
                 )
                 .toFloat()
-        val zoom = (crop?.let { 1+(it.number("zoom",1f)-1)*it.strength(local,c.duration) } ?: 1f) * if (crop != null) cover else 1f
+        val zoom = (crop?.let { 1+(it.number("zoom",1f)-1)*it.strength(local,c.duration) } ?: 1f) * cover
         val dx = crop?.let { it.number("x")*it.strength(local,c.duration) } ?: 0f
         val dy = crop?.let { it.number("y")*it.strength(local,c.duration) } ?: 0f
         c.frozen?.let { hold ->

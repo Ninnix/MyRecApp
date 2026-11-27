@@ -2649,12 +2649,7 @@ class DeviceTests : Instrumentation() {
                     onMain { a.panels.effect("Crop") }
                     Thread.sleep(180)
                     onMain {
-                        val label =
-                            findView(a.root) {
-                                it is android.widget.TextView &&
-                                    it.text.toString().startsWith("Original")
-                            }!!
-                        (label.parent as android.view.View).performClick()
+                        check(findView(a.root) { it.contentDescription == "Video shape" }!!.performClick())
                     }
                     Thread.sleep(180)
                     val choice =
@@ -2672,7 +2667,7 @@ class DeviceTests : Instrumentation() {
                     if (name == "portrait")
                         check(
                             findView(a.root) {
-                                it is android.widget.TextView && it.text.toString() == "Inspect"
+                                it is android.widget.TextView && it.text.toString() == "Preview"
                             } != null
                         )
                     click("Rotate 90 degrees")
@@ -2688,12 +2683,9 @@ class DeviceTests : Instrumentation() {
                     onMain { a.panels.effect("Crop") }
                     Thread.sleep(100)
                     onMain {
-                        val label =
-                            findView(a.root) {
-                                it is android.widget.TextView &&
-                                    it.text.toString().startsWith("Original")
-                            }!!
-                        (label.parent as android.view.View).performClick()
+                        check(findView(a.root) { it is android.widget.TextView && it.text.toString() == "90°" } != null)
+                        check(findView(a.root) { it is android.widget.TextView && it.text.toString() == "4:5" } != null)
+                        check(findView(a.root) { it.contentDescription == "Video shape" }!!.performClick())
                     }
                     Thread.sleep(150)
                     val original =
@@ -2708,6 +2700,7 @@ class DeviceTests : Instrumentation() {
                     Thread.sleep(150)
                     click("Apply")
                     check(a.editor.project.width == 640 && a.editor.project.height == 360)
+                    onMain { a.editor.removeEffect(a.editor.project.clips.single().effects.last { it.kind == "Crop" }.id) }
                 }
             }
             finish(Activity.RESULT_OK, Bundle().apply { putString("stream", report.toString()) })

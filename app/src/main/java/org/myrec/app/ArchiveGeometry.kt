@@ -28,10 +28,30 @@ object ArchiveGeometry {
         fun values()=floatArrayOf(a.toFloat(),c.toFloat(),x.toFloat(),b.toFloat(),d.toFloat(),y.toFloat(),0f,0f,1f)
     }
     private fun number(fx: Effect,key: String,default: Double)=fx.values[key]?.toDoubleOrNull() ?: default
+    private fun fillScale(sw: Double, sh: Double, cw: Double, ch: Double, c: Double, s: Double) =
+        max((cw*c+ch*s)/sw,(cw*s+ch*c)/sh)
+
+    fun rotatedFillScale(sw: Double, sh: Double, cw: Double, ch: Double, angle: Double): Double {
+        val r = Math.toRadians(angle)
+        return fillScale(sw, sh, cw, ch, abs(cos(r)), abs(sin(r)))
+    }
+
+    fun cropAngle(fx: Effect): Float {
+        val value = fx.number("rotation") + fx.number("quarter") * 90f
+        val wrapped = ((value + 180f) % 360f + 360f) % 360f - 180f
+        return if (wrapped == -180f && value > 0f) 180f else wrapped
+    }
+
+    fun cropFootprint(area: Rect, angle: Double): Pair<Double, Double> {
+        val r = Math.toRadians(angle)
+        val c = abs(cos(r)); val s = abs(sin(r))
+        return area.width * c + area.height * s to area.width * s + area.height * c
+    }
+
     fun cropRect(sw: Double,sh: Double,cw: Double,ch: Double,x: Double,y: Double,zoom: Double,angle: Double): Rect {
         require(listOf(sw,sh,cw,ch).all { it.isFinite() && it>0 })
         val r=Math.toRadians(angle);val c=abs(cos(r));val s=abs(sin(r))
-        val scale=max((cw*c+ch*s)/sw,(cw*s+ch*c)/sh)*zoom.coerceIn(1.0,8.0)
+        val scale=fillScale(sw,sh,cw,ch,c,s)*zoom.coerceIn(1.0,8.0)
         val w=cw/scale;val h=ch/scale;val hx=(w*c+h*s)/2;val hy=(w*s+h*c)/2
         return Rect((x*sw).coerceIn(hx, max(hx,sw-hx))-w/2,(y*sh).coerceIn(hy,max(hy,sh-hy))-h/2,w,h)
     }
@@ -44,14 +64,15 @@ object ArchiveGeometry {
         return Transform(a,b,c,d,cw/2-a*cx-c*cy,ch/2-b*cx-d*cy)
     }
     fun legacyCrop(fx: Effect,sw: Double,sh: Double,cw: Double,ch: Double,horizontal: Boolean,vertical: Boolean): Map<String,Double> {
-        val angle=number(fx,"rotation",0.0)+number(fx,"quarter",0.0)*90
+        val quarter=number(fx,"quarter",0.0)
+        val angle=number(fx,"rotation",0.0)+quarter*90
         val r=Math.toRadians(angle);val c=cos(r);val s=sin(r)
-        val scale=max(cw/sw,ch/sh)*number(fx,"zoom",1.0)*max(abs(c)+abs(s)*ch/cw,abs(c)+abs(s)*cw/ch)
+        val base=fillScale(sw,sh,cw,ch,abs(c),abs(s))
+        val scale=(if (quarter%2!=0.0) base else max(cw/sw,ch/sh)*max(abs(c)+abs(s)*ch/cw,abs(c)+abs(s)*cw/ch))*number(fx,"zoom",1.0)
         val mx=if (horizontal) -1 else 1;val my=if (vertical) -1 else 1
         val dx=number(fx,"x",0.0)*cw;val dy=number(fx,"y",0.0)*ch
         val cx=.5-mx*(c*dx+s*dy)/(scale*sw);val cy=.5-my*(-s*dx+c*dy)/(scale*sh)
         val rotation=angle*mx*my
-        val base=max((cw*abs(c)+ch*abs(s))/sw,(cw*abs(s)+ch*abs(c))/sh)
         val zoom=scale/base
         val area=cropRect(sw,sh,cw,ch,cx,cy,zoom,rotation)
         require(cx in 0.0..1.0 && cy in 0.0..1.0 && zoom in 1.0-1e-6..8.0 &&
